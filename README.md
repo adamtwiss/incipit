@@ -17,3 +17,12 @@ Language models doing the work were almost certainly trained on much of that sam
 **Status:** Incipit is an experiment (it may fail, it may become a full-blown engine). Development is being done in the open and this repo is public; however, it isn't yet intended for external testing. Don't expect much in the way of strength until there's a sufficient volume of quality training data to support larger models.
 
 **License:** Incipit is open-source and licensed under GPLv3 (or later).
+
+## Credits
+
+Incipit is built, tested and trained with these tools:
+
+* [OpenBench](https://github.com/AndyGrant/OpenBench), created by Andrew Grant: testing (SPRTs, SPSA tuning and self-play data generation) runs on a self-hosted, modified OpenBench instance.
+* [fastchess](https://github.com/Disservin/fastchess): running engine matches for testing.
+* [viriformat](https://github.com/cosmobobak/viriformat) by Cosmo Bobak: the training data format.
+* [Bullet](https://github.com/jw1912/bullet) by Jamie Whiting: NNUE training.
