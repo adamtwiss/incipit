@@ -1,0 +1,20 @@
+[package]
+name = "datatools"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "datatools"
+path = "src/main.rs"
+
+# Test-only: the tests check that the reference viriformat reader decodes our
+# output to exactly the positions we wrote. The tool itself is std-only.
+[dev-dependencies]
+viriformat = "3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
