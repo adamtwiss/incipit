@@ -196,7 +196,7 @@ fn main() {
                 let mut bad = 0;
                 for _g in 0..200 {
                     let mut pos = Position::from_fen(START_FEN).unwrap();
-                    let mut acc = nnue::Acc { v: [[0; nnue::H]; 2] };
+                    let mut acc = nnue::Acc::new();
                     acc.refresh(&pos);
                     for _ in 0..200 {
                         let mut list = MoveList::new();
@@ -207,16 +207,16 @@ fn main() {
                         seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
                         let m = legal[(seed % legal.len() as u64) as usize];
                         let mut child = pos; child.make_move(m);
-                        let mut a2 = nnue::Acc { v: [[0; nnue::H]; 2] };
+                        let mut a2 = nnue::Acc::new();
                         a2.update_from(&acc, &pos, &child, m);
-                        let mut a3 = nnue::Acc { v: [[0; nnue::H]; 2] };
+                        let mut a3 = nnue::Acc::new();
                         a3.refresh(&child);
                         if a2.v != a3.v { bad += 1; println!("mismatch {} {}", pos.to_fen(), move_str(m)); }
                         pos = child; acc = a3;
                     }
                 }
                 println!("bad {}", bad);
-                println!("startpos eval {}", nnue::evaluate(&{ let mut a = nnue::Acc { v: [[0; nnue::H]; 2] }; a.refresh(&Position::from_fen(START_FEN).unwrap()); a }, &Position::from_fen(START_FEN).unwrap()));
+                println!("startpos eval {}", nnue::evaluate(&{ let mut a = nnue::Acc::new(); a.refresh(&Position::from_fen(START_FEN).unwrap()); a }, &Position::from_fen(START_FEN).unwrap()));
                 return;
             }
             "bench" => {
@@ -335,6 +335,12 @@ fn main() {
                 searching.store(false, Ordering::SeqCst);
             }
             "d" => println!("{}", uci.pos.to_fen()),
+            // Static NNUE eval of the current position (side to move's view, cp).
+            "eval" => {
+                let mut acc = nnue::Acc::new();
+                acc.refresh(&uci.pos);
+                println!("eval {}", nnue::evaluate(&acc, &uci.pos));
+            }
             "genfens" => datagen::genfens(&toks),
             "tune-spec" => params::print_spec(),
             "quit" => break,

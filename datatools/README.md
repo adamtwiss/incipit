@@ -1,13 +1,17 @@
 # Incipit datatools
 
-Converts Incipit's training data to [viriformat](https://github.com/cosmobobak/viriformat), the format used for NNUE training.
+Converts Incipit's training data to [viriformat](https://github.com/cosmobobak/viriformat), the format used for NNUE training, and trained networks to Incipit's network format ([docs/net-format.md](../docs/net-format.md)).
 
 ```
 cargo build --release
 datatools pgn <out.vf> <in.pgn | -> ...     # OpenBench datagen PGNs
 datatools bin <out_dir> <in.bin> ...        # the engine's old datagen .bin files
 datatools stats <file.vf> ...               # count games and positions
+datatools net <bullet|raw> <in> <out_dir> --hidden N [options]   # network -> Incipit format
+datatools net-info <file.nnue> ...          # show a network's header
 ```
+
+`datatools net` reads Bullet's `quantised.bin` (`bullet`) or the engine's old headerless nets (`raw`) and writes `<out_dir>/net-XXXXXXXX.nnue`, named by its SHA-256 as usual. Options: `--king-buckets` (32 or 64 comma-separated entries), `--mirror`, `--output-buckets N` (default 8), `--activation screlu|crelu`, `--qa`/`--qb`/`--scale` (default 255/64/400), and `--description` to record the training run.
 
 OpenBench PGN archives hold bzip2-compressed shards, so pipe them in:
 `tar xf 1234.pgn.tar && bzcat *.pgn.bz2 | datatools pgn 1234.vf -`

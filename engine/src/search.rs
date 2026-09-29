@@ -128,7 +128,7 @@ impl Searcher {
             root_node_counts: Box::new([[0; 64]; 64]),
             corr_np: vec![[[0i32; CORR_SIZE]; 2]; 2].into_boxed_slice().try_into().unwrap(),
             corr: vec![[0i32; CORR_SIZE]; 2].into_boxed_slice().try_into().unwrap(),
-            acc: vec![Acc { v: [[0; nnue::H]; 2] }; MAX_PLY + 8],
+            acc: vec![Acc::new(); MAX_PLY + 8],
         }
     }
 
@@ -501,7 +501,8 @@ impl Searcher {
                 let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(3);
                 let mut child = *pos;
                 child.make_null();
-                self.acc[ply + 1] = self.acc[ply];
+                let (a, b) = self.acc.split_at_mut(ply + 1);
+                b[0].copy_from(&a[ply]);
                 self.stack[ply].mv = 0;
                 self.stack[ply].cont_idx = 0;
                 self.hash_hist.push(pos.hash);
