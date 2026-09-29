@@ -21,33 +21,33 @@ macro_rules! params {
 
 // name = UCI name, default, min, max, SPSA step (c_end). Step = (max - min) / 20, at least 1.
 params! {
-    RfpMargin = "RfpMargin", 95, 30, 150, 6;
-    RazorBase = "RazorBase", 243, 50, 400, 18;
-    RazorMul = "RazorMul", 284, 100, 400, 15;
-    NmpEvalDiv = "NmpEvalDiv", 195, 100, 400, 15;
-    ProbcutMargin = "ProbcutMargin", 209, 100, 350, 13;
-    FutBase = "FutBase", 96, 30, 250, 11;
-    FutMul = "FutMul", 130, 40, 200, 8;
-    HistPrune = "HistPrune", 2269, 500, 5000, 225;
-    SeeQuiet = "SeeQuiet", 25, 10, 80, 4;
-    SeeNoisy = "SeeNoisy", 42, 10, 200, 10;
-    LmrBaseX100 = "LmrBaseX100", 60, 30, 130, 5;
-    LmrDivX100 = "LmrDivX100", 246, 150, 350, 10;
-    LmrHistDiv = "LmrHistDiv", 7888, 3000, 16000, 650;
-    AspDelta = "AspDelta", 8, 3, 40, 2;
-    QsFut = "QsFut", 294, 50, 500, 23;
-    HistMul = "HistMul", 226, 100, 500, 20;
-    HistOff = "HistOff", 241, 0, 500, 25;
-    HistMax = "HistMax", 2648, 1000, 4000, 150;
-    SeDouble = "SeDouble", 18, 5, 50, 2;
-    RfpDepth = "RfpDepth", 5, 3, 12, 1;
-    NmpBase = "NmpBase", 5, 2, 7, 1;
-    LmpBase = "LmpBase", 4, 1, 8, 1;
-    SeMul = "SeMul", 23, 8, 40, 2;
-    CapLmrDiv = "CapLmrDiv", 6036, 2000, 16000, 700;
+    RfpMargin = "RfpMargin", 97, 30, 150, 6;
+    RazorBase = "RazorBase", 251, 50, 400, 18;
+    RazorMul = "RazorMul", 295, 100, 400, 15;
+    NmpEvalDiv = "NmpEvalDiv", 177, 100, 400, 15;
+    ProbcutMargin = "ProbcutMargin", 214, 100, 350, 13;
+    FutBase = "FutBase", 106, 30, 250, 11;
+    FutMul = "FutMul", 123, 40, 200, 8;
+    HistPrune = "HistPrune", 2139, 500, 5000, 225;
+    SeeQuiet = "SeeQuiet", 24, 10, 80, 4;
+    SeeNoisy = "SeeNoisy", 52, 10, 200, 10;
+    LmrBaseX100 = "LmrBaseX100", 67, 30, 130, 5;
+    LmrDivX100 = "LmrDivX100", 248, 150, 350, 10;
+    LmrHistDiv = "LmrHistDiv", 6966, 3000, 16000, 650;
+    AspDelta = "AspDelta", 6, 3, 40, 2;
+    QsFut = "QsFut", 369, 50, 500, 23;
+    HistMul = "HistMul", 229, 100, 500, 20;
+    HistOff = "HistOff", 240, 0, 500, 25;
+    HistMax = "HistMax", 2817, 1000, 4000, 150;
+    SeDouble = "SeDouble", 17, 5, 50, 2;
+    RfpDepth = "RfpDepth", 4, 3, 12, 1;
+    NmpBase = "NmpBase", 4, 2, 7, 1;
+    LmpBase = "LmpBase", 6, 1, 8, 1;
+    SeMul = "SeMul", 21, 8, 40, 2;
+    CapLmrDiv = "CapLmrDiv", 5207, 2000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 25, 12, 40, 1;
     TmIncPct = "TmIncPct", 75, 40, 100, 3;
-    TmHardMul = "TmHardMul", 4, 2, 6, 1;
+    TmHardMul = "TmHardMul", 5, 2, 6, 1;
 }
 
 #[inline(always)]
