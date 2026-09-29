@@ -115,3 +115,97 @@ pub fn count(data: &[u8]) -> Result<(u64, u64, u64), String> {
     }
     Ok((games, moves, unscored))
 }
+
+/// Rebuilds a Position from a packed board (the inverse of pack_board).
+/// Returns None if the board isn't valid.
+pub fn unpack_board(b: &[u8]) -> Option<(Position, i16, u8)> {
+    let occ = u64::from_le_bytes(b[0..8].try_into().unwrap());
+    let mut sqs = [None; 64];
+    let mut castling = String::new();
+    let (mut bits, mut i) = (occ, 0);
+    while bits != 0 {
+        let sq = bits.trailing_zeros() as usize;
+        bits &= bits - 1;
+        let code = (b[8 + i / 2] >> ((i & 1) * 4)) & 15;
+        let colour = (code >> 3) as usize;
+        let mut pt = (code & 7) as usize;
+        if pt == UNMOVED_ROOK as usize {
+            pt = ROOK;
+            match sq {
+                7 => castling.push('K'),
+                0 => castling.push('Q'),
+                63 => castling.push('k'),
+                56 => castling.push('q'),
+                _ => return None,
+            }
+        }
+        if pt > KING {
+            return None;
+        }
+        sqs[sq] = Some((pt, colour));
+        i += 1;
+    }
+    let mut fen = String::new();
+    for rank in (0..8).rev() {
+        let mut empty = 0;
+        for file in 0..8 {
+            match sqs[rank * 8 + file] {
+                None => empty += 1,
+                Some((pt, c)) => {
+                    if empty > 0 {
+                        fen.push((b'0' + empty) as char);
+                        empty = 0;
+                    }
+                    let ch = b"pnbrqk"[pt] as char;
+                    fen.push(if c == WHITE { ch.to_ascii_uppercase() } else { ch });
+                }
+            }
+        }
+        if empty > 0 {
+            fen.push((b'0' + empty) as char);
+        }
+        if rank > 0 {
+            fen.push('/');
+        }
+    }
+    let order = |c: char| "KQkq".find(c).unwrap();
+    let mut castling: Vec<char> = castling.chars().collect();
+    castling.sort_by_key(|&c| order(c));
+    let castling: String = if castling.is_empty() { "-".into() } else { castling.into_iter().collect() };
+    let ep = b[24] & 127;
+    let ep = if ep >= 64 { "-".to_string() } else { format!("{}{}", (b'a' + ep % 8) as char, (b'1' + ep / 8) as char) };
+    let stm = if b[24] >> 7 == 0 { 'w' } else { 'b' };
+    let fullmove = u16::from_le_bytes([b[26], b[27]]).max(1);
+    let pos = Position::from_fen(&format!("{} {} {} {} {} {}", fen, stm, castling, ep, b[25], fullmove))?;
+    Some((pos, i16::from_le_bytes([b[28], b[29]]), b[30]))
+}
+
+/// Visits every (position, move, score) in a viriformat buffer, replaying each
+/// game with the engine's move generator. Stops at the first undecodable game.
+pub fn for_each_position(data: &[u8], mut f: impl FnMut(&Position, Move, i16, u8)) -> Result<(), String> {
+    let mut i = 0;
+    while i + 32 <= data.len() {
+        let (mut pos, _, wdl) = unpack_board(&data[i..i + 32]).ok_or_else(|| format!("bad board at byte {}", i))?;
+        i += 32;
+        loop {
+            if i + 4 > data.len() {
+                return Err(format!("unterminated game at byte {}", i));
+            }
+            let raw = u16::from_le_bytes([data[i], data[i + 1]]);
+            let score = i16::from_le_bytes([data[i + 2], data[i + 3]]);
+            i += 4;
+            if raw == 0 && score == 0 {
+                break;
+            }
+            let mut list = MoveList::new();
+            pos.gen_moves(&mut list, false);
+            let m = (0..list.len)
+                .map(|k| list.moves[k])
+                .find(|&m| encode_move(m) == raw && { let mut c = pos; c.make_move(m) })
+                .ok_or_else(|| format!("illegal move {:04x} in {}", raw, pos.to_fen()))?;
+            f(&pos, m, score, wdl);
+            pos.make_move(m);
+        }
+    }
+    Ok(())
+}

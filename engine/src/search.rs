@@ -23,6 +23,109 @@ struct Frame {
     mv: Move,
 }
 
+/// Search statistics, cumulative until reset (bench sums them over its
+/// positions). Counting doesn't change the search, so bench node counts are
+/// unaffected.
+#[derive(Clone, Copy, Default)]
+pub struct Stats {
+    pub qs_nodes: u64,
+    pub tt_probes: u64,
+    pub tt_hits: u64,
+    pub tt_cutoffs: u64,
+    pub asp_fail_low: u64,
+    pub asp_fail_high: u64,
+    pub rfp: u64,
+    pub razor_tries: u64,
+    pub razor_cuts: u64,
+    pub nmp_tries: u64,
+    pub nmp_cuts: u64,
+    pub probcut_cuts: u64,
+    pub iir: u64,
+    pub lmp: u64,
+    pub futility: u64,
+    pub hist_prunes: u64,
+    pub see_quiet: u64,
+    pub see_noisy: u64,
+    pub lmr_searches: u64,
+    pub lmr_researches: u64,
+    pub se_tries: u64,
+    pub se_single: u64,
+    pub se_double: u64,
+    pub se_negative: u64,
+    pub multicut: u64,
+    pub check_ext: u64,
+    pub beta_cuts: u64,
+    pub cut_pos_sum: u64,
+    pub cut_pos_sq_sum: u64,
+    pub first_move_cuts: u64,
+    /// Sum of ln(nodes(d) / nodes(d-1)) over completed iterations with d >= 5.
+    pub ebf_log_sum: f64,
+    pub ebf_count: u64,
+}
+
+impl Stats {
+    /// Multi-line summary; `nodes` is the total node count over the same searches.
+    pub fn report(&self, nodes: u64) -> String {
+        let pct = |a: u64, b: u64| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
+        let kn = |a: u64| if nodes == 0 { 0.0 } else { 1000.0 * a as f64 / nodes as f64 };
+        let mut o = String::new();
+        let mut line = |label: &str, text: String| o.push_str(&format!("{:<16}{}\n", label, text));
+        line("Total nodes:", format!("{}  (QS {:.1}%)", nodes, pct(self.qs_nodes, nodes)));
+        let ebf = if self.ebf_count > 0 { (self.ebf_log_sum / self.ebf_count as f64).exp() } else { 0.0 };
+        line("EBF (d >= 5):", format!("{:.2}  (geometric mean over {} iterations)", ebf, self.ebf_count));
+        line(
+            "Move ordering:",
+            format!(
+                "first-move cut {:.1}%, avg cutoff position {:.2}, avg position\u{b2} {:.1}  ({} beta cutoffs)",
+                pct(self.first_move_cuts, self.beta_cuts),
+                self.cut_pos_sum as f64 / self.beta_cuts.max(1) as f64,
+                self.cut_pos_sq_sum as f64 / self.beta_cuts.max(1) as f64,
+                self.beta_cuts
+            ),
+        );
+        line(
+            "TT:",
+            format!(
+                "probes {} ({:.0}/Kn), hits {:.1}%, cutoffs {} ({:.1}/Kn)",
+                self.tt_probes,
+                kn(self.tt_probes),
+                pct(self.tt_hits, self.tt_probes),
+                self.tt_cutoffs,
+                kn(self.tt_cutoffs)
+            ),
+        );
+        line("Aspiration:", format!("fail-low {}, fail-high {}", self.asp_fail_low, self.asp_fail_high));
+        line("RFP:", format!("{} cutoffs ({:.1}/Kn)", self.rfp, kn(self.rfp)));
+        line("Razoring:", format!("{} tries, {} cutoffs ({:.0}%)", self.razor_tries, self.razor_cuts, pct(self.razor_cuts, self.razor_tries)));
+        line("Null move:", format!("{} tries, {} cutoffs ({:.0}%)", self.nmp_tries, self.nmp_cuts, pct(self.nmp_cuts, self.nmp_tries)));
+        line("ProbCut:", format!("{} cutoffs ({:.1}/Kn)", self.probcut_cuts, kn(self.probcut_cuts)));
+        line("IIR:", format!("{} reductions", self.iir));
+        line("LMP:", format!("{} triggers (remaining quiets skipped)", self.lmp));
+        line("Futility:", format!("{} triggers (remaining quiets skipped)", self.futility));
+        line("History prune:", format!("{} moves ({:.1}/Kn)", self.hist_prunes, kn(self.hist_prunes)));
+        line("SEE prune:", format!("{} quiet, {} noisy ({:.1}/Kn)", self.see_quiet, self.see_noisy, kn(self.see_quiet + self.see_noisy)));
+        line(
+            "LMR:",
+            format!(
+                "{} reduced searches ({:.1}/Kn), {} re-searched ({:.1}%)",
+                self.lmr_searches,
+                kn(self.lmr_searches),
+                self.lmr_researches,
+                pct(self.lmr_researches, self.lmr_searches)
+            ),
+        );
+        line(
+            "Singular:",
+            format!(
+                "{} tries: +1 {}, +2 {}, -1 {}, multi-cut {}",
+                self.se_tries, self.se_single, self.se_double, self.se_negative, self.multicut
+            ),
+        );
+        line("Check ext:", format!("{}", self.check_ext));
+        o
+    }
+}
+
 pub struct Limits {
     pub soft_ms: Option<u64>,
     pub hard_ms: Option<u64>,
@@ -56,6 +159,7 @@ pub struct Searcher {
     acc: Vec<Acc>,
     corr: Box<[[i32; CORR_SIZE]; 2]>,
     corr_np: Box<[[[i32; CORR_SIZE]; 2]; 2]>,
+    pub stats: Stats,
 }
 
 #[inline(always)]
@@ -128,6 +232,7 @@ impl Searcher {
             root_node_counts: Box::new([[0; 64]; 64]),
             corr_np: vec![[[0i32; CORR_SIZE]; 2]; 2].into_boxed_slice().try_into().unwrap(),
             corr: vec![[0i32; CORR_SIZE]; 2].into_boxed_slice().try_into().unwrap(),
+            stats: Stats::default(),
             acc: vec![Acc::new(); MAX_PLY + 8],
         }
     }
@@ -273,7 +378,9 @@ impl Searcher {
         // first move of the last PV printed, so bestmove always matches the reported PV
         let mut reported: Move = 0;
         let max_depth = lim.depth.min(MAX_PLY as i32 - 4);
+        let mut prev_iter_nodes = 0u64;
         for d in 1..=max_depth {
+            let nodes_at_start = self.nodes;
             self.root_depth = d;
             let mut delta = tp(P::AspDelta);
             let (mut a, mut b) = if d >= 4 { (score - delta, score + delta) } else { (-INF, INF) };
@@ -287,9 +394,11 @@ impl Searcher {
                     break;
                 }
                 if s <= a {
+                    self.stats.asp_fail_low += 1;
                     b = (a + b) / 2;
                     a = (s - delta).max(-INF);
                 } else if s >= b {
+                    self.stats.asp_fail_high += 1;
                     b = (s + delta).min(INF);
                     if self.root_best != 0 {
                         best = self.root_best;
@@ -328,6 +437,12 @@ impl Searcher {
                 }
                 break;
             }
+            let iter_nodes = self.nodes - nodes_at_start;
+            if d >= 5 && prev_iter_nodes > 0 {
+                self.stats.ebf_log_sum += (iter_nodes as f64 / prev_iter_nodes as f64).ln();
+                self.stats.ebf_count += 1;
+            }
+            prev_iter_nodes = iter_nodes;
             let prev_score = if d > 1 { score } else { s };
             score = s;
             best = self.pv[0][0];
@@ -419,12 +534,18 @@ impl Searcher {
             }
         }
         let excluded = self.stack[ply].excluded;
-        let tte = if excluded == 0 { self.tt.probe(pos.hash) } else { None };
+        let tte = if excluded == 0 {
+            self.stats.tt_probes += 1;
+            self.tt.probe(pos.hash)
+        } else {
+            None
+        };
         let mut tt_move = 0;
         let mut tt_score = 0;
         let mut tt_depth = -1;
         let mut tt_bound = BOUND_NONE;
         if let Some(e) = tte {
+            self.stats.tt_hits += 1;
             tt_move = e.mv;
             tt_score = e.score as i32;
             if tt_score >= MATE_BOUND {
@@ -448,6 +569,7 @@ impl Searcher {
                     upd(&mut self.hist[pos.stm][mfrom(tt_move)][mto(tt_move)], bonus);
                     let _ = pc;
                 }
+                self.stats.tt_cutoffs += 1;
                 return tt_score;
             }
         }
@@ -481,12 +603,15 @@ impl Searcher {
         if !pv_node && !in_check && excluded == 0 {
             // reverse futility pruning
             if depth <= tp(P::RfpDepth) && eval.abs() < MATE_BOUND && eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta {
+                self.stats.rfp += 1;
                 return (eval + beta) / 2;
             }
             // razoring
             if depth <= 3 && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth <= alpha {
+                self.stats.razor_tries += 1;
                 let v = self.qsearch(pos, alpha, alpha + 1, ply);
                 if v <= alpha {
+                    self.stats.razor_cuts += 1;
                     return v;
                 }
             }
@@ -498,6 +623,7 @@ impl Searcher {
                 && self.stack[ply - 1].mv != 0
                 && pos.has_non_pawns(pos.stm)
             {
+                self.stats.nmp_tries += 1;
                 let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(3);
                 let mut child = *pos;
                 child.make_null();
@@ -512,6 +638,7 @@ impl Searcher {
                     return 0;
                 }
                 if v >= beta {
+                    self.stats.nmp_cuts += 1;
                     return if v >= MATE_BOUND { beta } else { v };
                 }
             }
@@ -547,6 +674,7 @@ impl Searcher {
                     }
                     if v >= pc_beta {
                         self.tt.store(pos.hash, m, v, raw_eval, depth - 3, BOUND_LOWER);
+                        self.stats.probcut_cuts += 1;
                         return v;
                     }
                 }
@@ -554,6 +682,7 @@ impl Searcher {
         }
         // internal iterative reduction
         if depth >= 4 && tt_move == 0 && (pv_node || cut_node) {
+            self.stats.iir += 1;
             depth -= 1;
         }
 
@@ -645,21 +774,26 @@ impl Searcher {
             if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
                 if quiet {
                     if legal >= lmp_limit && !in_check {
+                        self.stats.lmp += 1;
                         skip_quiets = true;
                         continue;
                     }
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
                     if !in_check && lmr_d <= 8 && static_eval + tp(P::FutBase) + tp(P::FutMul) * lmr_d <= alpha {
+                        self.stats.futility += 1;
                         skip_quiets = true;
                         continue;
                     }
                     if lmr_d <= 4 && hist_score < -tp(P::HistPrune) * depth {
+                        self.stats.hist_prunes += 1;
                         continue;
                     }
                     if !pos.see_ge(m, -tp(P::SeeQuiet) * lmr_d * lmr_d) {
+                        self.stats.see_quiet += 1;
                         continue;
                     }
                 } else if depth <= 6 && !pos.see_ge(m, -tp(P::SeeNoisy) * depth) {
+                    self.stats.see_noisy += 1;
                     continue;
                 }
             }
@@ -682,6 +816,7 @@ impl Searcher {
                 && tt_score.abs() < MATE_BOUND
                 && ply < 2 * self.root_depth as usize
             {
+                self.stats.se_tries += 1;
                 let sbeta = tt_score - depth * tp(P::SeMul) / 16;
                 self.stack[ply].excluded = m;
                 let v = self.negamax(pos, sbeta - 1, sbeta, (depth - 1) / 2, ply, cut_node);
@@ -693,13 +828,19 @@ impl Searcher {
                     ext = 1;
                     if !pv_node && v < sbeta - tp(P::SeDouble) {
                         ext = 2;
+                        self.stats.se_double += 1;
+                    } else {
+                        self.stats.se_single += 1;
                     }
                 } else if sbeta >= beta {
+                    self.stats.multicut += 1;
                     return sbeta;
                 } else if tt_score >= beta {
                     ext = -1;
+                    self.stats.se_negative += 1;
                 }
             } else if child.checkers != 0 {
+                self.stats.check_ext += 1;
                 ext = 1;
             }
 
@@ -743,8 +884,12 @@ impl Searcher {
                     }
                     r = r.clamp(0, (new_depth - 1).max(0));
                 }
+                if r > 0 {
+                    self.stats.lmr_searches += 1;
+                }
                 score = -self.negamax(&child, -alpha - 1, -alpha, new_depth - r, ply + 1, true);
                 if score > alpha && r > 0 {
+                    self.stats.lmr_researches += 1;
                     score = -self.negamax(&child, -alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
                 }
                 if pv_node && score > alpha && score < beta {
@@ -774,6 +919,11 @@ impl Searcher {
                         self.root_best = m;
                     }
                     if alpha >= beta {
+                        let k = legal as u64;
+                        self.stats.beta_cuts += 1;
+                        self.stats.cut_pos_sum += k;
+                        self.stats.cut_pos_sq_sum += k * k;
+                        self.stats.first_move_cuts += (k == 1) as u64;
                         break;
                     }
                 }
@@ -908,6 +1058,7 @@ impl Searcher {
 
     fn qsearch(&mut self, pos: &Position, mut alpha: i32, beta: i32, ply: usize) -> i32 {
         self.nodes += 1;
+        self.stats.qs_nodes += 1;
         if self.nodes & 1023 == 0 {
             self.check_time();
         }
@@ -925,9 +1076,11 @@ impl Searcher {
             return 0;
         }
         let pv_node = beta - alpha > 1;
+        self.stats.tt_probes += 1;
         let tte = self.tt.probe(pos.hash);
         let mut tt_move = 0;
         if let Some(e) = tte {
+            self.stats.tt_hits += 1;
             let mut s = e.score as i32;
             if s >= MATE_BOUND {
                 s -= ply as i32;
@@ -938,6 +1091,7 @@ impl Searcher {
             if !pv_node
                 && (e.bound == BOUND_EXACT || (e.bound == BOUND_LOWER && s >= beta) || (e.bound == BOUND_UPPER && s <= alpha))
             {
+                self.stats.tt_cutoffs += 1;
                 return s;
             }
         }

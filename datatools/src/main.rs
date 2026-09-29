@@ -43,7 +43,9 @@ usage:
       --activation A       screlu (default) or crelu
       --qa N --qb N --scale N   quantisation (defaults 255, 64, 400)
       --description TEXT   training run, data and settings
-  datatools net-info <file.nnue> ...          show a network's header";
+  datatools net-info <file.nnue> ...          show a network's header
+  datatools fens <count> <seed> <file.vf> ... sample undecided positions across game phases
+                                              and search-stressing kinds (for the bench set)";
 
 fn main() {
     attacks::init();
@@ -54,6 +56,7 @@ fn main() {
         Some("stats") if args.len() >= 3 => cmd_stats(&args[2..]),
         Some("net") if args.len() >= 5 => cmd_net(&args[2], &args[3], &args[4], &args[5..]),
         Some("net-info") if args.len() >= 3 => cmd_net_info(&args[2..]),
+        Some("fens") if args.len() >= 5 => cmd_fens(&args[2], &args[3], &args[4..]),
         _ => Err(USAGE.to_string()),
     };
     if let Err(e) = result {
@@ -294,4 +297,88 @@ fn sha256_prefix(data: &[u8]) -> String {
         }
     }
     format!("{:08X}", h[0])
+}
+
+/// Sampling categories for `fens`: four game phases by piece count, plus
+/// positions that stress particular parts of the search.
+const FEN_CATEGORIES: [(&str, usize); 7] = [
+    ("opening (26-32 pieces)", 8),
+    ("middlegame (16-25)", 12),
+    ("endgame (8-15)", 10),
+    ("late endgame (3-7)", 6),
+    ("tactical (5+ legal captures)", 6),
+    ("closed (3+ blocked pawn pairs)", 5),
+    ("pawn endgame", 3),
+];
+
+/// Picks the category for a position, most specific first.
+fn fen_category(pos: &crate::position::Position) -> usize {
+    use crate::position::*;
+    let pawns = pos.pieces[PAWN];
+    let kings = pos.pieces[KING];
+    if pos.occ() == pawns | kings && pawns.count_ones() >= 2 {
+        return 6;
+    }
+    let (wp, bp) = (pawns & pos.colors[WHITE], pawns & pos.colors[BLACK]);
+    if ((wp << 8) & bp).count_ones() >= 3 {
+        return 5;
+    }
+    let mut list = MoveList::new();
+    pos.gen_moves(&mut list, true);
+    let captures = (0..list.len).filter(|&k| is_capture(list.moves[k]) && { let mut c = *pos; c.make_move(list.moves[k]) }).count();
+    if captures >= 5 {
+        return 4;
+    }
+    match pos.occ().count_ones() {
+        26.. => 0,
+        16..=25 => 1,
+        8..=15 => 2,
+        _ => 3,
+    }
+}
+
+/// Samples bench-style positions: past the first 16 plies, not in check, with a
+/// real score and not decided (|score| <= 400), in the quotas of FEN_CATEGORIES
+/// (scaled to `count`). Deterministic for a given seed (reservoir sampling).
+fn cmd_fens(count: &str, seed: &str, inputs: &[String]) -> Result<(), String> {
+    let count: usize = count.parse().map_err(|_| format!("bad count {}", count))?;
+    let mut rng: u64 = seed.parse::<u64>().map_err(|_| format!("bad seed {}", seed))? | 1;
+    let mut next = move || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng
+    };
+    let total: usize = FEN_CATEGORIES.iter().map(|c| c.1).sum();
+    let quota: Vec<usize> = FEN_CATEGORIES.iter().map(|c| (c.1 * count).div_ceil(total)).collect();
+    let mut picks: Vec<Vec<String>> = vec![Vec::new(); FEN_CATEGORIES.len()];
+    let mut seen = vec![0u64; FEN_CATEGORIES.len()];
+    for input in inputs {
+        let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
+        viri::for_each_position(&data, |pos, _m, score, _wdl| {
+            let ply = 2 * (pos.fullmove as u32 - 1) + pos.stm as u32;
+            if ply < 16 || pos.checkers != 0 || score == viri::NO_SCORE || score.unsigned_abs() > 400 {
+                return;
+            }
+            let c = fen_category(pos);
+            seen[c] += 1;
+            if picks[c].len() < quota[c] {
+                picks[c].push(pos.to_fen());
+            } else {
+                let j = (next() % seen[c]) as usize;
+                if j < quota[c] {
+                    picks[c][j] = pos.to_fen();
+                }
+            }
+        })
+        .map_err(|e| format!("{}: {}", input, e))?;
+    }
+    for (c, list) in picks.iter().enumerate() {
+        eprintln!("{}: {} candidates, {} picked", FEN_CATEGORIES[c].0, seen[c], list.len());
+        println!("// {}", FEN_CATEGORIES[c].0);
+        for fen in list {
+            println!("{}", fen);
+        }
+    }
+    Ok(())
 }
