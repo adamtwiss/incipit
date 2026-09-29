@@ -1,0 +1,20 @@
+[package]
+name = "incipit"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"  
+
+[[bin]]
+name = "incipit"
+path = "src/main.rs"
+
+[features]
+# bootstrap build using the hand-crafted material+mobility eval instead of the NNUE
+hce = []
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
