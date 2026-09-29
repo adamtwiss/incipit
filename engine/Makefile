@@ -41,10 +41,12 @@ export RUSTFLAGS := -Ctarget-cpu=native
 
 # Default: build with the embedded NNUE net (downloads from net.txt if needed)
 rule: check-rust net
-	EVALFILE=$(abspath $(EVALFILE)) cargo rustc --release -- --emit link=$(NAME)
+	EVALFILE=$(abspath $(EVALFILE)) cargo rustc --release$(if $(TUNE), --features tune) -- --emit link=$(NAME)
 
-# OpenBench build. SPSA-tunable UCI options are enabled at runtime by the
-# OPUS_TUNE environment variable, so no special build feature is needed.
+# OpenBench build — enables the `tune` feature so the SPSA tunable UCI options are
+# advertised (required for OpenBench SPSA to setoption them). Normal `make` keeps
+# them hidden. Point OpenBench's Incipit build command at `make openbench`.
+openbench: TUNE := 1
 openbench: rule
 
 # PGO build (profile-guided optimization), profiled with `bench`.

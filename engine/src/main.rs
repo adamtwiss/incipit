@@ -171,7 +171,17 @@ fn main() {
     nnue::init();
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 2 {
+        // OpenBench runs `./incipit "genfens N seed S book B EXTRA" quit`.
+        let toks: Vec<&str> = args[1].split_whitespace().collect();
+        if toks.first() == Some(&"genfens") {
+            datagen::genfens(&toks);
+            return;
+        }
         match args[1].as_str() {
+            "tune-spec" => {
+                params::print_spec();
+                return;
+            }
             "perftsuite" => {
                 perft_suite(&args[2], args.get(3).and_then(|s| s.parse().ok()).unwrap_or(5));
                 return;
@@ -279,7 +289,7 @@ fn main() {
                 println!("option name Hash type spin default 16 min 1 max 65536");
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
-                if std::env::var("OPUS_TUNE").is_ok() {
+                if cfg!(feature = "tune") {
                     params::print_options();
                 }
                 println!("uciok");
@@ -325,6 +335,8 @@ fn main() {
                 searching.store(false, Ordering::SeqCst);
             }
             "d" => println!("{}", uci.pos.to_fen()),
+            "genfens" => datagen::genfens(&toks),
+            "tune-spec" => params::print_spec(),
             "quit" => break,
             _ => {}
         }

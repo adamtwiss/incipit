@@ -185,3 +185,98 @@ pub fn run(threads: usize, prefix: &str, nodes: u64, seconds: u64) {
     }
     println!("done games {} positions {}", total_games.load(Ordering::Relaxed), total_pos.load(Ordering::Relaxed));
 }
+
+/// OpenBench datagen openings:
+///   genfens <N> seed <S> book <None|path.epd> [moves <K>] [nodes <K>] [maxeval <cp>]
+/// Prints N lines `info string genfens <FEN>`, a deterministic function of the arguments.
+/// Each opening is a book line (or the start position) plus `moves` or `moves + 1` random
+/// plies (default 8 without a book, 2 with one). Positions in check, with no legal moves,
+/// repeated within the run, or scoring beyond `maxeval` in a `nodes`-limited search are
+/// rejected. Unrecognised arguments are ignored.
+pub fn genfens(toks: &[&str]) {
+    let n: usize = toks.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let mut seed = 0u64;
+    let mut book_path: Option<&str> = None;
+    let mut moves: Option<usize> = None;
+    let mut nodes = 5000u64;
+    let mut maxeval = 500i32;
+    let mut i = 2;
+    while i < toks.len() {
+        let v = toks.get(i + 1).copied().unwrap_or("");
+        let used = match toks[i] {
+            "seed" => v.parse().map(|x| seed = x).is_ok(),
+            "book" => {
+                book_path = if v == "None" { None } else { Some(v) };
+                !v.is_empty()
+            }
+            "moves" => v.parse().map(|x| moves = Some(x)).is_ok(),
+            "nodes" => v.parse().map(|x: u64| nodes = x.max(1)).is_ok(),
+            "maxeval" => v.parse().map(|x| maxeval = x).is_ok(),
+            _ => false,
+        };
+        i += if used { 2 } else { 1 };
+    }
+
+    let book: Vec<Position> = match book_path {
+        None => vec![Position::from_fen(START_FEN).unwrap()],
+        Some(path) => {
+            let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
+                eprintln!("genfens: cannot read book {}: {}", path, e);
+                std::process::exit(1);
+            });
+            // EPD: first four fields are the position; any operations after them are ignored.
+            let book: Vec<Position> = text
+                .lines()
+                .filter_map(|l| {
+                    let f: Vec<&str> = l.split_whitespace().take(4).collect();
+                    if f.len() == 4 { Position::from_fen(&f.join(" ")) } else { None }
+                })
+                .collect();
+            if book.is_empty() {
+                eprintln!("genfens: no positions in book {}", path);
+                std::process::exit(1);
+            }
+            book
+        }
+    };
+    let base = moves.unwrap_or(if book_path.is_some() { 2 } else { 8 });
+
+    // splitmix64 so that nearby seeds (1, 2, 3...) give unrelated streams, and never zero.
+    let mut z = seed.wrapping_add(0x9E3779B97F4A7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    let mut rng = Rng((z ^ (z >> 31)) | 1);
+
+    let mut s = Searcher::new(8, Arc::new(AtomicBool::new(false)));
+    s.silent = true;
+    let lim = Limits { soft_ms: None, hard_ms: None, depth: 64, nodes: Some(nodes) };
+    let mut seen = std::collections::HashSet::new();
+    let stdout = std::io::stdout();
+    let mut done = 0;
+    while done < n {
+        let mut pos = book[(rng.next() % book.len() as u64) as usize];
+        let nrand = base + (rng.next() % 2) as usize;
+        let mut ok = true;
+        for _ in 0..nrand {
+            let mv = legal_moves(&pos);
+            if mv.is_empty() {
+                ok = false;
+                break;
+            }
+            pos.make_move(mv[(rng.next() % mv.len() as u64) as usize]);
+        }
+        if !ok || pos.checkers != 0 || legal_moves(&pos).is_empty() || !seen.insert(pos.hash) {
+            continue;
+        }
+        s.clear();
+        s.hash_hist.clear();
+        let (_, sc) = s.search(&pos, &lim);
+        if sc.abs() > maxeval {
+            continue;
+        }
+        let mut out = stdout.lock();
+        let _ = writeln!(out, "info string genfens {}", pos.to_fen());
+        let _ = out.flush();
+        done += 1;
+    }
+}

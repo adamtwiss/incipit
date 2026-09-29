@@ -11,6 +11,8 @@ path = "src/main.rs"
 [features]
 # bootstrap build using the hand-crafted material+mobility eval instead of the NNUE
 hce = []
+# advertise the SPSA tunables as UCI options (used by `make openbench`)
+tune = []
 
 [profile.release]
 opt-level = 3
