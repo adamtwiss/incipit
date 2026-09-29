@@ -1,3 +1,5 @@
+use std::ptr::{addr_of, addr_of_mut};
+
 // Tunable search parameters (exposed as UCI options for SPSA tuning).
 pub struct Param {
     pub name: &'static str,
@@ -52,7 +54,7 @@ pub fn tp(p: P) -> i32 {
 
 pub fn set(name: &str, v: i32) -> bool {
     unsafe {
-        for p in PARAMS.iter_mut() {
+        for p in (*addr_of_mut!(PARAMS)).iter_mut() {
             if p.name.eq_ignore_ascii_case(name) {
                 p.val = v.clamp(p.min, p.max);
                 return true;
@@ -64,7 +66,7 @@ pub fn set(name: &str, v: i32) -> bool {
 
 pub fn print_options() {
     unsafe {
-        for p in PARAMS.iter() {
+        for p in (*addr_of!(PARAMS)).iter() {
             println!("option name {} type spin default {} min {} max {}", p.name, p.val, p.min, p.max);
         }
     }

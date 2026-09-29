@@ -41,6 +41,7 @@ pub fn mto(m: Move) -> usize {
 pub fn mflag(m: Move) -> u16 {
     m >> 12
 }
+#[allow(dead_code)]
 #[inline(always)]
 pub fn is_capture(m: Move) -> bool {
     mflag(m) & 4 != 0

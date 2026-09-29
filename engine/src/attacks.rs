@@ -1,5 +1,6 @@
 // Attack tables: leapers + PEXT-indexed sliders, zobrist keys.
 use std::arch::x86_64::{_pdep_u64, _pext_u64};
+use std::ptr::addr_of;
 
 pub static mut KNIGHT: [u64; 64] = [0; 64];
 pub static mut KING: [u64; 64] = [0; 64];
@@ -161,11 +162,11 @@ pub fn init() {
 
 #[inline(always)]
 pub fn rook_attacks(sq: usize, occ: u64) -> u64 {
-    unsafe { *SLIDE.get_unchecked(R_OFF[sq] + _pext_u64(occ, R_MASK[sq]) as usize) }
+    unsafe { *addr_of!(SLIDE).cast::<u64>().add(R_OFF[sq] + _pext_u64(occ, R_MASK[sq]) as usize) }
 }
 #[inline(always)]
 pub fn bishop_attacks(sq: usize, occ: u64) -> u64 {
-    unsafe { *SLIDE.get_unchecked(B_OFF[sq] + _pext_u64(occ, B_MASK[sq]) as usize) }
+    unsafe { *addr_of!(SLIDE).cast::<u64>().add(B_OFF[sq] + _pext_u64(occ, B_MASK[sq]) as usize) }
 }
 #[inline(always)]
 pub fn knight_attacks(sq: usize) -> u64 {
@@ -179,10 +180,12 @@ pub fn king_attacks(sq: usize) -> u64 {
 pub fn pawn_attacks(c: usize, sq: usize) -> u64 {
     unsafe { PAWN_ATT[c][sq] }
 }
+#[allow(dead_code)]
 #[inline(always)]
 pub fn between(a: usize, b: usize) -> u64 {
     unsafe { BETWEEN[a][b] }
 }
+#[allow(dead_code)]
 #[inline(always)]
 pub fn line(a: usize, b: usize) -> u64 {
     unsafe { LINE[a][b] }

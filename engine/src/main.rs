@@ -81,14 +81,13 @@ struct Uci {
 
 impl Uci {
     fn set_position(&mut self, toks: &[&str]) {
-        let mut i = 1;
+        // Index of the first token after "startpos" / "fen".
+        let mut i = 2;
         let mut pos;
         if toks.get(1) == Some(&"startpos") {
             pos = Position::from_fen(START_FEN).unwrap();
-            i = 2;
         } else if toks.get(1) == Some(&"fen") {
             let mut fen = String::new();
-            i = 2;
             while i < toks.len() && toks[i] != "moves" {
                 fen.push_str(toks[i]);
                 fen.push(' ');
