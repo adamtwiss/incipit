@@ -100,7 +100,7 @@ impl Searcher {
         let mut lmr = Box::new([[0i32; 64]; 64]);
         for d in 1..64 {
             for m in 1..64 {
-                lmr[d][m] = (tp(P::LmrBase) as f64 / 100.0 + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDiv) as f64 / 100.0)) as i32;
+                lmr[d][m] = (tp(P::LmrBaseX100) as f64 / 100.0 + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDivX100) as f64 / 100.0)) as i32;
             }
         }
         Searcher {
@@ -135,7 +135,7 @@ impl Searcher {
     pub fn init_lmr(&mut self) {
         for d in 1..64 {
             for m in 1..64 {
-                self.lmr[d][m] = (tp(P::LmrBase) as f64 / 100.0 + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDiv) as f64 / 100.0)) as i32;
+                self.lmr[d][m] = (tp(P::LmrBaseX100) as f64 / 100.0 + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDivX100) as f64 / 100.0)) as i32;
             }
         }
     }

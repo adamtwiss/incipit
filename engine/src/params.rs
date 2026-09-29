@@ -31,8 +31,8 @@ params! {
     HistPrune = "HistPrune", 2269, 500, 5000, 225;
     SeeQuiet = "SeeQuiet", 25, 10, 80, 4;
     SeeNoisy = "SeeNoisy", 42, 10, 200, 10;
-    LmrBase = "LmrBase", 60, 30, 130, 5;
-    LmrDiv = "LmrDiv", 246, 150, 350, 10;
+    LmrBaseX100 = "LmrBaseX100", 60, 30, 130, 5;
+    LmrDivX100 = "LmrDivX100", 246, 150, 350, 10;
     LmrHistDiv = "LmrHistDiv", 7888, 3000, 16000, 650;
     AspDelta = "AspDelta", 8, 3, 40, 2;
     QsFut = "QsFut", 294, 50, 500, 23;
