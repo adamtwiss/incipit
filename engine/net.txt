@@ -1,0 +1,1 @@
+https://github.com/adamtwiss/incipit/releases/download/v0.1-nets/net-E4722BA0.nnue

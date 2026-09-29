@@ -35,7 +35,8 @@ fn kinfo(p: usize, ksq: usize) -> (usize, usize) {
 const QA: i32 = 255;
 const QB: i32 = 64;
 
-static NET_BYTES: &[u8] = include_bytes!("../net.nnue");
+// Path chosen by build.rs (EVALFILE, or the net named in net.txt).
+static NET_BYTES: &[u8] = include_bytes!(env!("INCIPIT_NET"));
 
 #[repr(C, align(64))]
 pub struct Network {

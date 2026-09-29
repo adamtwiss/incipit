@@ -4,7 +4,7 @@ Incipit is built with **no knowledge taken directly from other chess engines**. 
 
 ## 1. What you may not consult
 While working on Incipit, do not read or open:
-- **Any other chess engine's source code, commit history, issues, or documentation**, whether on disk, on GitHub, or anywhere on the web. This applies to **every** engine regardless of license, **including other engines by Incipit's author (e.g. Coda, GoChess)**.
+- **Any other chess engine's source code, commit history, issues, or documentation**, whether on disk, on GitHub, or anywhere on the web. This applies to **every** engine regardless of license, **including other engines by Incipit's author (e.g. Coda, GoChess)**. The one exception is build and release tooling (section 2).
 - **Pages/docs describing a specific engine's internals**, even on general sites such as the Chess Programming Wiki.
 - **Another engine's networks, tuned parameters, or training data.**
 - **Another project's agent memory, skills, or project directory** (e.g. Coda's), wherever they are on disk. Incipit agents use only Incipit's own project directory and memory.
@@ -15,6 +15,7 @@ Searching the web for a technique is fine, but don't open results that are an en
 - **General technique descriptions** in the public literature: Chess Programming Wiki (or similar) articles about techniques (not about specific engines), academic papers, textbooks. Small code fragments in them may be read to understand an idea, but **never copied**. Close the source and implement from the idea in Incipit's own structures. If a fragment is attributed to a specific engine, skip it, and don't follow links from technique pages to engine pages.
 - **Chess knowledge and rules:** piece values in the textbook sense (a rook is worth about five pawns), the fifty-move rule, standard chess/opening theory.
 - **Approved tools only.** The approved list will live in a separate private repo for internal design notes, which doesn't exist yet. Until it does, nothing beyond what is already in the repo is approved: ask the human owner before adding any dependency or tool. Some libraries are themselves derived from engine code.
+- **Build and release tooling from the author's other projects** (Makefiles, CI configs, net download/packaging scripts), when the human owner provides it. It carries no engine knowledge. This does not cover anything that encodes search, evaluation, tuning or training choices.
 
 ## 3. Ideas from the human owner
 The human owner may suggest ideas in conversation, **including concepts known from other engines** ("should we consider dropping killer moves — many engines no longer use them"). That is ordinary engine development and is allowed.
