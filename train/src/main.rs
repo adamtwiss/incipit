@@ -1,6 +1,10 @@
 // Trains an Incipit network with Bullet from viriformat data.
 //
-//   incipit-train <data_dir> <net_id> <out_dir> [superbatches] [hidden] [wdl] [mirror|plain|kb8|kb4] [screlu|pairwise]
+//   incipit-train <data_dir> <net_id> <out_dir> [superbatches] [hidden] [wdl] [mirror|plain|kb8|kb4] [screlu|pairwise] [key=value...]
+//   Options (defaults = the recipe before they existed): lr=0.001 (peak LR),
+//   floor=0.00000243 (final LR, 0.001 * 0.3^5), warmup=0 (fraction of the run
+//   spent ramping the LR linearly up from lr/10), skip=0 (probability of
+//   randomly skipping each position), min_ply=16 (drop earlier positions).
 //   incipit-train eval <checkpoint_dir> <hidden> <mirror|plain|kb8|kb4> <screlu|pairwise> <fen>...
 //
 // Reads every .vf file in <data_dir> (symlinks are fine), interleaving them so
@@ -199,6 +203,32 @@ fn parse_inputs(s: &str) -> Inputs {
     }
 }
 
+/// Linear warm-up from peak/10 over the first `warmup` fraction of the run,
+/// then cosine decay from `peak` to `floor` at the last superbatch.
+#[derive(Clone, Debug)]
+struct WarmupCosine {
+    peak: f32,
+    floor: f32,
+    warmup: f32,
+    superbatches: usize,
+    batches_per_superbatch: usize,
+}
+
+impl lr::LrScheduler for WarmupCosine {
+    fn lr(&self, batch: usize, superbatch: usize) -> f32 {
+        let t = ((superbatch - 1) as f32 + batch as f32 / self.batches_per_superbatch as f32) / self.superbatches as f32;
+        if t < self.warmup {
+            return self.peak * (0.1 + 0.9 * t / self.warmup);
+        }
+        let u = if self.warmup < 1.0 { (t - self.warmup) / (1.0 - self.warmup) } else { 1.0 };
+        self.floor + 0.5 * (self.peak - self.floor) * (1.0 + (std::f32::consts::PI * u.min(1.0)).cos())
+    }
+
+    fn colourful(&self) -> String {
+        format!("warmup {:.0}% then cosine {} -> {}", self.warmup * 100.0, self.peak, self.floor)
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
@@ -216,6 +246,15 @@ fn main() {
         });
         return;
     }
+    // key=value options may follow the positional arguments.
+    let opt = |k: &str, d: f32| -> f32 {
+        args.iter()
+            .find_map(|a| a.strip_prefix(k).and_then(|r| r.strip_prefix('=')).map(|v| v.parse().unwrap()))
+            .unwrap_or(d)
+    };
+    let (peak_lr, floor_lr, warmup, skip) = (opt("lr", 0.001), opt("floor", 0.001 * 0.3f32.powi(5)), opt("warmup", 0.0), opt("skip", 0.0));
+    let min_ply = opt("min_ply", 16.0) as u32;
+    let args: Vec<String> = args.iter().filter(|a| !a.contains('=')).cloned().collect();
     let (data_dir, net_id, out_dir) = (&args[1], &args[2], &args[3]);
     let superbatches: usize = args.get(4).map_or(60, |s| s.parse().unwrap());
     let hidden: usize = args.get(5).map_or(512, |s| s.parse().unwrap());
@@ -249,6 +288,7 @@ fn main() {
         superbatches,
         wdl_proportion
     );
+    println!("lr {} -> {}, warmup {}, skip {}, min_ply {}", peak_lr, floor_lr, warmup, skip, min_ply);
 
     let schedule = TrainingSchedule {
         net_id: net_id.clone(),
@@ -260,16 +300,13 @@ fn main() {
             end_superbatch: superbatches,
         },
         wdl_scheduler: wdl::ConstantWDL { value: wdl_proportion },
-        lr_scheduler: lr::CosineDecayLR {
-            initial_lr: 0.001,
-            final_lr: 0.001 * 0.3f32.powi(5),
-            final_superbatch: superbatches,
-        },
+        lr_scheduler: WarmupCosine { peak: peak_lr, floor: floor_lr, warmup, superbatches, batches_per_superbatch: 6104 },
         save_rate: 10,
     };
     let settings = LocalSettings { threads: 8, test_set: None, output_directory: out_dir, batch_queue_size: 64 };
     let paths: Vec<&str> = files.iter().map(String::as_str).collect();
-    let loader = ViriBinpackLoader::new_interleave_multiple(&paths, 1024, 8, ViriFilter::Builtin(Filter::default()));
+    let filter = Filter { min_ply, random_fen_skipping: skip > 0.0, random_fen_skip_probability: skip as f64, ..Filter::default() };
+    let loader = ViriBinpackLoader::new_interleave_multiple(&paths, 1024, 8, ViriFilter::Builtin(filter));
     with_trainer!(inputs, hidden, pairwise, |trainer| {
         trainer.run(&schedule, &settings, &loader);
     });
