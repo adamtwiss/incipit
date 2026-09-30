@@ -29,6 +29,7 @@ static NET_BYTES: &[u8] = include_bytes!(env!("INCIPIT_NET"));
 
 pub struct Network {
     h: usize,
+    nkb: usize, // king buckets
     mirror: bool,
     refresh_on_king_move: bool,
     king_bucket: [u8; 64],
@@ -221,6 +222,7 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         refresh_on_king_move: nkb > 1 || mirror,
         king_bucket,
         screlu: act == ACT_SCRELU,
+        nkb,
         bucket_of: std::array::from_fn(|pieces| (pieces.saturating_sub(2) / 32usize.div_ceil(buckets)).min(buckets - 1) as u8),
         qa,
         qb,
@@ -319,10 +321,41 @@ impl Acc {
     }
 
     /// Compute accumulator of `child` after move m made in parent position `pos`.
+    /// A king move that changes the king's bucket or mirror state rebuilds
+    /// that perspective via `cache`.
     #[inline]
-    pub fn update_from(&mut self, parent: &Acc, pos: &Position, child: &Position, m: Move) {
+    pub fn update_from(&mut self, parent: &Acc, pos: &Position, child: &Position, m: Move, cache: &mut RefreshCache) {
         let n = net();
-        with_h!(n.h, update(self, n, parent, pos, child, m));
+        with_h!(n.h, update(self, n, parent, pos, child, m, cache));
+    }
+}
+
+/// Accumulator refresh cache: for each (perspective, king bucket, mirror
+/// state), an accumulator and the piece bitboards it currently represents.
+/// Rebuilding a perspective after its king changes bucket then only adds and
+/// subtracts the pieces that differ from that entry, instead of every piece.
+pub struct RefreshCache {
+    entries: Vec<CacheEntry>,
+}
+
+#[repr(C, align(64))]
+struct CacheEntry {
+    acc: [i16; MAX_H],
+    bb: [u64; 12], // by piece code
+}
+
+impl RefreshCache {
+    /// A cache for the loaded network: every entry is the bias with no pieces.
+    pub fn new() -> Self {
+        let n = net();
+        let entries = (0..2 * n.nkb * 2)
+            .map(|_| {
+                let mut e = CacheEntry { acc: [0; MAX_H], bb: [0; 12] };
+                e.acc[..n.h].copy_from_slice(&n.ftb);
+                e
+            })
+            .collect();
+        RefreshCache { entries }
     }
 }
 
@@ -340,8 +373,38 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
     }
 }
 
+/// Rebuilds perspective p of `acc` for `pos` through the cache entry for p's
+/// king bucket and mirror state.
 #[inline(never)]
-fn update<const H: usize>(acc: &mut Acc, n: &Network, parent: &Acc, pos: &Position, child: &Position, m: Move) {
+fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Position, cache: &mut RefreshCache) {
+    let h = hidden::<H>(n);
+    let ki = kinfo(n, p, pos.king_sq(p));
+    let idx = (p * n.nkb + ki.0 / 768) * 2 + (ki.1 != 0) as usize;
+    let e = &mut cache.entries[idx];
+    let v = &mut e.acc[..h];
+    for c in 0..2 {
+        for pt in 0..6 {
+            let pc = make_pc(pt, c);
+            let cur = pos.pieces[pt] & pos.colors[c];
+            let old = e.bb[pc as usize];
+            for sq in Bits(cur & !old) {
+                for (x, &w) in v.iter_mut().zip(row(n, feat(p, ki, pc, sq), h)) {
+                    *x = x.wrapping_add(w);
+                }
+            }
+            for sq in Bits(old & !cur) {
+                for (x, &w) in v.iter_mut().zip(row(n, feat(p, ki, pc, sq), h)) {
+                    *x = x.wrapping_sub(w);
+                }
+            }
+            e.bb[pc as usize] = cur;
+        }
+    }
+    acc.side_mut(p, h).copy_from_slice(v);
+}
+
+#[inline(never)]
+fn update<const H: usize>(acc: &mut Acc, n: &Network, parent: &Acc, pos: &Position, child: &Position, m: Move, cache: &mut RefreshCache) {
     let h = hidden::<H>(n);
     let from = mfrom(m);
     let to = mto(m);
@@ -370,7 +433,7 @@ fn update<const H: usize>(acc: &mut Acc, n: &Network, parent: &Acc, pos: &Positi
     for p in 0..2 {
         let ki = kinfo(n, p, pos.king_sq(p));
         if n.refresh_on_king_move && p == us && pc_type(pc) == KING && kinfo(n, p, to) != ki {
-            refresh_persp::<H>(acc, n, p, child);
+            refresh_cached::<H>(acc, n, p, child, cache);
             continue;
         }
         let a0 = row(n, feat(p, ki, adds[0].0, adds[0].1), h);

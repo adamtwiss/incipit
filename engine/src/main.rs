@@ -248,6 +248,7 @@ fn main() {
             "nnuecheck" => {
                 let mut seed = 12345u64;
                 let mut bad = 0;
+                let mut cache = nnue::RefreshCache::new();
                 for _g in 0..200 {
                     let mut pos = Position::from_fen(START_FEN).unwrap();
                     let mut acc = nnue::Acc::new();
@@ -262,7 +263,7 @@ fn main() {
                         let m = legal[(seed % legal.len() as u64) as usize];
                         let mut child = pos; child.make_move(m);
                         let mut a2 = nnue::Acc::new();
-                        a2.update_from(&acc, &pos, &child, m);
+                        a2.update_from(&acc, &pos, &child, m, &mut cache);
                         let mut a3 = nnue::Acc::new();
                         a3.refresh(&child);
                         if a2.v != a3.v { bad += 1; println!("mismatch {} {}", pos.to_fen(), move_str(m)); }
