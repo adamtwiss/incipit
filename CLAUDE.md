@@ -51,3 +51,6 @@ Incipit is tested on an OpenBench (OB) instance shared with other engines, inclu
 ## 8. The language model itself
 
 The models doing this work were trained on public material that almost certainly includes chess engine source code. These rules govern what agents consult while working; they cannot undo what a model learned in training. Don't try to recall another engine's implementation. Build from the technique's description and Incipit's own measurements.
+
+## 9. Log every experiment and model
+Every network training run goes in `models.md`, and every other experiment (search or eval change, SPSA tune, tooling or pipeline test) in `experiments.md`, both in the private `incipit-research` repo. Add one entry per run at the bottom, following the template at the top of each file, including failures and inconclusive results; don't rewrite old entries. A training run goes in `models.md` only, not both.
