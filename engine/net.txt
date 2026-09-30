@@ -1,1 +1,1 @@
-https://github.com/adamtwiss/incipit/releases/download/v0.1-nets/net-F8CA057A.nnue
+https://github.com/adamtwiss/incipit/releases/download/v0.1-nets/net-7F72F973.nnue
