@@ -22,6 +22,7 @@ pub const INPUT_PSQ768: u16 = 1;
 pub const ACT_NONE: u8 = 0;
 pub const ACT_CRELU: u8 = 2;
 pub const ACT_SCRELU: u8 = 3;
+pub const ACT_PAIRWISE: u8 = 4;
 pub const TYPE_I16: u8 = 2;
 pub const TYPE_I32: u8 = 3;
 pub const OUTPUT_MATERIAL: u8 = 1;
@@ -40,6 +41,12 @@ pub struct Arch {
 }
 
 impl Arch {
+    /// Inputs to the output layer: both perspectives' activated FT outputs
+    /// (half as many with pairwise).
+    pub fn out_inputs(&self) -> usize {
+        if self.activation == ACT_PAIRWISE { self.hidden } else { 2 * self.hidden }
+    }
+
     pub fn num_king_buckets(&self) -> usize {
         *self.king_buckets.iter().max().unwrap() as usize + 1
     }
@@ -58,7 +65,7 @@ pub fn write(arch: &Arch, ftw: &[i16], ftb: &[i16], ow: &[i16], ob: &[i32]) -> V
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
     assert_eq!(ftw.len(), nkb * 768 * h);
     assert_eq!(ftb.len(), h);
-    assert_eq!(ow.len(), nb * 2 * h);
+    assert_eq!(ow.len(), nb * arch.out_inputs());
     assert_eq!(ob.len(), nb);
 
     let mut fields = Vec::new();
@@ -79,7 +86,7 @@ pub fn write(arch: &Arch, ftw: &[i16], ftb: &[i16], ow: &[i16], ob: &[i32]) -> V
 
     field(&mut fields, TAG_OUTPUT_BUCKETS, &[OUTPUT_MATERIAL, nb as u8, 0, 0]);
 
-    let mut p = ((2 * h) as u32).to_le_bytes().to_vec();
+    let mut p = (arch.out_inputs() as u32).to_le_bytes().to_vec();
     p.extend_from_slice(&1u32.to_le_bytes());
     p.extend_from_slice(&[ACT_NONE, TYPE_I16, TYPE_I32, 1]);
     field(&mut fields, TAG_LAYER, &p);
@@ -121,7 +128,7 @@ fn i16s(bytes: &[u8]) -> Vec<i16> {
 pub fn convert(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, String> {
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
     let n_ftw = nkb * 768 * h;
-    let n_ow = nb * 2 * h;
+    let n_ow = nb * arch.out_inputs();
     let bias_size = match source {
         "bullet" => 2,
         "raw" => 4,

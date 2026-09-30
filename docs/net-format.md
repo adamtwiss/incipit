@@ -98,7 +98,9 @@ settings that produced the network.
 Codes used above:
 
 * **Activations**: `0` none, `1` ReLU, `2` CReLU (clamp to [0, QA]), `3` SCReLU
-  (clamp to [0, QA], then square).
+  (clamp to [0, QA], then square), `4` pairwise CReLU (feature transformer only:
+  clamp to [0, QA], then multiply the first half of each perspective's outputs
+  elementwise by the second half, giving hidden / 2 values per perspective).
 * **Types**: `1` i8, `2` i16, `3` i32, `4` f32.
 
 ## Weights
@@ -134,5 +136,9 @@ move's accumulator comes first in the output layer's input:
   `eval = (sum / QA + bias) · scale / (QA · QB)`.
 * CReLU: `sum = Σ clamp(a, 0, QA) · w`, then
   `eval = (sum + bias) · scale / (QA · QB)`.
+* Pairwise CReLU: with `c = clamp(a, 0, QA)` and `h` the hidden size,
+  `sum = Σ_{j < h/2} c[j] · c[j + h/2] · w` over both perspectives, then as for
+  SCReLU: `eval = (sum / QA + bias) · scale / (QA · QB)`. The output layer then
+  has `h` inputs (h/2 per perspective) instead of `2h`.
 
 The output bias is at scale `QA · QB`.

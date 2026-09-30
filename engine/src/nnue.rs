@@ -20,6 +20,7 @@ const INPUT_PSQ768: u16 = 1;
 const ACT_NONE: u8 = 0;
 const ACT_CRELU: u8 = 2;
 const ACT_SCRELU: u8 = 3;
+const ACT_PAIRWISE: u8 = 4;
 const TYPE_I16: u8 = 2;
 const TYPE_I32: u8 = 3;
 const OUTPUT_MATERIAL: u8 = 1;
@@ -32,7 +33,8 @@ pub struct Network {
     mirror: bool,
     refresh_on_king_move: bool,
     king_bucket: [u8; 64],
-    screlu: bool,
+    act: u8,
+    out_in: usize, // output layer inputs: 2h, or h with pairwise
     bucket_of: [u8; 33], // output bucket by piece count
     qa: i32,
     qb: i32,
@@ -178,9 +180,14 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     if h == 0 || h > MAX_H || h % 32 != 0 {
         return Err(format!("hidden size {} unsupported (must be a multiple of 32, at most {})", h, MAX_H));
     }
-    if act != ACT_SCRELU && act != ACT_CRELU {
+    if act != ACT_SCRELU && act != ACT_CRELU && act != ACT_PAIRWISE {
         return Err(format!("unsupported feature transformer activation {}", act));
     }
+    // Pairwise halves each perspective; each half must still be a multiple of 32.
+    if act == ACT_PAIRWISE && h % 64 != 0 {
+        return Err(format!("pairwise needs a hidden size that is a multiple of 64, got {}", h));
+    }
+    let out_in = if act == ACT_PAIRWISE { h } else { 2 * h };
     if wt != TYPE_I16 || bt != TYPE_I16 {
         return Err("feature transformer weights and biases must be i16".into());
     }
@@ -191,13 +198,13 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     let &[(lin, lout, lact, lwt, lbt, lflags)] = layers.as_slice() else {
         return Err(format!("{} output layers; only one is supported", layers.len()));
     };
-    if lin != 2 * h || lout != 1 || lact != ACT_NONE || lwt != TYPE_I16 || !(lbt == TYPE_I16 || lbt == TYPE_I32) || lflags & 1 == 0 {
-        return Err("unsupported output layer (need 2H -> 1, no activation, i16 weights, per output bucket)".into());
+    if lin != out_in || lout != 1 || lact != ACT_NONE || lwt != TYPE_I16 || !(lbt == TYPE_I16 || lbt == TYPE_I32) || lflags & 1 == 0 {
+        return Err(format!("unsupported output layer (need {} -> 1, no activation, i16 weights, per output bucket)", out_in));
     }
     let (qa, qb, scale) = quant.ok_or_else(|| missing("QUANTISATION"))?;
 
     let bias_size = if lbt == TYPE_I32 { 4 } else { 2 };
-    let expect = 2 * (nkb * 768 * h + h + buckets * 2 * h) + bias_size * buckets;
+    let expect = 2 * (nkb * 768 * h + h + buckets * out_in) + bias_size * buckets;
     if d.len() - header != expect {
         return Err(format!("weights are {} bytes, but the header describes {}", d.len() - header, expect));
     }
@@ -209,7 +216,7 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     };
     let ftw = i16s(nkb * 768 * h);
     let ftb = i16s(h);
-    let ow = i16s(buckets * 2 * h);
+    let ow = i16s(buckets * out_in);
     let ob = if bias_size == 2 {
         i16s(buckets).iter().map(|&b| i32::from(b)).collect()
     } else {
@@ -220,7 +227,8 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         mirror,
         refresh_on_king_move: nkb > 1 || mirror,
         king_bucket,
-        screlu: act == ACT_SCRELU,
+        act,
+        out_in,
         bucket_of: std::array::from_fn(|pieces| (pieces.saturating_sub(2) / 32usize.div_ceil(buckets)).min(buckets - 1) as u8),
         qa,
         qb,
@@ -426,12 +434,18 @@ fn eval_n<const H: usize>(n: &Network, acc: &Acc, pos: &Position) -> i32 {
     let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
     let us = acc.side(pos.stm, h);
     let them = acc.side(pos.stm ^ 1, h);
-    let w = &n.ow[bucket * 2 * h..(bucket + 1) * 2 * h];
+    let w = &n.ow[bucket * n.out_in..(bucket + 1) * n.out_in];
     // The common quantisation gets constant divisors (cheap multiplies instead
     // of hardware divides); the results are identical.
     let (qa, qb) = if n.qa == 255 && n.qb == 64 { (255, 64) } else { (n.qa, n.qb) };
-    if n.screlu {
-        let sum = unsafe { dot::<true>(us, &w[..h], qa) + dot::<true>(them, &w[h..], qa) };
+    if n.act != ACT_CRELU {
+        // SCReLU and pairwise share the QA^2 scale, so the output formula is the same.
+        let sum = if n.act == ACT_PAIRWISE {
+            let half = h / 2;
+            unsafe { pairwise_dot(us, &w[..half], qa) + pairwise_dot(them, &w[half..h], qa) }
+        } else {
+            unsafe { dot::<true>(us, &w[..h], qa) + dot::<true>(them, &w[h..], qa) }
+        };
         if qa == 255 && qb == 64 {
             (sum / 255 + n.ob[bucket]) * n.scale / (255 * 64)
         } else {
@@ -479,6 +493,33 @@ unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
             s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(c0, w0));
             s1 = _mm256_add_epi32(s1, _mm256_madd_epi16(c1, w1));
         }
+        i += 32;
+    }
+    hsum(_mm256_add_epi32(s0, s1))
+}
+
+/// Pairwise: Σ_{j < h/2} clamp(a[j], 0, qa) · clamp(a[j + h/2], 0, qa) · w[j],
+/// with h = a.len() a multiple of 64 and `a` 64-byte aligned (so both halves are).
+#[inline(always)]
+unsafe fn pairwise_dot(a: &[i16], w: &[i16], qa: i32) -> i32 {
+    use std::arch::x86_64::*;
+    let half = a.len() / 2;
+    let (lo, hi) = (a.as_ptr(), a.as_ptr().add(half));
+    let zero = _mm256_setzero_si256();
+    let qa = _mm256_set1_epi16(qa as i16);
+    let mut s0 = _mm256_setzero_si256();
+    let mut s1 = _mm256_setzero_si256();
+    let mut i = 0;
+    while i < half {
+        let l0 = _mm256_min_epi16(_mm256_max_epi16(_mm256_load_si256(lo.add(i) as *const __m256i), zero), qa);
+        let l1 = _mm256_min_epi16(_mm256_max_epi16(_mm256_load_si256(lo.add(i + 16) as *const __m256i), zero), qa);
+        let h0 = _mm256_min_epi16(_mm256_max_epi16(_mm256_load_si256(hi.add(i) as *const __m256i), zero), qa);
+        let h1 = _mm256_min_epi16(_mm256_max_epi16(_mm256_load_si256(hi.add(i + 16) as *const __m256i), zero), qa);
+        let w0 = _mm256_loadu_si256(w.as_ptr().add(i) as *const __m256i);
+        let w1 = _mm256_loadu_si256(w.as_ptr().add(i + 16) as *const __m256i);
+        // (lo * w) fits i16 as |w| <= 128; madd then multiplies by hi and pairs up into i32.
+        s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(_mm256_mullo_epi16(l0, w0), h0));
+        s1 = _mm256_add_epi32(s1, _mm256_madd_epi16(_mm256_mullo_epi16(l1, w1), h1));
         i += 32;
     }
     hsum(_mm256_add_epi32(s0, s1))
