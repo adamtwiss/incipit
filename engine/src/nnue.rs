@@ -304,13 +304,6 @@ impl Acc {
         unsafe { self.v.get_unchecked_mut(p * h..(p + 1) * h) }
     }
 
-    /// Copies only the part of `other` the loaded network uses.
-    #[inline(always)]
-    pub fn copy_from(&mut self, other: &Acc) {
-        let h2 = 2 * net().h;
-        self.v[..h2].copy_from_slice(&other.v[..h2]);
-    }
-
     pub fn refresh(&mut self, pos: &Position) {
         let n = net();
         for p in 0..2 {
@@ -322,7 +315,97 @@ impl Acc {
     #[inline]
     pub fn update_from(&mut self, parent: &Acc, pos: &Position, child: &Position, m: Move) {
         let n = net();
-        with_h!(n.h, update(self, n, parent, pos, child, m));
+        match Delta::new(pos, m) {
+            Some(d) => with_h!(n.h, apply_delta(self, n, parent, &d)),
+            None => with_h!(n.h, update(self, n, parent, pos, child, m)),
+        }
+    }
+
+    /// This accumulator = `parent`'s with the feature changes `d` applied.
+    #[inline]
+    pub fn apply(&mut self, parent: &Acc, d: &Delta) {
+        let n = net();
+        with_h!(n.h, apply_delta(self, n, parent, d));
+    }
+}
+
+/// The feature changes a move makes (up to two pieces added and two removed),
+/// recorded so the accumulator update can wait until the child is evaluated.
+/// Many children never are (transposition-table cutoffs and the like).
+#[derive(Clone, Copy)]
+pub struct Delta {
+    adds: [(u8, u8); 2], // (piece, square)
+    subs: [(u8, u8); 2],
+    na: u8,
+    ns: u8,
+    ksq: [u8; 2], // both kings' squares, which fix each perspective's bucket
+}
+
+impl Delta {
+    /// No change (a null move): applying it copies the parent.
+    pub const NULL: Delta = Delta { adds: [(0, 0); 2], subs: [(0, 0); 2], na: 0, ns: 0, ksq: [0; 2] };
+
+    /// The changes move `m` makes in `pos`, or None when it moves the king
+    /// across a bucket or mirror boundary, which needs a refresh instead.
+    #[inline]
+    pub fn new(pos: &Position, m: Move) -> Option<Delta> {
+        let n = net();
+        let from = mfrom(m);
+        let to = mto(m);
+        let flag = mflag(m);
+        let pc = pos.board[from];
+        let us = pos.stm;
+        if n.refresh_on_king_move && pc_type(pc) == KING && kinfo(n, us, to) != kinfo(n, us, from) {
+            return None;
+        }
+        let newpc = if flag & 8 != 0 { make_pc(promo_pt(m), us) } else { pc };
+        let mut d = Delta {
+            adds: [(newpc, to as u8), (0, 0)],
+            subs: [(pc, from as u8), (0, 0)],
+            na: 1,
+            ns: 1,
+            ksq: [pos.king_sq(WHITE) as u8, pos.king_sq(BLACK) as u8],
+        };
+        if flag == F_EP {
+            d.subs[1] = (make_pc(PAWN, us ^ 1), (to ^ 8) as u8);
+            d.ns = 2;
+        } else if pos.board[to] != NONE_PC {
+            d.subs[1] = (pos.board[to], to as u8);
+            d.ns = 2;
+        } else if flag == F_KCASTLE {
+            d.subs[1] = (make_pc(ROOK, us), (to + 1) as u8);
+            d.adds[1] = (make_pc(ROOK, us), (to - 1) as u8);
+            d.ns = 2;
+            d.na = 2;
+        } else if flag == F_QCASTLE {
+            d.subs[1] = (make_pc(ROOK, us), (to - 2) as u8);
+            d.adds[1] = (make_pc(ROOK, us), (to + 1) as u8);
+            d.ns = 2;
+            d.na = 2;
+        }
+        Some(d)
+    }
+}
+
+#[inline(never)]
+fn apply_delta<const H: usize>(acc: &mut Acc, n: &Network, parent: &Acc, d: &Delta) {
+    let h = hidden::<H>(n);
+    if d.ns == 0 {
+        acc.v[..2 * h].copy_from_slice(&parent.v[..2 * h]);
+        return;
+    }
+    for p in 0..2 {
+        let ki = kinfo(n, p, d.ksq[p] as usize);
+        let f = |(pc, sq): (u8, u8)| row(n, feat(p, ki, pc, sq as usize), h);
+        let src = parent.side(p, h);
+        let dst = acc.side_mut(p, h);
+        if d.ns == 1 {
+            add_sub(dst, src, [f(d.adds[0])], [f(d.subs[0])]);
+        } else if d.na == 1 {
+            add_sub(dst, src, [f(d.adds[0])], [f(d.subs[0]), f(d.subs[1])]);
+        } else {
+            add_sub(dst, src, [f(d.adds[0]), f(d.adds[1])], [f(d.subs[0]), f(d.subs[1])]);
+        }
     }
 }
 
@@ -443,6 +526,7 @@ fn eval_n<const H: usize>(n: &Network, acc: &Acc, pos: &Position) -> i32 {
     }
 }
 
+#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
 #[inline(always)]
 unsafe fn hsum(s: std::arch::x86_64::__m256i) -> i32 {
     use std::arch::x86_64::*;
@@ -454,8 +538,49 @@ unsafe fn hsum(s: std::arch::x86_64::__m256i) -> i32 {
     _mm_cvtsi128_si32(x)
 }
 
+/// AVX-512 version of `dot` below: 32 values per register, and with VNNI the
+/// multiply-add and accumulate fuse into one instruction.
+#[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
+#[inline(always)]
+unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
+    use std::arch::x86_64::*;
+    #[inline(always)]
+    unsafe fn step<const SCRELU: bool>(s: __m512i, a: *const i16, w: *const i16, qa: __m512i) -> __m512i {
+        let x = _mm512_load_si512(a as *const __m512i);
+        let c = _mm512_min_epi16(_mm512_max_epi16(x, _mm512_setzero_si512()), qa);
+        let w = _mm512_loadu_si512(w as *const __m512i);
+        // SCReLU: (c·w)·c, where c·w fits in i16 because the trainer clips
+        // output weights well below 32768 / qa.
+        let (u, v) = if SCRELU { (_mm512_mullo_epi16(c, w), c) } else { (c, w) };
+        #[cfg(target_feature = "avx512vnni")]
+        {
+            _mm512_dpwssd_epi32(s, u, v)
+        }
+        #[cfg(not(target_feature = "avx512vnni"))]
+        {
+            _mm512_add_epi32(s, _mm512_madd_epi16(u, v))
+        }
+    }
+    let h = a.len();
+    let qa = _mm512_set1_epi16(qa as i16);
+    let (ap, wp) = (a.as_ptr(), w.as_ptr());
+    let mut s0 = _mm512_setzero_si512();
+    let mut s1 = _mm512_setzero_si512();
+    let mut i = 0;
+    while i + 64 <= h {
+        s0 = step::<SCRELU>(s0, ap.add(i), wp.add(i), qa);
+        s1 = step::<SCRELU>(s1, ap.add(i + 32), wp.add(i + 32), qa);
+        i += 64;
+    }
+    if i < h {
+        s0 = step::<SCRELU>(s0, ap.add(i), wp.add(i), qa);
+    }
+    _mm512_reduce_add_epi32(_mm512_add_epi32(s0, s1))
+}
+
 /// SCReLU: Σ clamp(a, 0, qa)² · w; CReLU: Σ clamp(a, 0, qa) · w, over
 /// a.len() values (a multiple of 32). `a` is 64-byte aligned.
+#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
 #[inline(always)]
 unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
     use std::arch::x86_64::*;

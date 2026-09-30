@@ -27,4 +27,23 @@ fn main() {
     }
     println!("cargo:rerun-if-changed={}", net.display());
     println!("cargo:rustc-env=INCIPIT_NET={}", net.display());
+
+    // AVX-512 intrinsics are stable from Rust 1.89. With an older compiler
+    // the AVX2 kernels are used even on AVX-512 hosts.
+    println!("cargo:rustc-check-cfg=cfg(avx512_intrinsics)");
+    if rustc_minor() >= 89 {
+        println!("cargo:rustc-cfg=avx512_intrinsics");
+    }
+}
+
+/// Minor version of the compiler building us ("rustc 1.89.0 ..." -> 89).
+fn rustc_minor() -> u32 {
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    process::Command::new(rustc)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|v| v.split_whitespace().nth(1)?.split('.').nth(1)?.parse().ok())
+        .unwrap_or(0)
 }

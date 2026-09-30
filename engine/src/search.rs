@@ -1,5 +1,5 @@
 // Search: iterative deepening PVS with the usual pruning/reduction heuristics.
-use crate::nnue::{self, Acc};
+use crate::nnue::{self, Acc, Delta};
 use crate::params::{tp, P};
 use crate::position::*;
 use crate::tt::*;
@@ -157,6 +157,10 @@ pub struct Searcher {
     pub silent: bool,
     root_node_counts: Box<[[u64; 64]; 64]>,
     acc: Vec<Acc>,
+    // Lazy accumulator updates: acc[ply] is up to date only when fresh[ply];
+    // otherwise it is acc[ply - 1] with delta[ply] applied, computed on demand.
+    delta: Vec<Delta>,
+    fresh: Vec<bool>,
     corr: Box<[[i32; CORR_SIZE]; 2]>,
     corr_np: Box<[[[i32; CORR_SIZE]; 2]; 2]>,
     pub stats: Stats,
@@ -234,6 +238,8 @@ impl Searcher {
             corr: vec![[0i32; CORR_SIZE]; 2].into_boxed_slice().try_into().unwrap(),
             stats: Stats::default(),
             acc: vec![Acc::new(); MAX_PLY + 8],
+            delta: vec![Delta::NULL; MAX_PLY + 8],
+            fresh: vec![false; MAX_PLY + 8],
         }
     }
 
@@ -294,15 +300,46 @@ impl Searcher {
         if cfg!(feature = "hce") {
             return; // bootstrap build: no NNUE, skip accumulator updates
         }
-        let (a, b) = self.acc.split_at_mut(ply + 1);
-        b[0].update_from(&a[ply], pos, child, m);
+        match Delta::new(pos, m) {
+            Some(d) => {
+                self.delta[ply + 1] = d;
+                self.fresh[ply + 1] = false;
+            }
+            None => {
+                // A king move that needs a refresh: do it now, from an
+                // up-to-date parent.
+                self.materialise(ply);
+                let (a, b) = self.acc.split_at_mut(ply + 1);
+                b[0].update_from(&a[ply], pos, child, m);
+                self.fresh[ply + 1] = true;
+            }
+        }
+    }
+
+    /// Brings acc[ply] up to date by applying the pending deltas from the
+    /// nearest up-to-date ancestor (the root always is).
+    #[inline(always)]
+    fn materialise(&mut self, ply: usize) {
+        if self.fresh[ply] {
+            return;
+        }
+        let mut k = ply;
+        while !self.fresh[k] {
+            k -= 1;
+        }
+        for j in k + 1..=ply {
+            let (a, b) = self.acc.split_at_mut(j);
+            b[0].apply(&a[j - 1], &self.delta[j]);
+            self.fresh[j] = true;
+        }
     }
 
     #[inline(always)]
-    fn evaluate(&self, pos: &Position, ply: usize) -> i32 {
+    fn evaluate(&mut self, pos: &Position, ply: usize) -> i32 {
         let e = if cfg!(feature = "hce") {
             crate::eval::evaluate(pos)
         } else {
+            self.materialise(ply);
             nnue::evaluate(&self.acc[ply], pos)
         };
         (e * (200 - pos.halfmove as i32) / 200).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
@@ -351,6 +388,7 @@ impl Searcher {
         self.root_best = 0;
         self.seldepth = 0;
         self.acc[0].refresh(root);
+        self.fresh[0] = true;
         for r in self.root_node_counts.iter_mut() {
             *r = [0; 64];
         }
@@ -627,8 +665,8 @@ impl Searcher {
                 let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(3);
                 let mut child = *pos;
                 child.make_null();
-                let (a, b) = self.acc.split_at_mut(ply + 1);
-                b[0].copy_from(&a[ply]);
+                self.delta[ply + 1] = Delta::NULL;
+                self.fresh[ply + 1] = false;
                 self.stack[ply].mv = 0;
                 self.stack[ply].cont_idx = 0;
                 self.hash_hist.push(pos.hash);
