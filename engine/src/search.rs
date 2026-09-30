@@ -157,6 +157,7 @@ pub struct Searcher {
     pub silent: bool,
     root_node_counts: Box<[[u64; 64]; 64]>,
     acc: Vec<Acc>,
+    refresh_cache: nnue::RefreshCache,
     corr: Box<[[i32; CORR_SIZE]; 2]>,
     corr_np: Box<[[[i32; CORR_SIZE]; 2]; 2]>,
     pub stats: Stats,
@@ -234,6 +235,7 @@ impl Searcher {
             corr: vec![[0i32; CORR_SIZE]; 2].into_boxed_slice().try_into().unwrap(),
             stats: Stats::default(),
             acc: vec![Acc::new(); MAX_PLY + 8],
+            refresh_cache: nnue::RefreshCache::new(),
         }
     }
 
@@ -295,7 +297,7 @@ impl Searcher {
             return; // bootstrap build: no NNUE, skip accumulator updates
         }
         let (a, b) = self.acc.split_at_mut(ply + 1);
-        b[0].update_from(&a[ply], pos, child, m);
+        b[0].update_from(&a[ply], pos, child, m, &mut self.refresh_cache);
     }
 
     #[inline(always)]
