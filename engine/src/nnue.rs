@@ -33,8 +33,6 @@ pub struct Network {
     mirror: bool,
     refresh_on_king_move: bool,
     king_bucket: [u8; 64],
-    act: u8,
-    out_in: usize, // output layer inputs: 2h, or h with pairwise
     bucket_of: [u8; 33], // output bucket by piece count
     qa: i32,
     qb: i32,
@@ -43,7 +41,10 @@ pub struct Network {
     ftb: Aligned, // [h]
     ow: Aligned,  // [output bucket][2h], side to move first
     ob: Vec<i32>,  // [output bucket]
+    eval: EvalFn,  // chosen at load for this hidden size and activation
 }
+
+type EvalFn = fn(&Network, &Acc, &Position) -> i32;
 
 /// Both perspectives' accumulators, packed: white's at [0, h), black's at
 /// [h, 2h), so the part in use is contiguous whatever the network's size.
@@ -227,8 +228,7 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         mirror,
         refresh_on_king_move: nkb > 1 || mirror,
         king_bucket,
-        act,
-        out_in,
+        eval: select_eval(h, act),
         bucket_of: std::array::from_fn(|pieces| (pieces.saturating_sub(2) / 32usize.div_ceil(buckets)).min(buckets - 1) as u8),
         qa,
         qb,
@@ -425,35 +425,58 @@ fn add_sub<const NA: usize, const NS: usize>(dst: &mut [i16], src: &[i16], adds:
 #[inline]
 pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
     let n = net();
-    with_h!(n.h, eval_n(n, acc, pos))
+    (n.eval)(n, acc, pos)
 }
 
-#[inline(never)]
-fn eval_n<const H: usize>(n: &Network, acc: &Acc, pos: &Position) -> i32 {
+/// Picks the eval specialised for this hidden size (a constant for common
+/// sizes, 0 = runtime) and activation, so evaluate() itself has no branches.
+fn select_eval(h: usize, act: u8) -> EvalFn {
+    macro_rules! for_act {
+        ($h:literal) => {
+            match act {
+                ACT_PAIRWISE => eval_n::<$h, ACT_PAIRWISE> as EvalFn,
+                ACT_CRELU => eval_n::<$h, ACT_CRELU> as EvalFn,
+                _ => eval_n::<$h, ACT_SCRELU> as EvalFn,
+            }
+        };
+    }
+    match h {
+        128 => for_act!(128),
+        256 => for_act!(256),
+        512 => for_act!(512),
+        768 => for_act!(768),
+        1024 => for_act!(1024),
+        1536 => for_act!(1536),
+        2048 => for_act!(2048),
+        _ => for_act!(0),
+    }
+}
+
+fn eval_n<const H: usize, const ACT: u8>(n: &Network, acc: &Acc, pos: &Position) -> i32 {
     let h = hidden::<H>(n);
+    let out_in = if ACT == ACT_PAIRWISE { h } else { 2 * h };
     let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
     let us = acc.side(pos.stm, h);
     let them = acc.side(pos.stm ^ 1, h);
-    let w = &n.ow[bucket * n.out_in..(bucket + 1) * n.out_in];
+    let w = &n.ow[bucket * out_in..(bucket + 1) * out_in];
     // The common quantisation gets constant divisors (cheap multiplies instead
     // of hardware divides); the results are identical.
     let (qa, qb) = if n.qa == 255 && n.qb == 64 { (255, 64) } else { (n.qa, n.qb) };
-    if n.act != ACT_CRELU {
-        // SCReLU and pairwise share the QA^2 scale, so the output formula is the same.
-        let sum = if n.act == ACT_PAIRWISE {
-            let half = h / 2;
-            unsafe { pairwise_dot(us, &w[..half], qa) + pairwise_dot(them, &w[half..h], qa) }
-        } else {
-            unsafe { dot::<true>(us, &w[..h], qa) + dot::<true>(them, &w[h..], qa) }
-        };
-        if qa == 255 && qb == 64 {
-            (sum / 255 + n.ob[bucket]) * n.scale / (255 * 64)
-        } else {
-            (sum / qa + n.ob[bucket]) * n.scale / (qa * qb)
-        }
-    } else {
+    if ACT == ACT_CRELU {
         let sum = unsafe { dot::<false>(us, &w[..h], qa) + dot::<false>(them, &w[h..], qa) };
-        (sum + n.ob[bucket]) * n.scale / (qa * qb)
+        return (sum + n.ob[bucket]) * n.scale / (qa * qb);
+    }
+    // SCReLU and pairwise share the QA^2 scale, so the output formula is the same.
+    let sum = if ACT == ACT_PAIRWISE {
+        let half = h / 2;
+        unsafe { pairwise_dot(us, &w[..half], qa) + pairwise_dot(them, &w[half..h], qa) }
+    } else {
+        unsafe { dot::<true>(us, &w[..h], qa) + dot::<true>(them, &w[h..], qa) }
+    };
+    if qa == 255 && qb == 64 {
+        (sum / 255 + n.ob[bucket]) * n.scale / (255 * 64)
+    } else {
+        (sum / qa + n.ob[bucket]) * n.scale / (qa * qb)
     }
 }
 
