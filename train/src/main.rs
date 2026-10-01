@@ -4,7 +4,8 @@
 //   Options (defaults = the recipe before they existed): lr=0.001 (peak LR),
 //   floor=0.00000243 (final LR, 0.001 * 0.3^5), warmup=0 (fraction of the run
 //   spent ramping the LR linearly up from lr/10), skip=0 (probability of
-//   randomly skipping each position), min_ply=16 (drop earlier positions).
+//   randomly skipping each position), min_ply=16 (drop earlier positions),
+//   l1=0 (neurons in one hidden layer after the FT; kb4 SCReLU nets only).
 //   incipit-train eval <checkpoint_dir> <hidden> <mirror|plain|kb8|kb4> <screlu|pairwise> <fen>...
 //
 // Reads every .vf file in <data_dir> (symlinks are fine), interleaving them so
@@ -153,6 +154,53 @@ macro_rules! build_kb {
     }};
 }
 
+/// King-bucketed FT with one hidden layer: FT (SCReLU) x 2 -> L1 neurons
+/// (per output bucket, SCReLU) -> 8 material output buckets. Saved for the
+/// engine's integer path: FT as now (i16, x255), L1 weights i8 at x64 (the
+/// default +-1.98 clip keeps them within i8), L1 biases and the final layer f32.
+macro_rules! build_kb_l1 {
+    ($layout:expr, $nb:expr, $hidden:expr, $l1:expr) => {{
+        let hidden: usize = $hidden;
+        let l1n: usize = $l1;
+        const NB: usize = $nb;
+        let mut trainer = ValueTrainerBuilder::default()
+            .dual_perspective()
+            .optimiser(AdamW)
+            .inputs(ChessBucketsMirrored::new($layout))
+            .output_buckets(MaterialCount::<OUTPUT_BUCKETS>)
+            .save_format(&[
+                SavedFormat::id("l0w")
+                    .transform(|store, weights| {
+                        let factoriser = store.get("l0f").values.f32().repeat(NB);
+                        weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
+                    })
+                    .round()
+                    .quantise::<i16>(255),
+                SavedFormat::id("l0b").round().quantise::<i16>(255),
+                SavedFormat::id("l1w").round().quantise::<i8>(64).transpose(),
+                SavedFormat::id("l1b"),
+                SavedFormat::id("l2w").transpose(),
+                SavedFormat::id("l2b"),
+            ])
+            .loss_fn(|output, target| output.sigmoid().squared_error(target))
+            .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
+                let l0f = builder.new_weights("l0f", Shape::new(hidden, 768), InitSettings::Zeroed);
+                let mut l0 = builder.new_affine("l0", 768 * NB, hidden);
+                l0.weights = l0.weights + l0f.repeat(NB);
+                let l1 = builder.new_affine("l1", 2 * hidden, OUTPUT_BUCKETS * l1n);
+                let l2 = builder.new_affine("l2", l1n, OUTPUT_BUCKETS);
+                let stm = l0.forward(stm_inputs).screlu();
+                let ntm = l0.forward(ntm_inputs).screlu();
+                let h = l1.forward(stm.concat(ntm)).select(output_buckets).screlu();
+                l2.forward(h).select(output_buckets)
+            });
+        let clip = AdamWParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
+        trainer.optimiser.set_params_for_weight("l0w", clip);
+        trainer.optimiser.set_params_for_weight("l0f", clip);
+        trainer
+    }};
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Inputs {
     Plain,
@@ -238,6 +286,17 @@ fn main() {
     }
     if args[1] == "eval" {
         let hidden: usize = args[3].parse().unwrap();
+        let l1n: usize = args.iter().find_map(|a| a.strip_prefix("l1=").map(|v| v.parse().unwrap())).unwrap_or(0);
+        let args: Vec<String> = args.iter().filter(|a| !a.starts_with("l1=")).cloned().collect();
+        if l1n > 0 {
+            assert!(parse_inputs(&args[4]) == Inputs::Kb4, "l1= needs kb4 inputs");
+            let mut trainer = build_kb_l1!(KB4, KB4_BUCKETS, hidden, l1n);
+            trainer.load_from_checkpoint(&args[2]);
+            for fen in &args[6..] {
+                println!("{:.1}\t{}", trainer.eval(fen) * 400.0, fen);
+            }
+            return;
+        }
         with_trainer!(parse_inputs(&args[4]), hidden, parse_activation(&args[5]), |trainer| {
             trainer.load_from_checkpoint(&args[2]);
             for fen in &args[6..] {
@@ -254,6 +313,8 @@ fn main() {
     };
     let (peak_lr, floor_lr, warmup, skip) = (opt("lr", 0.001), opt("floor", 0.001 * 0.3f32.powi(5)), opt("warmup", 0.0), opt("skip", 0.0));
     let min_ply = opt("min_ply", 16.0) as u32;
+    // One hidden layer of this many neurons after the FT (0 = none; kb4 only).
+    let l1n = opt("l1", 0.0) as usize;
     let args: Vec<String> = args.iter().filter(|a| !a.contains('=')).cloned().collect();
     let (data_dir, net_id, out_dir) = (&args[1], &args[2], &args[3]);
     let superbatches: usize = args.get(4).map_or(60, |s| s.parse().unwrap());
@@ -288,7 +349,7 @@ fn main() {
         superbatches,
         wdl_proportion
     );
-    println!("lr {} -> {}, warmup {}, skip {}, min_ply {}", peak_lr, floor_lr, warmup, skip, min_ply);
+    println!("lr {} -> {}, warmup {}, skip {}, min_ply {}, hidden layer {}", peak_lr, floor_lr, warmup, skip, min_ply, l1n);
 
     let schedule = TrainingSchedule {
         net_id: net_id.clone(),
@@ -307,6 +368,12 @@ fn main() {
     let paths: Vec<&str> = files.iter().map(String::as_str).collect();
     let filter = Filter { min_ply, random_fen_skipping: skip > 0.0, random_fen_skip_probability: skip as f64, ..Filter::default() };
     let loader = ViriBinpackLoader::new_interleave_multiple(&paths, 1024, 8, ViriFilter::Builtin(filter));
+    if l1n > 0 {
+        assert!(inputs == Inputs::Kb4 && !pairwise, "l1= is only implemented for kb4 SCReLU nets");
+        let mut trainer = build_kb_l1!(KB4, KB4_BUCKETS, hidden, l1n);
+        trainer.run(&schedule, &settings, &loader);
+        return;
+    }
     with_trainer!(inputs, hidden, pairwise, |trainer| {
         trainer.run(&schedule, &settings, &loader);
     });
