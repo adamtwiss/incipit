@@ -667,19 +667,192 @@ fn eval_hidden<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Positi
     (out * n.scale as f32) as i32
 }
 
-/// clamp(a, 0, qa)^2 >> shift as u8 (load() checks it fits 0..127).
+/// clamp(a, 0, qa)^2 >> shift as u8 (load() checks it fits 0..127). The
+/// usual QA 255 / shift 9 has SIMD versions; a.len() is a multiple of 32.
 #[inline(always)]
 fn to_u8(a: &[i16], x: &mut [u8], qa: i32, shift: u32) {
+    if qa == 255 && shift == 9 {
+        unsafe { to_u8_255_9(a, x) }
+    } else {
+        to_u8_scalar(a, x, qa, shift)
+    }
+}
+
+fn to_u8_scalar(a: &[i16], x: &mut [u8], qa: i32, shift: u32) {
     for (o, &v) in x.iter_mut().zip(a) {
         let c = (v as i32).clamp(0, qa);
         *o = ((c * c) >> shift) as u8;
     }
 }
 
+/// QA 255, shift 9: (c * c) >> 9 = mulhi_u16(c << 7, c) (c << 7 fits u16).
+#[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
+#[inline(always)]
+unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
+    use std::arch::x86_64::*;
+    let zero = _mm512_setzero_si512();
+    let qa = _mm512_set1_epi16(255);
+    // packus works within 128-bit lanes; this puts the 64-bit pieces back in order.
+    let order = _mm512_set_epi64(7, 5, 3, 1, 6, 4, 2, 0);
+    for i in (0..a.len()).step_by(64) {
+        let sq = |o: usize| {
+            let c = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero), qa);
+            _mm512_mulhi_epu16(_mm512_slli_epi16(c, 7), c)
+        };
+        let (lo, hi) = (sq(i), if i + 32 < a.len() { sq(i + 32) } else { zero });
+        let p = _mm512_permutexvar_epi64(order, _mm512_packus_epi16(lo, hi));
+        if i + 64 <= a.len() {
+            _mm512_storeu_si512(x.as_mut_ptr().add(i) as *mut __m512i, p);
+        } else {
+            _mm256_storeu_si256(x.as_mut_ptr().add(i) as *mut __m256i, _mm512_castsi512_si256(p));
+        }
+    }
+}
+
+#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[inline(always)]
+unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
+    use std::arch::x86_64::*;
+    let zero = _mm256_setzero_si256();
+    let qa = _mm256_set1_epi16(255);
+    for i in (0..a.len()).step_by(32) {
+        let sq = |o: usize| {
+            let c = _mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero), qa);
+            _mm256_mulhi_epu16(_mm256_slli_epi16(c, 7), c)
+        };
+        // packus interleaves the 128-bit lanes; permute4x64 restores the order.
+        let p = _mm256_permute4x64_epi64(_mm256_packus_epi16(sq(i), sq(i + 16)), 0b11_01_10_00);
+        _mm256_storeu_si256(x.as_mut_ptr().add(i) as *mut __m256i, p);
+    }
+}
+
+/// For each 8-bit mask, the positions of its set bits (unused slots 0): lets
+/// the kernels list non-zero input groups without a branch per group.
+static NZ_TABLE: [[u16; 8]; 256] = {
+    let mut t = [[0u16; 8]; 256];
+    let mut m = 0;
+    while m < 256 {
+        let (mut k, mut b) = (0, 0);
+        while b < 8 {
+            if m & (1 << b) != 0 {
+                t[m][k] = b as u16;
+                k += 1;
+            }
+            b += 1;
+        }
+        m += 1;
+    }
+    t
+};
+
+/// Appends the indices (base + bit) of the set bits of the 8-bit mask m to
+/// nz at count, with one 16-byte store; returns the new count. nz needs 8
+/// slots of slack past the last real entry.
+#[inline(always)]
+unsafe fn push_nz(nz: &mut [u16], count: usize, m: u32, base: u16) -> usize {
+    use std::arch::x86_64::*;
+    let idx = _mm_add_epi16(_mm_loadu_si128(NZ_TABLE.get_unchecked(m as usize).as_ptr() as *const __m128i), _mm_set1_epi16(base as i16));
+    _mm_storeu_si128(nz.as_mut_ptr().add(count) as *mut __m128i, idx);
+    count + m.count_ones() as usize
+}
+
 /// z[n] = sum_i x[i] * w[n][i] for the L1_SIZE outputs, with w in the
-/// [in / 4][out][in % 4] layout.
+/// [in / 4][out][in % 4] layout. x.len() is a multiple of 64.
 #[inline(always)]
 fn l1_matmul(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
+    unsafe { l1_matmul_simd(x, w) }
+}
+
+/// AVX-512: one register holds all 16 outputs; each group of 4 inputs is a
+/// broadcast and one VNNI dpbusd (or maddubs + madd without VNNI). Inputs are
+/// at most 127 and weights within +-127, so maddubs's i16 sums can't overflow.
+#[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
+#[inline(always)]
+unsafe fn l1_matmul_simd(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
+    use std::arch::x86_64::*;
+    let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
+    let mut s0 = _mm512_setzero_si512();
+    let mut s1 = _mm512_setzero_si512();
+    #[inline(always)]
+    unsafe fn step(s: __m512i, xg: i32, wg: *const i8) -> __m512i {
+        let xb = _mm512_set1_epi32(xg);
+        let wv = _mm512_load_si512(wg as *const __m512i);
+        #[cfg(target_feature = "avx512vnni")]
+        {
+            _mm512_dpbusd_epi32(s, xb, wv)
+        }
+        #[cfg(not(target_feature = "avx512vnni"))]
+        {
+            _mm512_add_epi32(s, _mm512_madd_epi16(_mm512_maddubs_epi16(xb, wv), _mm512_set1_epi16(1)))
+        }
+    }
+    // SCReLU leaves most inputs at zero: list the groups of 4 with any
+    // non-zero input and skip the rest (their weights aren't even loaded).
+    let mut nz = [0u16; 2 * MAX_H / 4 + 8];
+    let mut count = 0;
+    for c in (0..x.len()).step_by(64) {
+        let v = _mm512_loadu_si512(x.as_ptr().add(c) as *const __m512i);
+        let m = _mm512_test_epi32_mask(v, v) as u32;
+        count = push_nz(&mut nz, count, m & 0xff, (c / 4) as u16);
+        count = push_nz(&mut nz, count, m >> 8, (c / 4) as u16 + 8);
+    }
+    let mut i = 0;
+    while i + 1 < count {
+        let (g0, g1) = (*nz.get_unchecked(i) as usize, *nz.get_unchecked(i + 1) as usize);
+        s0 = step(s0, xp.add(g0).read_unaligned(), wp.add(g0 * 64));
+        s1 = step(s1, xp.add(g1).read_unaligned(), wp.add(g1 * 64));
+        i += 2;
+    }
+    if i < count {
+        let g0 = *nz.get_unchecked(i) as usize;
+        s0 = step(s0, xp.add(g0).read_unaligned(), wp.add(g0 * 64));
+    }
+    let mut z = [0i32; L1_SIZE];
+    _mm512_storeu_si512(z.as_mut_ptr() as *mut __m512i, _mm512_add_epi32(s0, s1));
+    z
+}
+
+/// AVX2: two registers of 8 outputs; per group of 4 inputs, maddubs + madd.
+#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[inline(always)]
+unsafe fn l1_matmul_simd(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
+    use std::arch::x86_64::*;
+    let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
+    let ones = _mm256_set1_epi16(1);
+    let mut a = [_mm256_setzero_si256(); 4];
+    // Skip groups of 4 inputs that are all zero (see the AVX-512 version).
+    let mut nz = [0u16; 2 * MAX_H / 4 + 8];
+    let mut count = 0;
+    let zero = _mm256_setzero_si256();
+    for c in (0..x.len()).step_by(32) {
+        let v = _mm256_loadu_si256(x.as_ptr().add(c) as *const __m256i);
+        let m = !(_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(v, zero))) as u32) & 0xff;
+        count = push_nz(&mut nz, count, m, (c / 4) as u16);
+    }
+    let mut step = |k: usize, g: usize| {
+        let xb = _mm256_set1_epi32(xp.add(g).read_unaligned());
+        let w0 = _mm256_load_si256(wp.add(g * 64) as *const __m256i);
+        let w1 = _mm256_load_si256(wp.add(g * 64 + 32) as *const __m256i);
+        a[2 * k] = _mm256_add_epi32(a[2 * k], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, w0), ones));
+        a[2 * k + 1] = _mm256_add_epi32(a[2 * k + 1], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, w1), ones));
+    };
+    let mut i = 0;
+    while i + 1 < count {
+        step(0, *nz.get_unchecked(i) as usize);
+        step(1, *nz.get_unchecked(i + 1) as usize);
+        i += 2;
+    }
+    if i < count {
+        step(0, *nz.get_unchecked(i) as usize);
+    }
+    let mut z = [0i32; L1_SIZE];
+    _mm256_storeu_si256(z.as_mut_ptr() as *mut __m256i, _mm256_add_epi32(a[0], a[2]));
+    _mm256_storeu_si256(z.as_mut_ptr().add(8) as *mut __m256i, _mm256_add_epi32(a[1], a[3]));
+    z
+}
+
+/// Scalar reference for l1_matmul (used by `l1check`).
+pub fn l1_matmul_scalar(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
     let mut z = [0i32; L1_SIZE];
     for (g, xs) in x.chunks_exact(4).enumerate() {
         let wg = &w[g * L1_SIZE * 4..(g + 1) * L1_SIZE * 4];
@@ -754,4 +927,38 @@ unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
         i += 32;
     }
     hsum(_mm256_add_epi32(s0, s1))
+}
+
+/// Checks the SIMD hidden-layer kernels against the scalar versions on random
+/// accumulators and weights. Returns the number of mismatches.
+pub fn l1check(trials: usize) -> usize {
+    let mut seed = 0x2545F4914F6CDD1Du64;
+    let mut rnd = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut bad = 0;
+    for &h in &[128usize, 256, 512, 768, 1024, 2048] {
+        for _ in 0..trials {
+            let a: Vec<i16> = (0..2 * h).map(|_| (rnd() % 700) as i16 - 200).collect();
+            let mut x1 = vec![0u8; 2 * h];
+            let mut x2 = vec![0u8; 2 * h];
+            to_u8(&a, &mut x1, 255, 9);
+            to_u8_scalar(&a, &mut x2, 255, 9);
+            if x1 != x2 {
+                bad += 1;
+                continue;
+            }
+            let mut w = AlignedI8::zeroed(L1_SIZE * 2 * h);
+            for v in w.iter_mut() {
+                *v = ((rnd() % 255) as i32 - 127) as i8;
+            }
+            if l1_matmul(&x1, &w) != l1_matmul_scalar(&x1, &w) {
+                bad += 1;
+            }
+        }
+    }
+    bad
 }

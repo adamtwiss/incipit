@@ -245,6 +245,10 @@ fn main() {
                 datagen::run(args[2].parse().unwrap(), &args[3], args[4].parse().unwrap(), args[5].parse().unwrap());
                 return;
             }
+            "l1check" => {
+                println!("l1check mismatches {}", nnue::l1check(200));
+                return;
+            }
             "nnuecheck" => {
                 let mut seed = 12345u64;
                 let mut bad = 0;
