@@ -21,32 +21,32 @@ macro_rules! params {
 
 // name = UCI name, default, min, max, SPSA step (c_end). Step = (max - min) / 20, at least 1.
 params! {
-    RfpMargin = "RfpMargin", 83, 30, 150, 6;
-    RazorBase = "RazorBase", 226, 50, 400, 18;
-    RazorMul = "RazorMul", 304, 100, 400, 15;
-    NmpEvalDiv = "NmpEvalDiv", 185, 100, 400, 15;
-    ProbcutMargin = "ProbcutMargin", 217, 100, 350, 13;
-    FutBase = "FutBase", 96, 30, 250, 11;
-    FutMul = "FutMul", 110, 40, 200, 8;
-    HistPrune = "HistPrune", 2434, 500, 5000, 225;
-    SeeQuiet = "SeeQuiet", 13, 10, 80, 4;
+    RfpMargin = "RfpMargin", 78, 30, 150, 6;
+    RazorBase = "RazorBase", 233, 50, 400, 18;
+    RazorMul = "RazorMul", 311, 100, 400, 15;
+    NmpEvalDiv = "NmpEvalDiv", 190, 100, 400, 15;
+    ProbcutMargin = "ProbcutMargin", 218, 100, 350, 13;
+    FutBase = "FutBase", 89, 30, 250, 11;
+    FutMul = "FutMul", 104, 40, 200, 8;
+    HistPrune = "HistPrune", 2513, 500, 5000, 225;
+    SeeQuiet = "SeeQuiet", 10, 10, 80, 4;
     SeeNoisy = "SeeNoisy", 81, 10, 200, 10;
     LmrBaseX100 = "LmrBaseX100", 60, 30, 130, 5;
-    LmrDivX100 = "LmrDivX100", 271, 150, 350, 10;
-    LmrHistDiv = "LmrHistDiv", 7431, 3000, 16000, 650;
-    AspDelta = "AspDelta", 11, 3, 40, 2;
-    QsFut = "QsFut", 397, 50, 500, 23;
-    HistMul = "HistMul", 242, 100, 500, 20;
-    HistOff = "HistOff", 214, 0, 500, 25;
-    HistMax = "HistMax", 2821, 1000, 4000, 150;
+    LmrDivX100 = "LmrDivX100", 286, 150, 350, 10;
+    LmrHistDiv = "LmrHistDiv", 7931, 3000, 16000, 650;
+    AspDelta = "AspDelta", 10, 3, 40, 2;
+    QsFut = "QsFut", 449, 50, 500, 23;
+    HistMul = "HistMul", 256, 100, 500, 20;
+    HistOff = "HistOff", 221, 0, 500, 25;
+    HistMax = "HistMax", 2686, 1000, 4000, 150;
     SeDouble = "SeDouble", 15, 5, 50, 2;
-    RfpDepth = "RfpDepth", 6, 3, 12, 1;
+    RfpDepth = "RfpDepth", 7, 3, 12, 1;
     NmpBase = "NmpBase", 4, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
     SeMul = "SeMul", 20, 8, 40, 2;
-    CapLmrDiv = "CapLmrDiv", 4544, 2000, 16000, 700;
-    TmSoftDiv = "TmSoftDiv", 27, 12, 40, 1;
-    TmIncPct = "TmIncPct", 73, 40, 100, 3;
+    CapLmrDiv = "CapLmrDiv", 3735, 2000, 16000, 700;
+    TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
+    TmIncPct = "TmIncPct", 71, 40, 100, 3;
     TmHardMul = "TmHardMul", 6, 2, 6, 1;
 }
 
