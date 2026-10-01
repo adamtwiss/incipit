@@ -106,9 +106,11 @@ pub fn san(pos: &Position, m: Move, legal: &[Move]) -> String {
         return s;
     }
     s.push(b"PNBRQK"[pt] as char);
+    // Castling never needs telling apart from a normal move: in Chess960 the
+    // king's castling destination can also be an ordinary king move.
     let rivals: Vec<usize> = legal
         .iter()
-        .filter(|&&o| o != m && mto(o) == to && pc_type(pos.board[mfrom(o)]) == pt)
+        .filter(|&&o| o != m && !is_castle(o) && mto(o) == to && pc_type(pos.board[mfrom(o)]) == pt)
         .map(|&o| mfrom(o))
         .collect();
     if !rivals.is_empty() {
