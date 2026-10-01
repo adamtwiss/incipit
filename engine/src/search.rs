@@ -160,6 +160,7 @@ pub struct Searcher {
     // Root of the current search, for printing moves (Chess960 castling needs
     // the castling rooks' squares, which are fixed for the game).
     root_pos: Position,
+    refresh_cache: nnue::RefreshCache,
     corr: Box<[[i32; CORR_SIZE]; 2]>,
     corr_np: Box<[[[i32; CORR_SIZE]; 2]; 2]>,
     pub stats: Stats,
@@ -238,6 +239,7 @@ impl Searcher {
             stats: Stats::default(),
             acc: vec![Acc::new(); MAX_PLY + 8],
             root_pos: Position::empty(),
+            refresh_cache: nnue::RefreshCache::new(),
         }
     }
 
@@ -299,7 +301,7 @@ impl Searcher {
             return; // bootstrap build: no NNUE, skip accumulator updates
         }
         let (a, b) = self.acc.split_at_mut(ply + 1);
-        b[0].update_from(&a[ply], pos, child, m);
+        b[0].update_from(&a[ply], pos, child, m, &mut self.refresh_cache);
     }
 
     #[inline(always)]
