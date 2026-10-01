@@ -92,6 +92,14 @@ features will be new kinds.
 | 4 | QB (i32): the output layer's weight quantisation |
 | 4 | Eval scale (i32): the network output is multiplied by this to give centipawns |
 
+**`0x0007` LAYER_QUANT** (required when there is a hidden layer). One 8-byte
+entry per LAYER, in order:
+
+| Size | Field |
+|---|---|
+| 4 | Input shift (u32): for an integer layer fed by the SCReLU feature transformer, its inputs are `clamp(a, 0, QA)² >> shift`, as u8 (must fit 0..127) |
+| 4 | Weight scale (i32): integer weights are real weights times this; `0` for float layers |
+
 **`0x8001` DESCRIPTION** (optional). UTF-8 text: the training run, data and
 settings that produced the network.
 
@@ -127,8 +135,8 @@ and `k` is on files e–h, otherwise 0. This matches Bullet's `Chess768`,
 
 ## Evaluation
 
-With one output layer (the only shape the engine supports so far), the side to
-move's accumulator comes first in the output layer's input:
+With one output layer, the side to move's accumulator comes first in the output
+layer's input:
 
 * SCReLU: `sum = Σ clamp(a, 0, QA)² · w` over both perspectives, then
   `eval = (sum / QA + bias) · scale / (QA · QB)`.
@@ -136,3 +144,16 @@ move's accumulator comes first in the output layer's input:
   `eval = (sum + bias) · scale / (QA · QB)`.
 
 The output bias is at scale `QA · QB`.
+
+With one hidden layer (two LAYERs: `2H -> N`, SCReLU, i8 weights, f32 biases;
+then `N -> 1`, f32; both per output bucket; the engine supports N = 16):
+
+* `x = clamp(a, 0, QA)² >> shift` as u8, side to move's accumulator first;
+* `z[n] = Σ x · w1[bucket][n]` (integer), then
+  `h[n] = clamp(z[n] / (S · W) + b1[bucket][n], 0, 1)²` with `S = QA² / 2^shift`
+  (one input unit) and `W` the weight scale;
+* `eval = (Σ h[n] · w2[bucket][n] + b2[bucket]) · scale`.
+
+Weights for these layers are stored `[bucket][output][input]` as in the
+general rule: i8 for the hidden layer, then its f32 biases, the final layer's
+f32 weights `[bucket][N]` and its f32 biases `[bucket]`.

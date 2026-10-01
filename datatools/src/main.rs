@@ -41,7 +41,9 @@ usage:
       --mirror             features mirrored when the king is on files e-h
       --output-buckets N   material-count output buckets (default 8)
       --activation A       screlu (default) or crelu
-      --qa N --qb N --scale N   quantisation (defaults 255, 64, 400)
+      --qa N --qb N --scale N   quantisation (defaults 255, 64, 400); with --l1,
+                           QB is the hidden layer's int8 weight scale
+      --l1 N               one hidden layer of N neurons after the FT (bullet only)
       --description TEXT   training run, data and settings
   datatools net-info <file.nnue> ...          show a network's header
   datatools fens <count> <seed> <file.vf> ... sample undecided positions across game phases
@@ -183,6 +185,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         qb: 64,
         scale: 400,
         description: String::new(),
+        l1: 0,
     };
     let mut i = 0;
     while i < opts.len() {
@@ -196,6 +199,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         let num = || val.parse::<i64>().map_err(|_| format!("{}: bad number {}", flag, val));
         match flag {
             "--hidden" => arch.hidden = num()? as usize,
+            "--l1" => arch.l1 = num()? as usize,
             "--output-buckets" => arch.output_buckets = num()? as usize,
             "--qa" => arch.qa = num()? as i32,
             "--qb" => arch.qb = num()? as i32,

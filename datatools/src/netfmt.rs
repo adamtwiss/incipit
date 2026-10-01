@@ -16,14 +16,17 @@ pub const TAG_FT: u16 = 0x0003;
 pub const TAG_OUTPUT_BUCKETS: u16 = 0x0004;
 pub const TAG_LAYER: u16 = 0x0005;
 pub const TAG_QUANT: u16 = 0x0006;
+pub const TAG_LAYER_QUANT: u16 = 0x0007;
 pub const TAG_DESCRIPTION: u16 = 0x8001;
 
 pub const INPUT_PSQ768: u16 = 1;
 pub const ACT_NONE: u8 = 0;
 pub const ACT_CRELU: u8 = 2;
 pub const ACT_SCRELU: u8 = 3;
+pub const TYPE_I8: u8 = 1;
 pub const TYPE_I16: u8 = 2;
 pub const TYPE_I32: u8 = 3;
+pub const TYPE_F32: u8 = 4;
 pub const OUTPUT_MATERIAL: u8 = 1;
 
 #[derive(Clone, Debug)]
@@ -37,6 +40,8 @@ pub struct Arch {
     pub qb: i32,
     pub scale: i32,
     pub description: String,
+    /// Neurons in one hidden layer after the FT (0 = none).
+    pub l1: usize,
 }
 
 impl Arch {
@@ -55,11 +60,60 @@ fn field(out: &mut Vec<u8>, tag: u16, payload: &[u8]) {
 /// Serialises a network: header, then weights in the documented order.
 /// `ftw`, `ftb`, `ow` are i16; `ob` is i32 (one per output bucket).
 pub fn write(arch: &Arch, ftw: &[i16], ftb: &[i16], ow: &[i16], ob: &[i32]) -> Vec<u8> {
+    let (h, nb) = (arch.hidden, arch.output_buckets);
+    assert_eq!(ow.len(), nb * 2 * h);
+    assert_eq!(ob.len(), nb);
+    let mut p = ((2 * h) as u32).to_le_bytes().to_vec();
+    p.extend_from_slice(&1u32.to_le_bytes());
+    p.extend_from_slice(&[ACT_NONE, TYPE_I16, TYPE_I32, 1]);
+    let mut weights = Vec::new();
+    for v in ow {
+        weights.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in ob {
+        weights.extend_from_slice(&v.to_le_bytes());
+    }
+    assemble(arch, ftw, ftb, &[p], None, &weights)
+}
+
+/// Input shift for the hidden layer's u8 inputs: the smallest s with
+/// QA^2 >> s <= 127, so the int8 kernels can't overflow.
+pub fn hidden_shift(qa: i32) -> u32 {
+    let sq = qa as i64 * qa as i64;
+    (0..32).find(|&s| (sq >> s) <= 127).unwrap()
+}
+
+/// Serialises a network with one hidden layer: FT -> l1 (SCReLU, i8 weights
+/// at QB, f32 biases) -> 1 (f32), both per output bucket. `w1` is
+/// [bucket][out][2h]; `b1`, `w2` are [bucket][out]; `b2` is [bucket].
+pub fn write_hidden(arch: &Arch, ftw: &[i16], ftb: &[i16], w1: &[i8], b1: &[f32], w2: &[f32], b2: &[f32]) -> Vec<u8> {
+    let (h, nb, l1) = (arch.hidden, arch.output_buckets, arch.l1);
+    assert_eq!(w1.len(), nb * l1 * 2 * h);
+    assert_eq!(b1.len(), nb * l1);
+    assert_eq!(w2.len(), nb * l1);
+    assert_eq!(b2.len(), nb);
+    let mut p1 = ((2 * h) as u32).to_le_bytes().to_vec();
+    p1.extend_from_slice(&(l1 as u32).to_le_bytes());
+    p1.extend_from_slice(&[ACT_SCRELU, TYPE_I8, TYPE_F32, 1]);
+    let mut p2 = (l1 as u32).to_le_bytes().to_vec();
+    p2.extend_from_slice(&1u32.to_le_bytes());
+    p2.extend_from_slice(&[ACT_NONE, TYPE_F32, TYPE_F32, 1]);
+    let mut lq = Vec::new();
+    for v in [hidden_shift(arch.qa) as i32, arch.qb, 0, 0] {
+        lq.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut weights: Vec<u8> = w1.iter().map(|&v| v as u8).collect();
+    for v in b1.iter().chain(w2).chain(b2) {
+        weights.extend_from_slice(&v.to_le_bytes());
+    }
+    assemble(arch, ftw, ftb, &[p1, p2], Some(&lq), &weights)
+}
+
+/// Header plus FT weights, then the given layer records and their weights.
+fn assemble(arch: &Arch, ftw: &[i16], ftb: &[i16], layers: &[Vec<u8>], layer_quant: Option<&[u8]>, weights: &[u8]) -> Vec<u8> {
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
     assert_eq!(ftw.len(), nkb * 768 * h);
     assert_eq!(ftb.len(), h);
-    assert_eq!(ow.len(), nb * 2 * h);
-    assert_eq!(ob.len(), nb);
 
     let mut fields = Vec::new();
     let mut p = Vec::new();
@@ -79,10 +133,12 @@ pub fn write(arch: &Arch, ftw: &[i16], ftb: &[i16], ow: &[i16], ob: &[i32]) -> V
 
     field(&mut fields, TAG_OUTPUT_BUCKETS, &[OUTPUT_MATERIAL, nb as u8, 0, 0]);
 
-    let mut p = ((2 * h) as u32).to_le_bytes().to_vec();
-    p.extend_from_slice(&1u32.to_le_bytes());
-    p.extend_from_slice(&[ACT_NONE, TYPE_I16, TYPE_I32, 1]);
-    field(&mut fields, TAG_LAYER, &p);
+    for p in layers {
+        field(&mut fields, TAG_LAYER, p);
+    }
+    if let Some(lq) = layer_quant {
+        field(&mut fields, TAG_LAYER_QUANT, lq);
+    }
 
     let mut p = Vec::new();
     for v in [arch.qa, arch.qb, arch.scale] {
@@ -96,19 +152,17 @@ pub fn write(arch: &Arch, ftw: &[i16], ftb: &[i16], ow: &[i16], ob: &[i32]) -> V
     fields.extend_from_slice(&[0; 8]); // end tag
 
     let header_size = (16 + fields.len()).div_ceil(64) * 64;
-    let mut out = Vec::with_capacity(header_size + 2 * (ftw.len() + ftb.len() + ow.len()) + 4 * ob.len());
+    let mut out = Vec::with_capacity(header_size + 2 * (ftw.len() + ftb.len()) + weights.len());
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&(header_size as u32).to_le_bytes());
     out.extend_from_slice(&fields);
     out.resize(header_size, 0);
-    for v in ftw.iter().chain(ftb).chain(ow) {
+    for v in ftw.iter().chain(ftb) {
         out.extend_from_slice(&v.to_le_bytes());
     }
-    for v in ob {
-        out.extend_from_slice(&v.to_le_bytes());
-    }
+    out.extend_from_slice(weights);
     out
 }
 
@@ -119,6 +173,9 @@ fn i16s(bytes: &[u8]) -> Vec<i16> {
 /// Reads quantised weights in `source` layout ("bullet" or "raw") and returns
 /// the new-format file.
 pub fn convert(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+    if arch.l1 > 0 {
+        return convert_hidden(arch, source, data);
+    }
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
     let n_ftw = nkb * 768 * h;
     let n_ow = nb * 2 * h;
@@ -160,6 +217,40 @@ pub fn convert(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, String
     Ok(write(arch, &ftw, &ftb, &ow, &ob))
 }
 
+/// Bullet's quantised.bin for a net with one hidden layer: [l0w i16][l0b i16]
+/// [l1w i8, [bucket * l1][2h]][l1b f32][l2w f32, [bucket][l1]][l2b f32], padded
+/// to 64 bytes.
+fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+    if source != "bullet" {
+        return Err("--l1 needs a bullet source".into());
+    }
+    let (h, nkb, nb, l1) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets, arch.l1);
+    let n_ftw = nkb * 768 * h;
+    let expect = 2 * (n_ftw + h) + nb * l1 * 2 * h + 4 * (nb * l1 * 2 + nb);
+    let ok = data.len() == expect.div_ceil(64) * 64
+        && (data[expect..].iter().all(|&b| b == 0) || data[expect..].iter().zip(b"bullet".iter().cycle()).all(|(a, b)| a == b));
+    if !ok {
+        return Err(format!(
+            "input is {} bytes, but hidden {}, {} king bucket(s), {} output buckets and l1 {} need {}",
+            data.len(), h, nkb, nb, l1, expect
+        ));
+    }
+    let mut o = 0;
+    let mut take = |n: usize| {
+        let s = &data[o..o + n];
+        o += n;
+        s
+    };
+    let ftw = i16s(take(2 * n_ftw));
+    let ftb = i16s(take(2 * h));
+    let w1: Vec<i8> = take(nb * l1 * 2 * h).iter().map(|&b| b as i8).collect();
+    let f32s = |b: &[u8]| -> Vec<f32> { b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect() };
+    let b1 = f32s(take(4 * nb * l1));
+    let w2 = f32s(take(4 * nb * l1));
+    let b2 = f32s(take(4 * nb));
+    Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, &w2, &b2))
+}
+
 /// Describes a network file's header (and checks its size), for `net-info`.
 pub fn describe(data: &[u8]) -> Result<String, String> {
     if data.len() < 16 || &data[0..8] != MAGIC {
@@ -195,6 +286,10 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
             }
             TAG_QUANT => {
                 let _ = writeln!(s, "quantisation: QA {}, QB {}, scale {}", p32(0) as i32, p32(4) as i32, p32(8) as i32);
+            }
+            TAG_LAYER_QUANT => {
+                let per: Vec<String> = (0..len / 8).map(|i| format!("(input shift {}, weight scale {})", p32(8 * i), p32(8 * i + 4) as i32)).collect();
+                let _ = writeln!(s, "layer quantisation: {}", per.join(", "));
             }
             TAG_DESCRIPTION => {
                 let _ = writeln!(s, "description: {}", String::from_utf8_lossy(p));

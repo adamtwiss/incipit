@@ -1,7 +1,8 @@
 // NNUE inference. The architecture is read from the network's header (see
 // docs/net-format.md): (768 x king buckets -> H) x 2 perspectives, with
 // optional horizontal mirroring, a SCReLU or CReLU activation, and a
-// material-count output-bucketed output layer.
+// material-count output-bucketed output layer, or one hidden layer of
+// L1_SIZE neurons (int8) before it.
 use crate::attacks::Bits;
 use crate::position::*;
 
@@ -15,13 +16,19 @@ const TAG_FT: u16 = 0x0003;
 const TAG_OUTPUT_BUCKETS: u16 = 0x0004;
 const TAG_LAYER: u16 = 0x0005;
 const TAG_QUANT: u16 = 0x0006;
+const TAG_LAYER_QUANT: u16 = 0x0007;
 const OPTIONAL: u16 = 0x8000;
 const INPUT_PSQ768: u16 = 1;
 const ACT_NONE: u8 = 0;
 const ACT_CRELU: u8 = 2;
 const ACT_SCRELU: u8 = 3;
+const TYPE_I8: u8 = 1;
 const TYPE_I16: u8 = 2;
 const TYPE_I32: u8 = 3;
+const TYPE_F32: u8 = 4;
+
+/// Hidden-layer width the engine supports (one zmm / two ymm of i32 outputs).
+pub const L1_SIZE: usize = 16;
 const OUTPUT_MATERIAL: u8 = 1;
 
 // Path chosen by build.rs (EVALFILE, or the net named in net.txt).
@@ -42,6 +49,56 @@ pub struct Network {
     ftb: Aligned, // [h]
     ow: Aligned,  // [output bucket][2h], side to move first
     ob: Vec<i32>,  // [output bucket]
+    l1: Option<Hidden>,
+}
+
+/// One hidden layer between the feature transformer and the output: the FT
+/// outputs become u8 inputs (clamp(a, 0, QA)^2 >> shift), times int8 weights,
+/// then a float SCReLU and a float output layer, all per output bucket.
+struct Hidden {
+    shift: u32,
+    in_scale: f32,          // QA^2 / 2^shift: one input unit in real terms
+    w_scale: f32,           // int8 weight quantisation
+    w1: AlignedI8,          // [bucket][input / 4][L1_SIZE][4], the kernels' layout
+    b1: Vec<[f32; L1_SIZE]>, // [bucket]
+    w2: Vec<[f32; L1_SIZE]>, // [bucket]
+    b2: Vec<f32>,           // [bucket]
+}
+
+/// A 64-byte-aligned i8 buffer.
+struct AlignedI8 {
+    ptr: *mut i8,
+    len: usize,
+}
+
+impl AlignedI8 {
+    fn layout(len: usize) -> std::alloc::Layout {
+        std::alloc::Layout::from_size_align(len.max(1), 64).unwrap()
+    }
+    fn zeroed(len: usize) -> AlignedI8 {
+        let ptr = unsafe { std::alloc::alloc_zeroed(Self::layout(len)) } as *mut i8;
+        assert!(!ptr.is_null(), "out of memory loading the network");
+        AlignedI8 { ptr, len }
+    }
+}
+
+impl std::ops::Deref for AlignedI8 {
+    type Target = [i8];
+    fn deref(&self) -> &[i8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl std::ops::DerefMut for AlignedI8 {
+    fn deref_mut(&mut self) -> &mut [i8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+impl Drop for AlignedI8 {
+    fn drop(&mut self) {
+        unsafe { std::alloc::dealloc(self.ptr as *mut u8, Self::layout(self.len)) }
+    }
 }
 
 /// Both perspectives' accumulators, packed: white's at [0, h), black's at
@@ -121,6 +178,7 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     let mut outb = None;
     let mut layers = Vec::new();
     let mut quant = None;
+    let mut layer_quant: Vec<(u32, i32)> = Vec::new();
     let mut o = 16;
     while o + 8 <= header {
         let (tag, len) = (u16_at(o), u32_at(o + 4) as usize);
@@ -160,6 +218,9 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
                 need(12)?;
                 quant = Some((p32(0) as i32, p32(4) as i32, p32(8) as i32));
             }
+            TAG_LAYER_QUANT => {
+                layer_quant = (0..len / 8).map(|i| (p32(8 * i), p32(8 * i + 4) as i32)).collect();
+            }
             t if t & OPTIONAL != 0 => {}
             t => return Err(format!("unknown required field 0x{:04x}", t)),
         }
@@ -189,13 +250,16 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     if scheme != OUTPUT_MATERIAL || buckets == 0 || buckets > 32 {
         return Err(format!("unsupported output buckets (scheme {}, {} buckets)", scheme, buckets));
     }
+    let (qa, qb, scale) = quant.ok_or_else(|| missing("QUANTISATION"))?;
+    if layers.len() == 2 {
+        return load_hidden(d, header, h, nkb, mirror, king_bucket, act, buckets, qa, qb, scale, &layers, &layer_quant);
+    }
     let &[(lin, lout, lact, lwt, lbt, lflags)] = layers.as_slice() else {
-        return Err(format!("{} output layers; only one is supported", layers.len()));
+        return Err(format!("{} layers after the feature transformer; one or two are supported", layers.len()));
     };
     if lin != 2 * h || lout != 1 || lact != ACT_NONE || lwt != TYPE_I16 || !(lbt == TYPE_I16 || lbt == TYPE_I32) || lflags & 1 == 0 {
         return Err("unsupported output layer (need 2H -> 1, no activation, i16 weights, per output bucket)".into());
     }
-    let (qa, qb, scale) = quant.ok_or_else(|| missing("QUANTISATION"))?;
 
     let bias_size = if lbt == TYPE_I32 { 4 } else { 2 };
     let expect = 2 * (nkb * 768 * h + h + buckets * 2 * h) + bias_size * buckets;
@@ -231,6 +295,102 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         ftb,
         ow,
         ob,
+        l1: None,
+    })
+}
+
+/// Loads a network with one hidden layer: FT -> L1_SIZE (SCReLU, i8 weights,
+/// f32 biases) -> 1 (f32), both per output bucket.
+#[allow(clippy::too_many_arguments)]
+fn load_hidden(
+    d: &[u8],
+    header: usize,
+    h: usize,
+    nkb: usize,
+    mirror: bool,
+    king_bucket: [u8; 64],
+    act: u8,
+    buckets: usize,
+    qa: i32,
+    qb: i32,
+    scale: i32,
+    layers: &[(usize, usize, u8, u8, u8, u8)],
+    layer_quant: &[(u32, i32)],
+) -> Result<Network, String> {
+    let (l1, l2) = (layers[0], layers[1]);
+    if act != ACT_SCRELU {
+        return Err("a hidden layer needs a SCReLU feature transformer".into());
+    }
+    if l1 != (2 * h, L1_SIZE, ACT_SCRELU, TYPE_I8, TYPE_F32, 1) {
+        return Err(format!("unsupported hidden layer {:?} (need 2H -> {} SCReLU, i8 weights, f32 biases, per bucket)", l1, L1_SIZE));
+    }
+    if l2 != (L1_SIZE, 1, ACT_NONE, TYPE_F32, TYPE_F32, 1) {
+        return Err(format!("unsupported final layer {:?} (need {} -> 1, f32, per bucket)", l2, L1_SIZE));
+    }
+    let &[(shift, w_scale), _] = layer_quant else {
+        return Err("a hidden layer needs a LAYER_QUANT field for both layers".into());
+    };
+    if shift > 30 || w_scale <= 0 || ((qa as i64 * qa as i64) >> shift) > 127 {
+        return Err(format!("hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs", shift, w_scale));
+    }
+    let n_ftw = nkb * 768 * h;
+    let expect = 2 * (n_ftw + h) + buckets * L1_SIZE * 2 * h + 4 * buckets * (L1_SIZE + L1_SIZE + 1);
+    if d.len() - header != expect {
+        return Err(format!("weights are {} bytes, but the header describes {}", d.len() - header, expect));
+    }
+    let mut o = header;
+    let mut i16s = |n: usize| {
+        let v = Aligned::from(d[o..o + 2 * n].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])));
+        o += 2 * n;
+        v
+    };
+    let ftw = i16s(n_ftw);
+    let ftb = i16s(h);
+    // File: [bucket][out][in]. Kernels want each group of 4 inputs for all
+    // outputs together: [bucket][in / 4][out][in % 4].
+    let mut w1 = AlignedI8::zeroed(buckets * L1_SIZE * 2 * h);
+    for b in 0..buckets {
+        for n in 0..L1_SIZE {
+            for i in 0..2 * h {
+                let v = d[o + (b * L1_SIZE + n) * 2 * h + i] as i8;
+                w1[b * L1_SIZE * 2 * h + (i / 4) * L1_SIZE * 4 + n * 4 + i % 4] = v;
+            }
+        }
+    }
+    o += buckets * L1_SIZE * 2 * h;
+    let mut f32s = |n: usize| {
+        let v: Vec<f32> = d[o..o + 4 * n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        o += 4 * n;
+        v
+    };
+    let rows = |v: Vec<f32>| v.chunks_exact(L1_SIZE).map(|c| <[f32; L1_SIZE]>::try_from(c).unwrap()).collect::<Vec<_>>();
+    let b1 = rows(f32s(buckets * L1_SIZE));
+    let w2 = rows(f32s(buckets * L1_SIZE));
+    let b2 = f32s(buckets);
+    Ok(Network {
+        h,
+        mirror,
+        refresh_on_king_move: nkb > 1 || mirror,
+        king_bucket,
+        screlu: true,
+        nkb,
+        bucket_of: std::array::from_fn(|pieces| (pieces.saturating_sub(2) / 32usize.div_ceil(buckets)).min(buckets - 1) as u8),
+        qa,
+        qb,
+        scale,
+        ftw,
+        ftb,
+        ow: Aligned::from(std::iter::empty()),
+        ob: Vec::new(),
+        l1: Some(Hidden {
+            shift,
+            in_scale: (qa as f32 * qa as f32) / (1u64 << shift) as f32,
+            w_scale: w_scale as f32,
+            w1,
+            b1,
+            w2,
+            b2,
+        }),
     })
 }
 
@@ -477,7 +637,59 @@ fn add_sub<const NA: usize, const NS: usize>(dst: &mut [i16], src: &[i16], adds:
 #[inline]
 pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
     let n = net();
-    with_h!(n.h, eval_n(n, acc, pos))
+    match &n.l1 {
+        None => with_h!(n.h, eval_n(n, acc, pos)),
+        Some(l1) => with_h!(n.h, eval_hidden(n, l1, acc, pos)),
+    }
+}
+
+/// Network with one hidden layer: u8 inputs from both perspectives (side to
+/// move first), an int8 matrix product per output bucket, then float SCReLU
+/// and the float output layer.
+#[inline(never)]
+fn eval_hidden<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    let h = hidden::<H>(n);
+    let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
+    #[repr(C, align(64))]
+    struct Inputs([u8; 2 * MAX_H]);
+    let mut x = Inputs([0; 2 * MAX_H]);
+    to_u8(acc.side(pos.stm, h), &mut x.0[..h], n.qa, l1.shift);
+    to_u8(acc.side(pos.stm ^ 1, h), &mut x.0[h..2 * h], n.qa, l1.shift);
+    let w = &l1.w1[bucket * L1_SIZE * 2 * h..(bucket + 1) * L1_SIZE * 2 * h];
+    let z = l1_matmul(&x.0[..2 * h], w);
+    let k = 1.0 / (l1.in_scale * l1.w_scale);
+    let (b1, w2) = (&l1.b1[bucket], &l1.w2[bucket]);
+    let mut out = l1.b2[bucket];
+    for i in 0..L1_SIZE {
+        let v = (z[i] as f32 * k + b1[i]).clamp(0.0, 1.0);
+        out += v * v * w2[i];
+    }
+    (out * n.scale as f32) as i32
+}
+
+/// clamp(a, 0, qa)^2 >> shift as u8 (load() checks it fits 0..127).
+#[inline(always)]
+fn to_u8(a: &[i16], x: &mut [u8], qa: i32, shift: u32) {
+    for (o, &v) in x.iter_mut().zip(a) {
+        let c = (v as i32).clamp(0, qa);
+        *o = ((c * c) >> shift) as u8;
+    }
+}
+
+/// z[n] = sum_i x[i] * w[n][i] for the L1_SIZE outputs, with w in the
+/// [in / 4][out][in % 4] layout.
+#[inline(always)]
+fn l1_matmul(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
+    let mut z = [0i32; L1_SIZE];
+    for (g, xs) in x.chunks_exact(4).enumerate() {
+        let wg = &w[g * L1_SIZE * 4..(g + 1) * L1_SIZE * 4];
+        for n in 0..L1_SIZE {
+            for j in 0..4 {
+                z[n] += xs[j] as i32 * wg[n * 4 + j] as i32;
+            }
+        }
+    }
+    z
 }
 
 #[inline(never)]
