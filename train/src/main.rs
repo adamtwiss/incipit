@@ -156,8 +156,10 @@ macro_rules! build_kb {
 
 /// King-bucketed FT with one hidden layer: FT (SCReLU) x 2 -> L1 neurons
 /// (per output bucket, SCReLU) -> 8 material output buckets. Saved for the
-/// engine's integer path: FT as now (i16, x255), L1 weights i8 at x64 (the
-/// default +-1.98 clip keeps them within i8), L1 biases and the final layer f32.
+/// engine's integer path: FT as now (i16, x255), L1 weights i8 at x128
+/// (clipped to +-0.99 so they fit; trained L1 weights are mostly small, and a
+/// probe at x64 left 30% of them within +-1 step), L1 biases and the final
+/// layer f32. Convert with `datatools net ... --l1 N --qb 128`.
 macro_rules! build_kb_l1 {
     ($layout:expr, $nb:expr, $hidden:expr, $l1:expr) => {{
         let hidden: usize = $hidden;
@@ -177,7 +179,7 @@ macro_rules! build_kb_l1 {
                     .round()
                     .quantise::<i16>(255),
                 SavedFormat::id("l0b").round().quantise::<i16>(255),
-                SavedFormat::id("l1w").round().quantise::<i8>(64).transpose(),
+                SavedFormat::id("l1w").round().quantise::<i8>(128).transpose(),
                 SavedFormat::id("l1b"),
                 SavedFormat::id("l2w").transpose(),
                 SavedFormat::id("l2b"),
@@ -197,6 +199,7 @@ macro_rules! build_kb_l1 {
         let clip = AdamWParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
         trainer.optimiser.set_params_for_weight("l0w", clip);
         trainer.optimiser.set_params_for_weight("l0f", clip);
+        trainer.optimiser.set_params_for_weight("l1w", clip);
         trainer
     }};
 }
