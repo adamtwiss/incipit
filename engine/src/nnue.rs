@@ -353,22 +353,19 @@ fn update<const H: usize>(acc: &mut Acc, n: &Network, parent: &Acc, pos: &Positi
     let mut subs: [(u8, usize); 2] = [(pc, from), (0, 64)];
     let mut na = 1;
     let mut ns = 1;
-    if flag == F_EP {
+    if is_castle(m) {
+        // Checked first: in Chess960 the king's destination may hold the rook.
+        let q = flag == F_QCASTLE;
+        subs[1] = (make_pc(ROOK, us), pos.rook_sq[castle_right(us, q)] as usize);
+        adds[1] = (make_pc(ROOK, us), if q { to + 1 } else { to - 1 });
+        ns = 2;
+        na = 2;
+    } else if flag == F_EP {
         subs[1] = (make_pc(PAWN, us ^ 1), to ^ 8);
         ns = 2;
     } else if pos.board[to] != NONE_PC {
         subs[1] = (pos.board[to], to);
         ns = 2;
-    } else if flag == F_KCASTLE {
-        subs[1] = (make_pc(ROOK, us), to + 1);
-        adds[1] = (make_pc(ROOK, us), to - 1);
-        ns = 2;
-        na = 2;
-    } else if flag == F_QCASTLE {
-        subs[1] = (make_pc(ROOK, us), to - 2);
-        adds[1] = (make_pc(ROOK, us), to + 1);
-        ns = 2;
-        na = 2;
     }
     for p in 0..2 {
         let ki = kinfo(n, p, pos.king_sq(p));
