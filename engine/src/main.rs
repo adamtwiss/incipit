@@ -117,7 +117,7 @@ fn bench(depth: i32) {
         s.hash_hist.clear();
         let lim = Limits { soft_ms: None, hard_ms: None, depth, nodes: None };
         let (m, sc) = s.search(&pos, &lim);
-        println!("{} -> {} {}", f, move_str(m), sc);
+        println!("{} -> {} {}", f, pos.move_uci(m), sc);
         nodes += s.nodes;
     }
     let el = t.elapsed().as_secs_f64();
@@ -216,7 +216,7 @@ impl Uci {
         self.searcher.hash_hist.clear();
         self.searcher.hash_hist.extend_from_slice(&self.hist);
         let (m, _) = self.searcher.search(&self.pos, &lim);
-        println!("bestmove {}", move_str(m));
+        println!("bestmove {}", self.pos.move_uci(m));
     }
 }
 
@@ -343,6 +343,7 @@ fn main() {
                 println!("option name Hash type spin default 16 min 1 max 65536");
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
+                println!("option name UCI_Chess960 type check default false");
                 if cfg!(feature = "tune") {
                     params::print_options();
                 }
@@ -368,6 +369,9 @@ fn main() {
                                 }
                             }
                         }
+                        "uci_chess960" => {
+                            CHESS960.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed);
+                        }
                         "moveoverhead" => {
                             if let Ok(v) = val.parse::<i64>() {
                                 uci.overhead = v.clamp(0, 5000);
@@ -389,6 +393,17 @@ fn main() {
                 searching.store(false, Ordering::SeqCst);
             }
             "d" => println!("{}", uci.pos.to_fen()),
+            // Legal moves of the current position, in UCI notation.
+            "legal" => {
+                let mut list = MoveList::new();
+                uci.pos.gen_moves(&mut list, false);
+                let mut v: Vec<String> = (0..list.len)
+                    .filter(|&i| uci.pos.clone().make_move(list.moves[i]))
+                    .map(|i| uci.pos.move_uci(list.moves[i]))
+                    .collect();
+                v.sort();
+                println!("legal {}", v.join(" "));
+            }
             // Static NNUE eval of the current position (side to move's view, cp).
             "eval" => {
                 let mut acc = nnue::Acc::new();

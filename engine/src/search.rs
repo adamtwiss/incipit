@@ -157,6 +157,9 @@ pub struct Searcher {
     pub silent: bool,
     root_node_counts: Box<[[u64; 64]; 64]>,
     acc: Vec<Acc>,
+    // Root of the current search, for printing moves (Chess960 castling needs
+    // the castling rooks' squares, which are fixed for the game).
+    root_pos: Position,
     corr: Box<[[i32; CORR_SIZE]; 2]>,
     corr_np: Box<[[[i32; CORR_SIZE]; 2]; 2]>,
     pub stats: Stats,
@@ -234,6 +237,7 @@ impl Searcher {
             corr: vec![[0i32; CORR_SIZE]; 2].into_boxed_slice().try_into().unwrap(),
             stats: Stats::default(),
             acc: vec![Acc::new(); MAX_PLY + 8],
+            root_pos: Position::empty(),
         }
     }
 
@@ -351,6 +355,7 @@ impl Searcher {
         self.root_best = 0;
         self.seldepth = 0;
         self.acc[0].refresh(root);
+        self.root_pos = *root;
         for r in self.root_node_counts.iter_mut() {
             *r = [0; 64];
         }
@@ -432,7 +437,7 @@ impl Searcher {
                         self.nodes,
                         self.nodes * 1000 / el.max(1),
                         el,
-                        move_str(best)
+                        root.move_uci(best)
                     );
                 }
                 break;
@@ -487,7 +492,7 @@ impl Searcher {
         let mut pv = String::new();
         for i in 0..self.pv_len[0] {
             pv.push(' ');
-            pv.push_str(&move_str(self.pv[0][i]));
+            pv.push_str(&self.root_pos.move_uci(self.pv[0][i]));
         }
         println!(
             "info depth {} seldepth {} score {} nodes {} nps {} hashfull {} time {} pv{}",
