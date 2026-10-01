@@ -200,6 +200,11 @@ pub fn genfens(toks: &[&str]) {
     let mut moves: Option<usize> = None;
     let mut nodes = 5000u64;
     let mut maxeval = 500i32;
+    // dfrc: start each opening from a random double-Fischer-random position
+    // (each side gets its own Chess960 back rank) instead of the book or the
+    // start position. OB plays Chess960 when the book's name says FRC/960, so
+    // pair this with such a book name.
+    let mut dfrc = false;
     let mut i = 2;
     while i < toks.len() {
         let v = toks.get(i + 1).copied().unwrap_or("");
@@ -212,12 +217,18 @@ pub fn genfens(toks: &[&str]) {
             "moves" => v.parse().map(|x| moves = Some(x)).is_ok(),
             "nodes" => v.parse().map(|x: u64| nodes = x.max(1)).is_ok(),
             "maxeval" => v.parse().map(|x| maxeval = x).is_ok(),
+            "dfrc" => {
+                dfrc = true;
+                i += 1;
+                continue;
+            }
             _ => false,
         };
         i += if used { 2 } else { 1 };
     }
 
     let book: Vec<Position> = match book_path {
+        _ if dfrc => Vec::new(),
         None => vec![Position::from_fen(START_FEN).unwrap()],
         Some(path) => {
             let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
@@ -239,7 +250,7 @@ pub fn genfens(toks: &[&str]) {
             book
         }
     };
-    let base = moves.unwrap_or(if book_path.is_some() { 2 } else { 8 });
+    let base = moves.unwrap_or(if book_path.is_some() && !dfrc { 2 } else { 8 });
 
     // splitmix64 so that nearby seeds (1, 2, 3...) give unrelated streams, and never zero.
     let mut z = seed.wrapping_add(0x9E3779B97F4A7C15);
@@ -254,7 +265,7 @@ pub fn genfens(toks: &[&str]) {
     let stdout = std::io::stdout();
     let mut done = 0;
     while done < n {
-        let mut pos = book[(rng.next() % book.len() as u64) as usize];
+        let mut pos = if dfrc { dfrc_start(&mut rng) } else { book[(rng.next() % book.len() as u64) as usize] };
         let nrand = base + (rng.next() % 2) as usize;
         let mut ok = true;
         for _ in 0..nrand {
@@ -279,4 +290,37 @@ pub fn genfens(toks: &[&str]) {
         let _ = out.flush();
         done += 1;
     }
+}
+
+/// A random Chess960 back rank: bishops on opposite-coloured squares and the
+/// king between the two rooks (the Chess960 rules), as piece letters a..h.
+fn chess960_rank(rng: &mut Rng) -> [u8; 8] {
+    loop {
+        let mut r = *b"RNBQKBNR";
+        for i in (1..8).rev() {
+            r.swap(i, (rng.next() % (i as u64 + 1)) as usize);
+        }
+        let b: Vec<usize> = (0..8).filter(|&i| r[i] == b'B').collect();
+        let rk: Vec<usize> = (0..8).filter(|&i| r[i] == b'R').collect();
+        let k = r.iter().position(|&c| c == b'K').unwrap();
+        if (b[0] + b[1]) % 2 == 1 && rk[0] < k && k < rk[1] {
+            return r;
+        }
+    }
+}
+
+/// Double Fischer random start: independent Chess960 back ranks for each side,
+/// all four castling rights.
+fn dfrc_start(rng: &mut Rng) -> Position {
+    let w = chess960_rank(rng);
+    let b = chess960_rank(rng);
+    let rooks = |r: &[u8; 8]| -> String { (0..8).filter(|&i| r[i] == b'R').map(|i| (b'a' + i as u8) as char).collect() };
+    let fen = format!(
+        "{}/pppppppp/8/8/8/8/PPPPPPPP/{} w {}{} - 0 1",
+        String::from_utf8(b.iter().map(|c| c.to_ascii_lowercase()).collect()).unwrap(),
+        String::from_utf8(w.to_vec()).unwrap(),
+        rooks(&w).to_uppercase(),
+        rooks(&b)
+    );
+    Position::from_fen(&fen).unwrap()
 }
