@@ -652,7 +652,10 @@ fn eval_hidden<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Positi
     let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
     #[repr(C, align(64))]
     struct Inputs([u8; 2 * MAX_H]);
-    let mut x = Inputs([0; 2 * MAX_H]);
+    // Left uninitialised: to_u8 writes the 2h bytes used (zeroing 4 KB per
+    // eval showed up in profiles).
+    #[allow(invalid_value, clippy::uninit_assumed_init)]
+    let mut x: Inputs = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
     to_u8(acc.side(pos.stm, h), &mut x.0[..h], n.qa, l1.shift);
     to_u8(acc.side(pos.stm ^ 1, h), &mut x.0[h..2 * h], n.qa, l1.shift);
     let w = &l1.w1[bucket * L1_SIZE * 2 * h..(bucket + 1) * L1_SIZE * 2 * h];
@@ -788,7 +791,8 @@ unsafe fn l1_matmul_simd(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
     }
     // SCReLU leaves most inputs at zero: list the groups of 4 with any
     // non-zero input and skip the rest (their weights aren't even loaded).
-    let mut nz = [0u16; 2 * MAX_H / 4 + 8];
+    #[allow(invalid_value, clippy::uninit_assumed_init)]
+    let mut nz: [u16; 2 * MAX_H / 4 + 8] = std::mem::MaybeUninit::uninit().assume_init();
     let mut count = 0;
     for c in (0..x.len()).step_by(64) {
         let v = _mm512_loadu_si512(x.as_ptr().add(c) as *const __m512i);
@@ -796,19 +800,26 @@ unsafe fn l1_matmul_simd(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
         count = push_nz(&mut nz, count, m & 0xff, (c / 4) as u16);
         count = push_nz(&mut nz, count, m >> 8, (c / 4) as u16 + 8);
     }
+    // Four accumulators so consecutive dpbusds don't wait on each other.
+    let mut s2 = _mm512_setzero_si512();
+    let mut s3 = _mm512_setzero_si512();
+    let g = |i: usize| *nz.get_unchecked(i) as usize;
     let mut i = 0;
-    while i + 1 < count {
-        let (g0, g1) = (*nz.get_unchecked(i) as usize, *nz.get_unchecked(i + 1) as usize);
+    while i + 3 < count {
+        let (g0, g1, g2, g3) = (g(i), g(i + 1), g(i + 2), g(i + 3));
         s0 = step(s0, xp.add(g0).read_unaligned(), wp.add(g0 * 64));
         s1 = step(s1, xp.add(g1).read_unaligned(), wp.add(g1 * 64));
-        i += 2;
+        s2 = step(s2, xp.add(g2).read_unaligned(), wp.add(g2 * 64));
+        s3 = step(s3, xp.add(g3).read_unaligned(), wp.add(g3 * 64));
+        i += 4;
     }
-    if i < count {
-        let g0 = *nz.get_unchecked(i) as usize;
+    while i < count {
+        let g0 = g(i);
         s0 = step(s0, xp.add(g0).read_unaligned(), wp.add(g0 * 64));
+        i += 1;
     }
     let mut z = [0i32; L1_SIZE];
-    _mm512_storeu_si512(z.as_mut_ptr() as *mut __m512i, _mm512_add_epi32(s0, s1));
+    _mm512_storeu_si512(z.as_mut_ptr() as *mut __m512i, _mm512_add_epi32(_mm512_add_epi32(s0, s1), _mm512_add_epi32(s2, s3)));
     z
 }
 
@@ -821,7 +832,8 @@ unsafe fn l1_matmul_simd(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
     let ones = _mm256_set1_epi16(1);
     let mut a = [_mm256_setzero_si256(); 4];
     // Skip groups of 4 inputs that are all zero (see the AVX-512 version).
-    let mut nz = [0u16; 2 * MAX_H / 4 + 8];
+    #[allow(invalid_value, clippy::uninit_assumed_init)]
+    let mut nz: [u16; 2 * MAX_H / 4 + 8] = std::mem::MaybeUninit::uninit().assume_init();
     let mut count = 0;
     let zero = _mm256_setzero_si256();
     for c in (0..x.len()).step_by(32) {
