@@ -145,6 +145,104 @@ fn fastchess_pgn() {
     check_roundtrip(&g2);
 }
 
+/// A random Chess960 back rank: bishops on opposite colours, king between the
+/// rooks.
+fn chess960_rank(rng: &mut Rng) -> [u8; 8] {
+    loop {
+        let mut r = *b"RNBQKBNR";
+        for i in (1..8).rev() {
+            r.swap(i, (rng.next() % (i as u64 + 1)) as usize);
+        }
+        let b: Vec<usize> = (0..8).filter(|&i| r[i] == b'B').collect();
+        let rk: Vec<usize> = (0..8).filter(|&i| r[i] == b'R').collect();
+        let k = r.iter().position(|&c| c == b'K').unwrap();
+        if (b[0] + b[1]) % 2 == 1 && rk[0] < k && k < rk[1] {
+            return r;
+        }
+    }
+}
+
+/// A DFRC start position (independent white and black back ranks) with
+/// Shredder-FEN castling rights.
+fn dfrc_start(rng: &mut Rng) -> String {
+    let w = chess960_rank(rng);
+    let b = chess960_rank(rng);
+    let files = |r: &[u8; 8], upper: bool| -> String {
+        (0..8)
+            .filter(|&i| r[i] == b'R')
+            .map(|i| {
+                let f = (b'a' + i as u8) as char;
+                if upper { f.to_ascii_uppercase() } else { f }
+            })
+            .collect()
+    };
+    format!(
+        "{}/pppppppp/8/8/8/8/PPPPPPPP/{} w {}{} - 0 1",
+        String::from_utf8(b.iter().map(|c| c.to_ascii_lowercase()).collect()).unwrap(),
+        String::from_utf8(w.to_vec()).unwrap(),
+        files(&w, true),
+        files(&b, false)
+    )
+}
+
+#[test]
+fn dfrc_games_roundtrip() {
+    crate::attacks::init();
+    let mut rng = Rng(0xD1F7C0DE);
+    let mut castles = 0;
+    for g in 0..400 {
+        let start = Position::from_fen(&dfrc_start(&mut rng)).unwrap();
+        assert_eq!(start.castling, 15, "{}", start.to_fen());
+        let mut pos = start;
+        let mut moves = Vec::new();
+        for _ in 0..160 {
+            let l = legal(&pos);
+            if l.is_empty() || pos.halfmove >= 100 {
+                break;
+            }
+            // Prefer castling when it's legal, so plenty of it gets written.
+            let castle = l.iter().copied().find(|&m| matches!(mflag(m), F_KCASTLE | F_QCASTLE));
+            let m = match castle {
+                Some(c) if rng.next() % 2 == 0 => c,
+                _ => l[(rng.next() % l.len() as u64) as usize],
+            };
+            if matches!(mflag(m), F_KCASTLE | F_QCASTLE) {
+                castles += 1;
+            }
+            // Packing then unpacking any position gives it back.
+            let (back, _, _) = viri::unpack_board(&viri::pack_board(&pos, 0, 1)).unwrap();
+            assert_eq!(back.to_fen(), pos.to_fen());
+            moves.push((m, (rng.next() % 2001) as i16 - 1000));
+            pos.make_move(m);
+        }
+        check_roundtrip(&Game { start, wdl: (g % 3) as u8, moves });
+    }
+    assert!(castles > 200, "castles {}", castles);
+}
+
+#[test]
+fn dfrc_pgn() {
+    crate::attacks::init();
+    // Shredder-FEN start; king b1 / b8, rooks a and h. O-O-O: king c1, rook d1.
+    let text = r#"[Event "Fastchess Tournament"]
+[Variant "fischerandom"]
+[Result "1/2-1/2"]
+[FEN "rkbqnbnr/pppppppp/8/8/8/8/PPPPPPPP/RKBQNBNR w HAha - 0 1"]
+[SetUp "1"]
+
+1. d3 {+0.20/10 0.004s} d6 {-0.10/10 0.004s} 2. Be3 {+0.25/10 0.004s} Be6 {-0.15/10 0.004s} 3. Qd2 {+0.30/10 0.004s} Qd7 {-0.20/10 0.004s} 4. O-O-O {+0.35/10 0.004s} O-O-O {-0.25/10 0.004s} 1/2-1/2
+"#;
+    let games = pgn::split_games(text);
+    let g = pgn::to_game(&games[0]).unwrap();
+    assert_eq!(g.moves.len(), 8);
+    check_roundtrip(&g);
+    let mut pos = g.start;
+    for &(m, _) in &g.moves {
+        pos.make_move(m);
+    }
+    assert_eq!(pos.to_fen(), "2krnbnr/pppqpppp/3pb3/8/8/3PB3/PPPQPPPP/2KRNBNR w - - 6 5");
+}
+
 /// Opt-in: decode every game in a real file with the reference reader and
 /// replay every move. `DATATOOLS_CHECK=file.vf cargo test --release -- --ignored`
 #[test]

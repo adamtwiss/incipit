@@ -22,8 +22,7 @@ pub fn pack_board(pos: &Position, score: i16, wdl: u8) -> [u8; 32] {
     let mut out = [0u8; 32];
     let occ = pos.occ();
     out[0..8].copy_from_slice(&occ.to_le_bytes());
-    // Rooks that still carry castling rights: K=h1, Q=a1, k=h8, q=a8.
-    let castle_rooks = [(1u8, 7usize), (2, 0), (4, 63), (8, 56)];
+    // Rooks that still carry castling rights (any file, for Chess960).
     let mut i = 0;
     let mut bits = occ;
     while bits != 0 {
@@ -32,7 +31,7 @@ pub fn pack_board(pos: &Position, score: i16, wdl: u8) -> [u8; 32] {
         let pc = pos.board[sq];
         let colour = pc_color(pc) as u8;
         let mut code = pc_type(pc) as u8;
-        if code == ROOK as u8 && castle_rooks.iter().any(|&(right, rsq)| pos.castling & right != 0 && rsq == sq) {
+        if code == ROOK as u8 && (0..4).any(|r| pos.castling & (1 << r) != 0 && pos.rook_sq[r] as usize == sq) {
             code = UNMOVED_ROOK;
         }
         out[8 + i / 2] |= (code | colour << 3) << ((i & 1) * 4);
@@ -48,17 +47,15 @@ pub fn pack_board(pos: &Position, score: i16, wdl: u8) -> [u8; 32] {
 
 /// Encodes an Incipit move: 6-bit from, 6-bit to, 2-bit promotion piece
 /// (N=0, B=1, R=2, Q=3), 2-bit type (0 normal, 1 en passant, 2 castle,
-/// 3 promotion). Castling is written king-takes-rook (e1->h1, e1->a1).
-pub fn encode_move(m: Move) -> u16 {
+/// 3 promotion). Castling is written king-takes-rook (e1->h1, e1->a1), the
+/// rook's square coming from `pos` (any position of the same game).
+pub fn encode_move(pos: &Position, m: Move) -> u16 {
     let from = mfrom(m) as u16;
     let mut to = mto(m) as u16;
     let (promo, kind) = match mflag(m) {
-        F_KCASTLE => {
-            to = from | 7;
-            (0, 2)
-        }
-        F_QCASTLE => {
-            to = from & !7;
+        f @ (F_KCASTLE | F_QCASTLE) => {
+            let us = if from < 8 { WHITE } else { BLACK };
+            to = pos.rook_sq[castle_right(us, f == F_QCASTLE)] as u16;
             (0, 2)
         }
         F_EP => (0, 1),
@@ -80,7 +77,7 @@ impl Game {
     pub fn write(&self, w: &mut impl Write) -> io::Result<()> {
         w.write_all(&pack_board(&self.start, 0, self.wdl))?;
         for &(m, score) in &self.moves {
-            w.write_all(&encode_move(m).to_le_bytes())?;
+            w.write_all(&encode_move(&self.start, m).to_le_bytes())?;
             w.write_all(&score.to_le_bytes())?;
         }
         w.write_all(&[0; 4])
@@ -131,13 +128,13 @@ pub fn unpack_board(b: &[u8]) -> Option<(Position, i16, u8)> {
         let mut pt = (code & 7) as usize;
         if pt == UNMOVED_ROOK as usize {
             pt = ROOK;
-            match sq {
-                7 => castling.push('K'),
-                0 => castling.push('Q'),
-                63 => castling.push('k'),
-                56 => castling.push('q'),
-                _ => return None,
+            // A castling rook sits on its own back rank; name it by file
+            // (Shredder-FEN), which covers standard and Chess960 positions.
+            if sq / 8 != if colour == WHITE { 0 } else { 7 } {
+                return None;
             }
+            let f = (b'a' + (sq % 8) as u8) as char;
+            castling.push(if colour == WHITE { f.to_ascii_uppercase() } else { f });
         }
         if pt > KING {
             return None;
@@ -168,10 +165,7 @@ pub fn unpack_board(b: &[u8]) -> Option<(Position, i16, u8)> {
             fen.push('/');
         }
     }
-    let order = |c: char| "KQkq".find(c).unwrap();
-    let mut castling: Vec<char> = castling.chars().collect();
-    castling.sort_by_key(|&c| order(c));
-    let castling: String = if castling.is_empty() { "-".into() } else { castling.into_iter().collect() };
+    let castling: String = if castling.is_empty() { "-".into() } else { castling };
     let ep = b[24] & 127;
     let ep = if ep >= 64 { "-".to_string() } else { format!("{}{}", (b'a' + ep % 8) as char, (b'1' + ep / 8) as char) };
     let stm = if b[24] >> 7 == 0 { 'w' } else { 'b' };
@@ -201,7 +195,7 @@ pub fn for_each_position(data: &[u8], mut f: impl FnMut(&Position, Move, i16, u8
             pos.gen_moves(&mut list, false);
             let m = (0..list.len)
                 .map(|k| list.moves[k])
-                .find(|&m| encode_move(m) == raw && { let mut c = pos; c.make_move(m) })
+                .find(|&m| encode_move(&pos, m) == raw && { let mut c = pos; c.make_move(m) })
                 .ok_or_else(|| format!("illegal move {:04x} in {}", raw, pos.to_fen()))?;
             f(&pos, m, score, wdl);
             pos.make_move(m);
