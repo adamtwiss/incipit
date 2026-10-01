@@ -29,7 +29,7 @@ params! {
     FutBase = "FutBase", 89, 30, 250, 11;
     FutMul = "FutMul", 104, 40, 200, 8;
     HistPrune = "HistPrune", 2513, 500, 5000, 225;
-    SeeQuiet = "SeeQuiet", 10, 10, 80, 4;
+    SeeQuiet = "SeeQuiet", 10, 0, 80, 4;
     SeeNoisy = "SeeNoisy", 81, 10, 200, 10;
     LmrBaseX100 = "LmrBaseX100", 60, 30, 130, 5;
     LmrDivX100 = "LmrDivX100", 286, 150, 350, 10;
