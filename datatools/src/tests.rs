@@ -327,3 +327,13 @@ fn check_oldbin_conversion() {
     }
     println!("{} records matched in order, {} records not in the output", matched, skipped);
 }
+
+#[test]
+fn score_parsing() {
+    assert_eq!(pgn::parse_score("+0.35/12 0.010s"), Some(35));
+    assert_eq!(pgn::parse_score("-12.07/9 0.009s, n=8836"), Some(-1207));
+    assert_eq!(pgn::parse_score("+M3/10 0.009s"), None);
+    // Tablebase scores (cp +-(20000 - plies)) are not evals.
+    assert_eq!(pgn::parse_score("+199.99/1 0.000s"), None);
+    assert_eq!(pgn::parse_score("-199.80/14 0.010s"), None);
+}
