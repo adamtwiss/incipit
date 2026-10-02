@@ -99,7 +99,7 @@ fn span(a: usize, b: usize) -> u64 {
     (u64::MAX >> (63 - hi)) & (u64::MAX << lo)
 }
 
-fn sq_str(s: usize) -> String {
+pub fn sq_str(s: usize) -> String {
     format!("{}{}", (b'a' + (s % 8) as u8) as char, (b'1' + (s / 8) as u8) as char)
 }
 

@@ -11,6 +11,10 @@ pub const INF: i32 = 32000;
 pub const MATE: i32 = 31000;
 pub const MATE_BOUND: i32 = MATE - 512;
 pub const MAX_PLY: usize = 128;
+/// Tablebase wins score TB_WIN - ply: above every eval (evals stay below
+/// MATE_BOUND) and below every mate (MATE - ply >= MATE - MAX_PLY), so code
+/// that treats |score| >= MATE_BOUND as decisive handles them like mates.
+pub const TB_WIN: i32 = MATE - 2 * MAX_PLY as i32;
 const CORR_SIZE: usize = 16384;
 const USE_SCORE_TM: bool = false;
 const CORR_GRAIN: i32 = 256;
@@ -136,6 +140,7 @@ pub struct Limits {
 pub struct Searcher {
     pub tt: TT,
     pub nodes: u64,
+    tb_hits: u64,
     pub stop_flag: Arc<AtomicBool>,
     stopped: bool,
     start: Instant,
@@ -194,10 +199,13 @@ fn upd(h: &mut i16, bonus: i32) {
 }
 
 fn score_str(s: i32) -> String {
-    if s >= MATE_BOUND {
+    if s >= MATE - MAX_PLY as i32 {
         format!("mate {}", (MATE - s + 1) / 2)
-    } else if s <= -MATE_BOUND {
+    } else if s <= -(MATE - MAX_PLY as i32) {
         format!("mate -{}", (MATE + s) / 2)
+    } else if s.abs() >= MATE_BOUND {
+        // Tablebase win or loss, shown as a large centipawn score.
+        format!("cp {}", s.signum() * (20000 - (TB_WIN - s.abs())))
     } else {
         format!("cp {}", s)
     }
@@ -229,6 +237,7 @@ impl Searcher {
             pv_len: [0; MAX_PLY + 2],
             hash_hist: Vec::with_capacity(1024),
             seldepth: 0,
+            tb_hits: 0,
             root_depth: 0,
             root_best: 0,
             lmr,
@@ -351,6 +360,7 @@ impl Searcher {
     pub fn search(&mut self, root: &Position, lim: &Limits) -> (Move, i32) {
         self.start = Instant::now();
         self.nodes = 0;
+        self.tb_hits = 0;
         self.stopped = false;
         self.hard_ms = lim.hard_ms;
         self.node_limit = lim.nodes;
@@ -377,6 +387,21 @@ impl Searcher {
                 println!("info depth 0 score {} nodes 0 time 0", if root.checkers != 0 { "mate 0" } else { "cp 0" });
             }
             return (0, 0);
+        }
+        // Root in the tablebases: play the move that keeps the result, with the
+        // fifty-move counter taken into account (DTZ).
+        if crate::tb::largest() > 0 {
+            if let Some((w, m)) = crate::tb::probe_root(root) {
+                let s = match w {
+                    crate::tb::Wdl::Win => TB_WIN - 1,
+                    crate::tb::Wdl::Loss => -TB_WIN + 1,
+                    crate::tb::Wdl::Draw => 0,
+                };
+                if !self.silent {
+                    println!("info depth 1 score {} nodes 0 tbhits 1 time 0 pv {}", score_str(s), root.move_uci(m));
+                }
+                return (m, s);
+            }
         }
         let mut best = fallback;
         let mut score = 0;
@@ -497,13 +522,14 @@ impl Searcher {
             pv.push_str(&self.root_pos.move_uci(self.pv[0][i]));
         }
         println!(
-            "info depth {} seldepth {} score {} nodes {} nps {} hashfull {} time {} pv{}",
+            "info depth {} seldepth {} score {} nodes {} nps {} hashfull {} tbhits {} time {} pv{}",
             d,
             self.seldepth,
             score_str(score),
             self.nodes,
             nps,
             self.tt.hashfull(),
+            self.tb_hits,
             el,
             pv
         );
@@ -578,6 +604,30 @@ impl Searcher {
                 }
                 self.stats.tt_cutoffs += 1;
                 return tt_score;
+            }
+        }
+
+        // Tablebase WDL probe: valid right after a capture or pawn move
+        // (halfmove 0) without castling rights.
+        if !root
+            && excluded == 0
+            && pos.halfmove == 0
+            && pos.castling == 0
+            && pos.occ().count_ones() <= crate::tb::largest()
+        {
+            if let Some(w) = crate::tb::probe_wdl(pos) {
+                self.tb_hits += 1;
+                let (s, bound) = match w {
+                    crate::tb::Wdl::Win => (TB_WIN - ply as i32, BOUND_LOWER),
+                    crate::tb::Wdl::Loss => (-TB_WIN + ply as i32, BOUND_UPPER),
+                    crate::tb::Wdl::Draw => (0, BOUND_EXACT),
+                };
+                if bound == BOUND_EXACT || (bound == BOUND_LOWER && s >= beta) || (bound == BOUND_UPPER && s <= alpha) {
+                    let ss = if s >= MATE_BOUND { s + ply as i32 } else if s <= -MATE_BOUND { s - ply as i32 } else { s };
+                    let ev = if in_check { -INF } else { self.evaluate(pos, ply) };
+                    self.tt.store(pos.hash, 0, ss, ev, (depth + 6).min(MAX_PLY as i32 - 1), bound);
+                    return s;
+                }
             }
         }
 

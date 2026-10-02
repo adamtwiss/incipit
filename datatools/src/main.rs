@@ -10,6 +10,9 @@ mod attacks;
 #[allow(dead_code)]
 #[path = "../../engine/src/position.rs"]
 mod position;
+#[allow(dead_code)]
+#[path = "../../engine/src/tb.rs"]
+mod tb;
 
 mod netfmt;
 mod oldbin;
@@ -31,6 +34,7 @@ usage:
   datatools bin <out_dir> <in.bin> ...        old datagen .bin -> viriformat, one
                                               <out_dir>/<name>.vf per input, in parallel
   datatools stats <file.vf> ...               count games and positions
+  datatools tbstats <tb_dir> <in.vf> ...      games reaching the Syzygy tables: game result vs tablebase result
   datatools net <source> <in> <out_dir> [options]
                                               convert a network to Incipit's format,
                                               writing <out_dir>/net-XXXXXXXX.nnue
@@ -54,6 +58,7 @@ fn main() {
         Some("pgn") if args.len() >= 4 => cmd_pgn(&args[2], &args[3..]),
         Some("bin") if args.len() >= 4 => cmd_bin(&args[2], &args[3..]),
         Some("stats") if args.len() >= 3 => cmd_stats(&args[2..]),
+        Some("tbstats") if args.len() >= 4 => cmd_tbstats(&args[2], &args[3..]),
         Some("net") if args.len() >= 5 => cmd_net(&args[2], &args[3], &args[4], &args[5..]),
         Some("net-info") if args.len() >= 3 => cmd_net_info(&args[2..]),
         Some("fens") if args.len() >= 5 => cmd_fens(&args[2], &args[3], &args[4..]),
@@ -168,6 +173,63 @@ fn cmd_stats(inputs: &[String]) -> Result<(), String> {
         let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
         let (games, moves, unscored) = viri::count(&data).map_err(|e| format!("{}: {}", input, e))?;
         println!("{}: {} games, {} positions ({} unscored)", input, games, moves, unscored);
+    }
+    Ok(())
+}
+
+/// For each game that reaches a position the tablebases cover, compares the
+/// game's result with the tablebase result of the first such position.
+fn cmd_tbstats(tb_path: &str, inputs: &[String]) -> Result<(), String> {
+    let largest = tb::init(tb_path);
+    if largest == 0 {
+        return Err(format!("no tablebases found in {}", tb_path));
+    }
+    // m[game result][tablebase result], both white-relative (viri WDL codes).
+    let mut m = [[0u64; 3]; 3];
+    let (mut games, mut positions, mut reach_pos, mut flip_pos, mut failed) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    for input in inputs {
+        let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
+        viri::for_each_game(&data, |moves, wdl| {
+            games += 1;
+            positions += moves.len() as u64;
+            let Some(k) = moves.iter().position(|(p, _)| p.occ().count_ones() <= largest && p.castling == 0) else {
+                return;
+            };
+            let mut p = moves[k].0;
+            p.halfmove = 0;
+            let Some(r) = tb::probe_wdl(&p) else {
+                failed += 1;
+                return;
+            };
+            let stm_white = p.stm == position::WHITE;
+            let t = match (r, stm_white) {
+                (tb::Wdl::Draw, _) => viri::WDL_DRAW,
+                (tb::Wdl::Win, true) | (tb::Wdl::Loss, false) => viri::WDL_WHITE_WIN,
+                _ => viri::WDL_BLACK_WIN,
+            };
+            m[wdl as usize][t as usize] += 1;
+            reach_pos += moves.len() as u64;
+            if t != wdl {
+                flip_pos += moves.len() as u64;
+            }
+        })
+        .map_err(|e| format!("{}: {}", input, e))?;
+    }
+    let reach: u64 = m.iter().flatten().sum();
+    let flips: u64 = (0..3).flat_map(|g| (0..3).map(move |t| (g, t))).filter(|(g, t)| g != t).map(|(g, t)| m[g][t]).sum();
+    println!("{}-man tables; {} games, {} positions", largest, games, positions);
+    println!(
+        "games reaching the tables: {} ({:.1}%), probe failures {}; positions in them {} ({:.1}%)",
+        reach, 100.0 * reach as f64 / games.max(1) as f64, failed, reach_pos, 100.0 * reach_pos as f64 / positions.max(1) as f64
+    );
+    println!(
+        "result differs from the tables: {} games ({:.1}% of those reaching them), {} positions ({:.2}% of all)",
+        flips, 100.0 * flips as f64 / reach.max(1) as f64, flip_pos, 100.0 * flip_pos as f64 / positions.max(1) as f64
+    );
+    let name = ["black win", "draw", "white win"];
+    println!("game result -> tablebase result (rows: game):");
+    for g in 0..3 {
+        println!("  {:>9}: black win {:>8}  draw {:>8}  white win {:>8}", name[g], m[g][0], m[g][1], m[g][2]);
     }
     Ok(())
 }
