@@ -5,6 +5,7 @@ mod nnue;
 mod params;
 mod position;
 mod search;
+mod tb;
 mod tt;
 use position::*;
 use search::*;
@@ -361,6 +362,7 @@ fn main() {
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
                 println!("option name UCI_Chess960 type check default false");
+                println!("option name SyzygyPath type string default <empty>");
                 if cfg!(feature = "tune") {
                     params::print_options();
                 }
@@ -385,6 +387,12 @@ fn main() {
                                     uci.searcher.tt = tt::TT::new(mb);
                                 }
                             }
+                        }
+                        "syzygypath" => {
+                            // The path keeps its case and may contain spaces.
+                            let path = toks[vi + 1..].join(" ");
+                            let n = tb::init(&path);
+                            println!("info string syzygy: {}-man tables loaded", n);
                         }
                         "uci_chess960" => {
                             CHESS960.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed);
@@ -428,6 +436,20 @@ fn main() {
                 println!("eval {}", nnue::evaluate(&acc, &uci.pos));
             }
             "genfens" => datagen::genfens(&toks),
+            // Tablebase result of the current position: tbprobe [path]
+            "tbprobe" => {
+                if toks.len() > 1 {
+                    tb::init(&toks[1..].join(" "));
+                }
+                let mut z = uci.pos;
+                z.halfmove = 0;
+                println!(
+                    "tbprobe largest {} wdl {:?} root {:?}",
+                    tb::largest(),
+                    tb::probe_wdl(&z),
+                    tb::probe_root(&uci.pos).map(|(w, m)| (w, uci.pos.move_uci(m)))
+                );
+            }
             "tune-spec" => params::print_spec(),
             "quit" => break,
             _ => {}

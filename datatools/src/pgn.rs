@@ -57,13 +57,20 @@ fn parse_tag(t: &str) -> Option<(String, String)> {
 }
 
 /// Parses the score at the start of a fastchess comment: Some(cp) from the
-/// mover's point of view, or None for a mate score or no parseable score.
-/// Mates aren't trained on, so they don't need a value.
+/// mover's point of view, or None for a mate score, a tablebase score or no
+/// parseable score. Mates and tablebase results aren't trained on as evals,
+/// so they don't need a value.
 pub fn parse_score(comment: &str) -> Option<i16> {
     let s = comment.trim().split('/').next()?.trim();
     let pawns: f64 = s.parse().ok()?;
-    Some((pawns * 100.0).round().clamp(-32000.0, 32000.0) as i16)
+    let cp = (pawns * 100.0).round();
+    // The engine reports tablebase wins/losses as cp +-(20000 - plies), plies
+    // < 256; no search eval comes near that.
+    (cp.abs() < TB_SCORE_MIN).then(|| cp as i16)
 }
+
+/// Smallest |cp| treated as a tablebase score.
+const TB_SCORE_MIN: f64 = 19000.0;
 
 fn legal_moves(pos: &Position) -> Vec<Move> {
     let mut list = MoveList::new();

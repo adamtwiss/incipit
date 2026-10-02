@@ -1,5 +1,7 @@
 // Picks the NNUE net to embed: $EVALFILE if set, otherwise the file named in net.txt
 // (downloaded by `make net`). Relative EVALFILE paths are relative to this directory.
+// Also compiles the vendored Fathom tablebase prober (../third_party/fathom) with
+// the system C compiler ($CC, default cc) and links it in.
 use std::path::PathBuf;
 use std::{env, fs, process};
 
@@ -34,6 +36,7 @@ fn main() {
     if rustc_minor() >= 89 {
         println!("cargo:rustc-cfg=avx512_intrinsics");
     }
+    build_fathom(&dir);
 }
 
 /// Minor version of the compiler building us ("rustc 1.89.0 ..." -> 89).
@@ -46,4 +49,27 @@ fn rustc_minor() -> u32 {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|v| v.split_whitespace().nth(1)?.split('.').nth(1)?.parse().ok())
         .unwrap_or(0)
+}
+
+fn build_fathom(dir: &std::path::Path) {
+    let src = dir.join("../third_party/fathom");
+    println!("cargo:rerun-if-changed={}", src.display());
+    println!("cargo:rerun-if-env-changed=CC");
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("fathom.o");
+    let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
+    let status = process::Command::new(&cc)
+        .args(["-std=gnu99", "-O2", "-fPIC", "-w", "-c"])
+        .arg("-I")
+        .arg(&src)
+        .arg(src.join("tbprobe.c"))
+        .arg("-o")
+        .arg(&out)
+        .status();
+    match status {
+        Ok(s) if s.success() => println!("cargo:rustc-link-arg={}", out.display()),
+        _ => {
+            eprintln!("error: compiling the Fathom tablebase prober with `{}` failed (set CC to a C compiler)", cc);
+            process::exit(1);
+        }
+    }
 }

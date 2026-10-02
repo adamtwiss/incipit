@@ -26,3 +26,6 @@ Incipit is built, tested and trained with these tools:
 * [fastchess](https://github.com/Disservin/fastchess): running engine matches for testing.
 * [viriformat](https://github.com/cosmobobak/viriformat) by Cosmo Bobak: the training data format.
 * [Bullet](https://github.com/jw1912/bullet) by Jamie Whiting: NNUE training.
+* [Fathom](https://github.com/jdart1/Fathom) (Ronald de Man, basil00, Jon Dart): Syzygy endgame tablebase probing, vendored in `third_party/fathom`.
+
+Third-party components and their licences are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
