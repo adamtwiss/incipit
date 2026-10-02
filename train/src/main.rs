@@ -5,7 +5,8 @@
 //   floor=0.00000243 (final LR, 0.001 * 0.3^5), warmup=0 (fraction of the run
 //   spent ramping the LR linearly up from lr/10), skip=0 (probability of
 //   randomly skipping each position), min_ply=16 (drop earlier positions),
-//   l1=0 (neurons in one hidden layer after the FT; kb4 SCReLU nets only).
+//   l1=0 (neurons in one hidden layer after the FT; kb4 SCReLU nets only),
+//   l1shared=0 (1: one hidden layer for all output buckets).
 //   incipit-train eval <checkpoint_dir> <hidden> <mirror|plain|kb8|kb4> <screlu|pairwise> <fen>...
 //
 // Reads every .vf file in <data_dir> (symlinks are fine), interleaving them so
@@ -161,9 +162,12 @@ macro_rules! build_kb {
 /// probe at x64 left 30% of them within +-1 step), L1 biases and the final
 /// layer f32. Convert with `datatools net ... --l1 N --qb 128`.
 macro_rules! build_kb_l1 {
-    ($layout:expr, $nb:expr, $hidden:expr, $l1:expr) => {{
+    ($layout:expr, $nb:expr, $hidden:expr, $l1:expr, $shared:expr) => {{
         let hidden: usize = $hidden;
         let l1n: usize = $l1;
+        // shared: one hidden layer for all positions (only the final layer
+        // is per output bucket), so every neuron trains on every position.
+        let shared: bool = $shared;
         const NB: usize = $nb;
         let mut trainer = ValueTrainerBuilder::default()
             .dual_perspective()
@@ -189,11 +193,12 @@ macro_rules! build_kb_l1 {
                 let l0f = builder.new_weights("l0f", Shape::new(hidden, 768), InitSettings::Zeroed);
                 let mut l0 = builder.new_affine("l0", 768 * NB, hidden);
                 l0.weights = l0.weights + l0f.repeat(NB);
-                let l1 = builder.new_affine("l1", 2 * hidden, OUTPUT_BUCKETS * l1n);
+                let l1 = builder.new_affine("l1", 2 * hidden, if shared { l1n } else { OUTPUT_BUCKETS * l1n });
                 let l2 = builder.new_affine("l2", l1n, OUTPUT_BUCKETS);
                 let stm = l0.forward(stm_inputs).screlu();
                 let ntm = l0.forward(ntm_inputs).screlu();
-                let h = l1.forward(stm.concat(ntm)).select(output_buckets).screlu();
+                let z = l1.forward(stm.concat(ntm));
+                let h = if shared { z.screlu() } else { z.select(output_buckets).screlu() };
                 l2.forward(h).select(output_buckets)
             });
         let clip = AdamWParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
@@ -293,7 +298,9 @@ fn main() {
         let args: Vec<String> = args.iter().filter(|a| !a.starts_with("l1=")).cloned().collect();
         if l1n > 0 {
             assert!(parse_inputs(&args[4]) == Inputs::Kb4, "l1= needs kb4 inputs");
-            let mut trainer = build_kb_l1!(KB4, KB4_BUCKETS, hidden, l1n);
+            let shared = args.iter().any(|a| a == "l1shared=1");
+            let args: Vec<String> = args.iter().filter(|a| !a.starts_with("l1shared=")).cloned().collect();
+            let mut trainer = build_kb_l1!(KB4, KB4_BUCKETS, hidden, l1n, shared);
             trainer.load_from_checkpoint(&args[2]);
             for fen in &args[6..] {
                 println!("{:.1}\t{}", trainer.eval(fen) * 400.0, fen);
@@ -318,6 +325,7 @@ fn main() {
     let min_ply = opt("min_ply", 16.0) as u32;
     // One hidden layer of this many neurons after the FT (0 = none; kb4 only).
     let l1n = opt("l1", 0.0) as usize;
+    let l1shared = opt("l1shared", 0.0) != 0.0;
     let args: Vec<String> = args.iter().filter(|a| !a.contains('=')).cloned().collect();
     let (data_dir, net_id, out_dir) = (&args[1], &args[2], &args[3]);
     let superbatches: usize = args.get(4).map_or(60, |s| s.parse().unwrap());
@@ -352,7 +360,7 @@ fn main() {
         superbatches,
         wdl_proportion
     );
-    println!("lr {} -> {}, warmup {}, skip {}, min_ply {}, hidden layer {}", peak_lr, floor_lr, warmup, skip, min_ply, l1n);
+    println!("lr {} -> {}, warmup {}, skip {}, min_ply {}, hidden layer {}{}", peak_lr, floor_lr, warmup, skip, min_ply, l1n, if l1shared { " (shared)" } else { "" });
 
     let schedule = TrainingSchedule {
         net_id: net_id.clone(),
@@ -373,7 +381,7 @@ fn main() {
     let loader = ViriBinpackLoader::new_interleave_multiple(&paths, 1024, 8, ViriFilter::Builtin(filter));
     if l1n > 0 {
         assert!(inputs == Inputs::Kb4 && !pairwise, "l1= is only implemented for kb4 SCReLU nets");
-        let mut trainer = build_kb_l1!(KB4, KB4_BUCKETS, hidden, l1n);
+        let mut trainer = build_kb_l1!(KB4, KB4_BUCKETS, hidden, l1n, l1shared);
         trainer.run(&schedule, &settings, &loader);
         return;
     }
