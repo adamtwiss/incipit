@@ -367,6 +367,7 @@ impl Searcher {
     /// Returns (best move, score).
     pub fn search(&mut self, root: &Position, lim: &Limits) -> (Move, i32) {
         self.start = Instant::now();
+        self.tt.new_search();
         self.nodes = 0;
         self.tb_hits = 0;
         self.stopped = false;
