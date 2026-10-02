@@ -41,6 +41,9 @@ params! {
     HistMax = "HistMax", 2739, 1000, 4000, 150;
     SeDouble = "SeDouble", 13, 5, 50, 2;
     RfpDepth = "RfpDepth", 8, 3, 12, 1;
+    // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
+    NmpDepthMul = "NmpDepthMul", 20, 0, 60, 3;
+    NmpMarginBase = "NmpMarginBase", 150, 0, 400, 20;
     NmpBase = "NmpBase", 4, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
     SeMul = "SeMul", 21, 8, 40, 2;

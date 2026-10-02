@@ -687,7 +687,7 @@ impl Searcher {
             // null move pruning
             if depth >= 3
                 && eval >= beta
-                && static_eval >= beta - 20 * depth + 150
+                && static_eval >= beta - tp(P::NmpDepthMul) * depth + tp(P::NmpMarginBase)
                 && ply >= 1
                 && self.stack[ply - 1].mv != 0
                 && pos.has_non_pawns(pos.stm)
