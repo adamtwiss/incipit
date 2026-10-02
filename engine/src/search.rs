@@ -602,7 +602,10 @@ impl Searcher {
             tt_bound = e.bound;
             if !pv_node
                 && tt_depth >= depth
-                && pos.halfmove < 90
+                // Near the fifty-move draw a stored score may be stale (the
+                // counter isn't in the key); refuse only scores well away
+                // from a draw, so fortress endgames can still cut.
+                && (pos.halfmove < 90 || tt_score.abs() <= tp(P::HmGuard))
                 && (tt_bound == BOUND_EXACT
                     || (tt_bound == BOUND_LOWER && tt_score >= beta)
                     || (tt_bound == BOUND_UPPER && tt_score <= alpha))
@@ -1161,7 +1164,7 @@ impl Searcher {
             }
             tt_move = e.mv;
             if !pv_node
-                && pos.halfmove < 90
+                && (pos.halfmove < 90 || s.abs() <= tp(P::HmGuard))
                 && (e.bound == BOUND_EXACT || (e.bound == BOUND_LOWER && s >= beta) || (e.bound == BOUND_UPPER && s <= alpha))
             {
                 self.stats.tt_cutoffs += 1;

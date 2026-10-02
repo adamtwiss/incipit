@@ -41,6 +41,8 @@ params! {
     HistMax = "HistMax", 2739, 1000, 4000, 150;
     SeDouble = "SeDouble", 13, 5, 50, 2;
     RfpDepth = "RfpDepth", 8, 3, 12, 1;
+    // Largest |TT score| still used for a cutoff at halfmove >= 90 (half a pawn).
+    HmGuard = "HmGuard", 50, 0, 300, 15;
     NmpBase = "NmpBase", 4, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
     SeMul = "SeMul", 21, 8, 40, 2;
