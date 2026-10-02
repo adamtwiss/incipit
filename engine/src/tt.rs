@@ -37,10 +37,17 @@ impl TT {
     }
     #[inline(always)]
     pub fn prefetch(&self, key: u64) {
+        let p = unsafe { self.table.as_ptr().add(self.idx(key)) } as *const i8;
+        #[cfg(target_arch = "x86_64")]
         unsafe {
-            let p = self.table.as_ptr().add(self.idx(key)) as *const i8;
-            std::arch::x86_64::_mm_prefetch(p, std::arch::x86_64::_MM_HINT_T0);
-        }
+            std::arch::x86_64::_mm_prefetch(p, std::arch::x86_64::_MM_HINT_T0)
+        };
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            std::arch::asm!("prfm pldl1keep, [{0}]", in(reg) p, options(nostack, preserves_flags, readonly))
+        };
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        let _ = p;
     }
     #[inline(always)]
     pub fn probe(&self, key: u64) -> Option<Entry> {

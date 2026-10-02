@@ -1208,6 +1208,32 @@ fn eval_n<const H: usize>(n: &Network, acc: &Acc, pos: &Position) -> i32 {
     }
 }
 
+/// Reference implementation of `dot` (below), also the fallback on targets
+/// without a SIMD version.
+#[cfg_attr(not(test), allow(dead_code))]
+fn dot_scalar<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
+    let mut s = 0i32;
+    for (&x, &w) in a.iter().zip(w) {
+        let c = x.clamp(0, qa as i16);
+        let m = if SCRELU { c.wrapping_mul(w) } else { w };
+        s = s.wrapping_add(c as i32 * m as i32);
+    }
+    s
+}
+
+/// SCReLU: Σ clamp(a, 0, qa)² · w; CReLU: Σ clamp(a, 0, qa) · w, over
+/// a.len() values (a multiple of 32). `a` is 64-byte aligned.
+///
+/// The arithmetic is wrapping throughout: for SCReLU, clamp(a) · w is
+/// truncated to i16 before the second multiply, and the i32 sums wrap, so
+/// every implementation gives the same result bit for bit (see the test).
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[inline(always)]
+unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
+    dot_scalar::<SCRELU>(a, w, qa)
+}
+
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 unsafe fn hsum(s: std::arch::x86_64::__m256i) -> i32 {
     use std::arch::x86_64::*;
@@ -1219,8 +1245,8 @@ unsafe fn hsum(s: std::arch::x86_64::__m256i) -> i32 {
     _mm_cvtsi128_si32(x)
 }
 
-/// SCReLU: Σ clamp(a, 0, qa)² · w; CReLU: Σ clamp(a, 0, qa) · w, over
-/// a.len() values (a multiple of 32). `a` is 64-byte aligned.
+/// AVX2 version: two 16-lane accumulators per 32-wide step.
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
     use std::arch::x86_64::*;
@@ -1481,4 +1507,59 @@ pub fn l1perm(path: &str, fens: &str, out: &str) -> Result<(), String> {
     let s: Vec<String> = perm.iter().map(|i| i.to_string()).collect();
     std::fs::write(out, s.join(" ") + "\n").map_err(|e| format!("{}: {}", out, e))?;
     Ok(())
+}
+
+/// NEON version: four 8-lane vectors per 32-wide step, each with its own
+/// pair of i32 accumulators (low and high halves of the widening multiply),
+/// so the eight multiply-accumulate chains are independent.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
+    use std::arch::aarch64::*;
+    let h = a.len();
+    let zero = vdupq_n_s16(0);
+    let qa = vdupq_n_s16(qa as i16);
+    let mut s = [vdupq_n_s32(0); 8];
+    let mut i = 0;
+    while i < h {
+        for k in 0..4 {
+            let x = vld1q_s16(a.as_ptr().add(i + 8 * k));
+            let wv = vld1q_s16(w.as_ptr().add(i + 8 * k));
+            let c = vminq_s16(vmaxq_s16(x, zero), qa);
+            let m = if SCRELU { vmulq_s16(c, wv) } else { wv };
+            s[2 * k] = vmlal_s16(s[2 * k], vget_low_s16(c), vget_low_s16(m));
+            s[2 * k + 1] = vmlal_high_s16(s[2 * k + 1], c, m);
+        }
+        i += 32;
+    }
+    let s = vaddq_s32(vaddq_s32(vaddq_s32(s[0], s[1]), vaddq_s32(s[2], s[3])), vaddq_s32(vaddq_s32(s[4], s[5]), vaddq_s32(s[6], s[7])));
+    vaddvq_s32(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The SIMD `dot` matches the scalar reference, including where the
+    /// 16-bit products and 32-bit sums wrap.
+    #[test]
+    fn dot_matches_scalar() {
+        let mut r = 0x9E3779B97F4A7C15u64;
+        let mut next = move || {
+            r ^= r << 13;
+            r ^= r >> 7;
+            r ^= r << 17;
+            r
+        };
+        for h in [32usize, 256, 1024, 2048] {
+            for _ in 0..20 {
+                let a = Aligned::from((0..h).map(|_| next() as i16));
+                let w: Vec<i16> = (0..h).map(|_| next() as i16).collect();
+                for qa in [255, 181, 127, 64] {
+                    assert_eq!(unsafe { dot::<true>(&a, &w, qa) }, dot_scalar::<true>(&a, &w, qa), "screlu h={} qa={}", h, qa);
+                    assert_eq!(unsafe { dot::<false>(&a, &w, qa) }, dot_scalar::<false>(&a, &w, qa), "crelu h={} qa={}", h, qa);
+                }
+            }
+        }
+    }
 }

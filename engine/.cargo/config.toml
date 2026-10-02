@@ -1,2 +1,9 @@
-[build]
+# Portable defaults for plain `cargo build` / `cargo test`. `make` overrides
+# them with -Ctarget-cpu=native via RUSTFLAGS. The flags are per target so
+# that other architectures build with their own defaults (NEON is baseline on
+# arm64), and because crt-static is unsupported on macOS.
+[target.'cfg(all(target_arch = "x86_64", not(target_vendor = "apple")))']
 rustflags = ["-C", "target-cpu=x86-64-v3", "-C", "target-feature=+crt-static"]
+
+[target.'cfg(all(target_arch = "x86_64", target_vendor = "apple"))']
+rustflags = ["-C", "target-cpu=x86-64-v3"]
