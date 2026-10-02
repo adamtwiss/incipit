@@ -51,6 +51,9 @@ pub struct Arch {
     /// engine's sparse product is faster when rarely active neurons share
     /// 4-neuron groups.
     pub perm: Vec<usize>,
+    /// Hidden-layer input shift: u8 input = clamp(a, 0, QA)^2 >> shift
+    /// (0 = the smallest shift that fits 0..127).
+    pub l1_shift: u32,
 }
 
 impl Arch {
@@ -110,7 +113,8 @@ pub fn write_hidden(arch: &Arch, ftw: &[i16], ftb: &[i16], w1: &[i8], b1: &[f32]
     p2.extend_from_slice(&1u32.to_le_bytes());
     p2.extend_from_slice(&[ACT_NONE, TYPE_F32, TYPE_F32, 1]);
     let mut lq = Vec::new();
-    for v in [hidden_shift(arch.qa) as i32, arch.qb, 0, 0] {
+    let shift = if arch.l1_shift > 0 { arch.l1_shift } else { hidden_shift(arch.qa) };
+    for v in [shift as i32, arch.qb, 0, 0] {
         lq.extend_from_slice(&v.to_le_bytes());
     }
     let mut weights: Vec<u8> = w1.iter().map(|&v| v as u8).collect();
