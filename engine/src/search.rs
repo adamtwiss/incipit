@@ -313,6 +313,8 @@ impl Searcher {
         b[0].update_from(&a[ply], pos, child, m, &mut self.refresh_cache);
     }
 
+    /// The network's eval (side to move), without the fifty-move damping: the
+    /// value stored in the TT, which is shared by any halfmove count.
     #[inline(always)]
     fn evaluate(&self, pos: &Position, ply: usize) -> i32 {
         let e = if cfg!(feature = "hce") {
@@ -320,7 +322,13 @@ impl Searcher {
         } else {
             nnue::evaluate(&self.acc[ply], pos)
         };
-        (e * (200 - pos.halfmove as i32) / 200).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+        e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+    }
+
+    /// Pulls an eval towards a draw as the fifty-move counter rises.
+    #[inline(always)]
+    fn damp(pos: &Position, v: i32) -> i32 {
+        v * (200 - pos.halfmove as i32) / 200
     }
 
     #[inline(always)]
@@ -330,7 +338,7 @@ impl Searcher {
             + self.corr_np[pos.stm][0][(pos.np_key[0] as usize) & m]
             + self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m])
             / (2 * CORR_GRAIN);
-        (raw + c).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+        Self::damp(pos, raw + c).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
     fn update_corr(&mut self, pos: &Position, depth: i32, diff: i32) {
@@ -562,7 +570,7 @@ impl Searcher {
                 return if in_check && !pos.has_legal_move() { -MATE + ply as i32 } else { 0 };
             }
             if ply >= MAX_PLY - 2 {
-                return if in_check { 0 } else { self.evaluate(pos, ply) };
+                return if in_check { 0 } else { Self::damp(pos, self.evaluate(pos, ply)) };
             }
             alpha = alpha.max(-MATE + ply as i32);
             beta = beta.min(MATE - ply as i32 - 1);
@@ -1131,7 +1139,7 @@ impl Searcher {
         }
         let in_check = pos.checkers != 0;
         if ply >= MAX_PLY - 2 {
-            return if in_check { 0 } else { self.evaluate(pos, ply) };
+            return if in_check { 0 } else { Self::damp(pos, self.evaluate(pos, ply)) };
         }
         if pos.insufficient_material() {
             return 0;
@@ -1153,6 +1161,7 @@ impl Searcher {
             }
             tt_move = e.mv;
             if !pv_node
+                && pos.halfmove < 90
                 && (e.bound == BOUND_EXACT || (e.bound == BOUND_LOWER && s >= beta) || (e.bound == BOUND_UPPER && s <= alpha))
             {
                 self.stats.tt_cutoffs += 1;
