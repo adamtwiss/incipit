@@ -3,7 +3,7 @@
 
 use crate::position::*;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 extern "C" {
     fn tb_init(path: *const std::ffi::c_char) -> bool;
@@ -22,6 +22,16 @@ const RESULT_FAILED: u32 = 0xFFFF_FFFF;
 
 /// Largest piece count the loaded tables cover (0: none loaded).
 static LARGEST: AtomicU32 = AtomicU32::new(0);
+
+/// Cache of recent WDL probe results, indexed by the position's hash: each
+/// entry is the hash with its low two bits replaced by the result (1 loss,
+/// 2 draw, 3 win; 0 empty). 2^16 entries, 512 KB.
+const CACHE_SIZE: usize = 1 << 16;
+static CACHE: [AtomicU64; CACHE_SIZE] = {
+    #[allow(clippy::declare_interior_mutable_const)]
+    const EMPTY: AtomicU64 = AtomicU64::new(0);
+    [EMPTY; CACHE_SIZE]
+};
 
 /// Win-draw-loss for the side to move. Cursed wins and blessed losses (won or
 /// lost, but drawn under the fifty-move rule) count as draws.
@@ -54,6 +64,9 @@ pub fn init(path: &str) -> u32 {
         }
     };
     LARGEST.store(n, Ordering::Relaxed);
+    for e in CACHE.iter() {
+        e.store(0, Ordering::Relaxed);
+    }
     n
 }
 
@@ -73,6 +86,11 @@ pub fn probe_wdl(pos: &Position) -> Option<Wdl> {
     if pos.occ().count_ones() > largest() || pos.castling != 0 || pos.halfmove != 0 {
         return None;
     }
+    let slot = &CACHE[pos.hash as usize & (CACHE_SIZE - 1)];
+    let e = slot.load(Ordering::Relaxed);
+    if e & !3 == pos.hash & !3 && e & 3 != 0 {
+        return Some([Wdl::Loss, Wdl::Draw, Wdl::Win][(e & 3) as usize - 1]);
+    }
     let p = &pos.pieces;
     let v = unsafe {
         tb_probe_wdl_impl(
@@ -80,7 +98,17 @@ pub fn probe_wdl(pos: &Position) -> Option<Wdl> {
             ep_of(pos), pos.stm == WHITE,
         )
     };
-    (v != RESULT_FAILED).then(|| wdl_of(v))
+    if v == RESULT_FAILED {
+        return None;
+    }
+    let w = wdl_of(v);
+    let code = match w {
+        Wdl::Loss => 1,
+        Wdl::Draw => 2,
+        Wdl::Win => 3,
+    };
+    slot.store((pos.hash & !3) | code, Ordering::Relaxed);
+    Some(w)
 }
 
 /// Root probe (DTZ): the WDL of the position and a move that keeps it,
