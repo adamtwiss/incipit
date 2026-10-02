@@ -45,6 +45,12 @@ pub struct Arch {
     /// The hidden layer is shared by all output buckets (only the final
     /// layer is per bucket).
     pub l1_shared: bool,
+    /// FT neuron order for a net with a hidden layer: new neuron k is old
+    /// neuron perm[k] (empty = unchanged). Reordering the FT columns and the
+    /// matching hidden-layer inputs together leaves every eval unchanged; the
+    /// engine's sparse product is faster when rarely active neurons share
+    /// 4-neuron groups.
+    pub perm: Vec<usize>,
 }
 
 impl Arch {
@@ -254,6 +260,20 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let b1 = f32s(take(4 * nb1 * l1));
     let w2 = f32s(take(4 * nb * l1));
     let b2 = f32s(take(4 * nb));
+    if arch.perm.is_empty() {
+        return Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, &w2, &b2));
+    }
+    let p = &arch.perm;
+    let mut seen = vec![false; h];
+    if p.len() != h || !p.iter().all(|&i| i < h && !std::mem::replace(&mut seen[i], true)) {
+        return Err(format!("--permute: need a permutation of 0..{}", h));
+    }
+    let ftw: Vec<i16> = ftw.chunks_exact(h).flat_map(|row| p.iter().map(move |&i| row[i])).collect();
+    let ftb: Vec<i16> = p.iter().map(|&i| ftb[i]).collect();
+    let w1: Vec<i8> = w1
+        .chunks_exact(2 * h)
+        .flat_map(|row| p.iter().map(move |&i| row[i]).chain(p.iter().map(move |&i| row[h + i])))
+        .collect();
     Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, &w2, &b2))
 }
 

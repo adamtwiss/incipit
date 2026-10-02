@@ -46,6 +46,7 @@ usage:
       --l1 N               one hidden layer of N neurons after the FT (bullet only)
       --l1-shared          the hidden layer is shared by all output buckets
       --description TEXT   training run, data and settings
+      --permute FILE       FT neuron order (hidden-layer nets; from the engine's l1perm)
   datatools net-info <file.nnue> ...          show a network's header
   datatools fens <count> <seed> <file.vf> ... sample undecided positions across game phases
                                               and search-stressing kinds (for the bench set)";
@@ -188,6 +189,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         description: String::new(),
         l1: 0,
         l1_shared: false,
+        perm: Vec::new(),
     };
     let mut i = 0;
     while i < opts.len() {
@@ -212,6 +214,10 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
             "--qb" => arch.qb = num()? as i32,
             "--scale" => arch.scale = num()? as i32,
             "--description" => arch.description = val.clone(),
+            "--permute" => {
+                let text = std::fs::read_to_string(val).map_err(|e| format!("{}: {}", val, e))?;
+                arch.perm = text.split_whitespace().map(|x| x.parse::<usize>()).collect::<Result<_, _>>().map_err(|_| format!("bad --permute file {}", val))?;
+            }
             "--activation" => {
                 arch.activation = match val.as_str() {
                     "screlu" => netfmt::ACT_SCRELU,

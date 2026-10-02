@@ -245,6 +245,12 @@ fn main() {
                 datagen::run(args[2].parse().unwrap(), &args[3], args[4].parse().unwrap(), args[5].parse().unwrap());
                 return;
             }
+            "l1perm" if args.len() >= 5 => {
+                if let Err(e) = nnue::l1perm(&args[2], &args[3], &args[4]) {
+                    eprintln!("error: {}", e);
+                }
+                return;
+            }
             "l1stats" if args.len() >= 4 => {
                 if let Err(e) = nnue::l1stats(&args[2], &args[3]) {
                     eprintln!("error: {}", e);

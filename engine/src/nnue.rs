@@ -1046,3 +1046,123 @@ pub fn l1stats(path: &str, fens: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// FT neuron order for a net with a hidden layer, from activity on a FEN file:
+/// counts how often each neuron's u8 input is non-zero (both perspectives),
+/// prints the share of non-zero 4-input groups now and after sorting neurons
+/// by activity (most active first), and writes the order to `out` for the
+/// converter's --permute. Replaces the embedded network.
+pub fn l1perm(path: &str, fens: &str, out: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {}", path, e))?;
+    let n = load(&bytes)?;
+    unsafe { NET = Box::into_raw(Box::new(n)) };
+    let n = net();
+    let l1 = n.l1.as_ref().ok_or("network has no hidden layer")?;
+    let h = n.h;
+    let text = std::fs::read_to_string(fens).map_err(|e| format!("{}: {}", fens, e))?;
+    let mut inputs: Vec<Vec<u8>> = Vec::new();
+    let mut acc = Acc::new();
+    for line in text.lines() {
+        let fen = line.split(['|', ';']).next().unwrap_or("").trim();
+        let Some(pos) = crate::position::Position::from_fen(fen) else { continue };
+        acc.refresh(&pos);
+        let mut x = vec![0u8; 2 * h];
+        to_u8_scalar(acc.side(pos.stm, h), &mut x[..h], n.qa, l1.shift);
+        to_u8_scalar(acc.side(pos.stm ^ 1, h), &mut x[h..], n.qa, l1.shift);
+        inputs.push(x);
+    }
+    if inputs.len() < 2 {
+        return Err("too few positions".into());
+    }
+    // Build the order on the even positions, measure it on the odd ones.
+    let test: Vec<Vec<u8>> = inputs.iter().skip(1).step_by(2).cloned().collect();
+    let inputs: Vec<Vec<u8>> = inputs.into_iter().step_by(2).collect();
+    let mut active = vec![0u64; h];
+    for x in &inputs {
+        for j in 0..h {
+            active[j] += (x[j] != 0) as u64 + (x[h + j] != 0) as u64;
+        }
+    }
+    let mut sorted: Vec<usize> = (0..h).collect();
+    sorted.sort_by_key(|&j| std::cmp::Reverse(active[j]));
+    // Greedy co-activation grouping: bitsets of the samples (position x
+    // perspective) where each neuron is active; each group starts from the
+    // most active unassigned neuron and adds, three times, the neuron most
+    // similar (Jaccard) to the group so far, so neurons that fire together
+    // share a group.
+    let samples = 2 * inputs.len();
+    let words = samples.div_ceil(64);
+    let mut bits = vec![0u64; h * words];
+    for (k, x) in inputs.iter().enumerate() {
+        for side in 0..2 {
+            let sm = 2 * k + side;
+            for j in 0..h {
+                if x[side * h + j] != 0 {
+                    bits[j * words + sm / 64] |= 1 << (sm % 64);
+                }
+            }
+        }
+    }
+    let mut used = vec![false; h];
+    let mut perm = Vec::with_capacity(h);
+    for &seed in &sorted {
+        if used[seed] {
+            continue;
+        }
+        used[seed] = true;
+        perm.push(seed);
+        let mut union: Vec<u64> = bits[seed * words..(seed + 1) * words].to_vec();
+        for _ in 0..3 {
+            // Jaccard similarity of the neuron's active samples with the
+            // group's: |A & U| / |A | U|.
+            let un: u64 = union.iter().map(|u| u.count_ones() as u64).sum();
+            let mut best = (-1.0f64, usize::MAX);
+            for j in 0..h {
+                if used[j] {
+                    continue;
+                }
+                let b = &bits[j * words..(j + 1) * words];
+                let add: u64 = b.iter().zip(&union).map(|(a, u)| (a & !u).count_ones() as u64).sum();
+                let both = active[j] - add;
+                let sim = both as f64 / (un + add).max(1) as f64;
+                if sim > best.0 {
+                    best = (sim, j);
+                }
+            }
+            let j = best.1;
+            used[j] = true;
+            perm.push(j);
+            for (u, a) in union.iter_mut().zip(&bits[j * words..(j + 1) * words]) {
+                *u |= a;
+            }
+        }
+    }
+    // Share of 4-input groups with any non-zero input, for an order.
+    let nz_share = |order: &[usize]| -> f64 {
+        let mut nz = 0u64;
+        for x in &test {
+            for side in [0, h] {
+                for g in order.chunks_exact(4) {
+                    nz += g.iter().any(|&j| x[side + j] != 0) as u64;
+                }
+            }
+        }
+        nz as f64 / (test.len() * 2 * h / 4) as f64
+    };
+    let ident: Vec<usize> = (0..h).collect();
+    let inputs_nz = active.iter().sum::<u64>() as f64 / (inputs.len() * 2 * h) as f64;
+    println!(
+        "positions {} (order) + {} (measured); non-zero inputs {:.1}%; non-zero 4-groups: current order {:.1}%, sorted by activity {:.1}%, co-activation groups {:.1}%",
+        inputs.len(),
+        test.len(),
+        100.0 * inputs_nz,
+        100.0 * nz_share(&ident),
+        100.0 * nz_share(&sorted),
+        100.0 * nz_share(&perm)
+    );
+    let dead = active.iter().filter(|&&a| a == 0).count();
+    println!("FT neurons never active: {} of {}", dead, h);
+    let s: Vec<String> = perm.iter().map(|i| i.to_string()).collect();
+    std::fs::write(out, s.join(" ") + "\n").map_err(|e| format!("{}: {}", out, e))?;
+    Ok(())
+}
