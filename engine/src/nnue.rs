@@ -980,3 +980,69 @@ pub fn l1check(trials: usize) -> usize {
     }
     bad
 }
+
+/// Hidden-layer diagnostics over a FEN file with the network in `path`: per
+/// output bucket and neuron, how often the neuron is active (pre-activation
+/// > 0) and saturated (>= 1), its bias, and the share of int8 weights at the
+/// clip. Replaces the embedded network for the rest of the process.
+pub fn l1stats(path: &str, fens: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {}", path, e))?;
+    let n = load(&bytes)?;
+    unsafe { NET = Box::into_raw(Box::new(n)) };
+    let n = net();
+    let l1 = n.l1.as_ref().ok_or("network has no hidden layer")?;
+    let h = n.h;
+    let nb = l1.b2.len();
+    let mut cnt = vec![0u64; nb];
+    let mut act = vec![[0u64; L1_SIZE]; nb];
+    let mut sat = vec![[0u64; L1_SIZE]; nb];
+    let mut maxv = vec![[f32::MIN; L1_SIZE]; nb];
+    let text = std::fs::read_to_string(fens).map_err(|e| format!("{}: {}", fens, e))?;
+    let mut acc = Acc::new();
+    for line in text.lines() {
+        let fen = line.split(['|', ';']).next().unwrap_or("").trim();
+        let Some(pos) = crate::position::Position::from_fen(fen) else { continue };
+        if (pos.occ().count_ones() as usize) >= n.bucket_of.len() {
+            continue;
+        }
+        acc.refresh(&pos);
+        let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
+        let mut x = vec![0u8; 2 * h];
+        to_u8_scalar(acc.side(pos.stm, h), &mut x[..h], n.qa, l1.shift);
+        to_u8_scalar(acc.side(pos.stm ^ 1, h), &mut x[h..], n.qa, l1.shift);
+        let b1i = if l1.shared { 0 } else { bucket };
+        let w = &l1.w1[b1i * L1_SIZE * 2 * h..(b1i + 1) * L1_SIZE * 2 * h];
+        let z = l1_matmul_scalar(&x, w);
+        let k = 1.0 / (l1.in_scale * l1.w_scale);
+        cnt[bucket] += 1;
+        for i in 0..L1_SIZE {
+            let v = z[i] as f32 * k + l1.b1[b1i][i];
+            act[bucket][i] += (v > 0.0) as u64;
+            sat[bucket][i] += (v >= 1.0) as u64;
+            maxv[bucket][i] = maxv[bucket][i].max(v);
+        }
+    }
+    for b in 0..nb {
+        let b1i = if l1.shared { 0 } else { b };
+        let w = &l1.w1[b1i * L1_SIZE * 2 * h..(b1i + 1) * L1_SIZE * 2 * h];
+        let clip = w.iter().filter(|&&v| v.unsigned_abs() >= 126).count();
+        let c = cnt[b].max(1) as f64;
+        let dead = (0..L1_SIZE).filter(|&i| act[b][i] == 0).count();
+        let always = (0..L1_SIZE).filter(|&i| sat[b][i] == cnt[b] && cnt[b] > 0).count();
+        print!("bucket {} positions {} dead {} always-saturated {} clipped {:.2}% | active%:",
+               b, cnt[b], dead, always, 100.0 * clip as f64 / w.len() as f64);
+        for i in 0..L1_SIZE {
+            print!(" {:.0}", 100.0 * act[b][i] as f64 / c);
+        }
+        print!(" | max:");
+        for i in 0..L1_SIZE {
+            print!(" {:.2}", maxv[b][i]);
+        }
+        print!(" | b1:");
+        for i in 0..L1_SIZE {
+            print!(" {:.2}", l1.b1[b1i][i]);
+        }
+        println!();
+    }
+    Ok(())
+}

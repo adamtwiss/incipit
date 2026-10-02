@@ -6,7 +6,10 @@
 //   spent ramping the LR linearly up from lr/10), skip=0 (probability of
 //   randomly skipping each position), min_ply=16 (drop earlier positions),
 //   l1=0 (neurons in one hidden layer after the FT; kb4 SCReLU nets only),
-//   l1shared=0 (1: one hidden layer for all output buckets).
+//   l1shared=0 (1: one hidden layer for all output buckets), l1act=0 (1: CReLU
+//   instead of SCReLU on the hidden layer), l1decay=0.01 (AdamW decay on the
+//   layers after the FT), fact=1 (0: no factoriser on the FT), wstart=0.1 (LR at
+//   the start of the warm-up, as a fraction of lr).
 //   incipit-train eval <checkpoint_dir> <hidden> <mirror|plain|kb8|kb4> <screlu|pairwise> <fen>...
 //
 // Reads every .vf file in <data_dir> (symlinks are fine), interleaving them so
@@ -162,7 +165,8 @@ macro_rules! build_kb {
 /// probe at x64 left 30% of them within +-1 step), L1 biases and the final
 /// layer f32. Convert with `datatools net ... --l1 N --qb 128`.
 macro_rules! build_kb_l1 {
-    ($layout:expr, $nb:expr, $hidden:expr, $l1:expr, $shared:expr) => {{
+    ($layout:expr, $nb:expr, $hidden:expr, $l1:expr, $shared:expr, $opts:expr) => {{
+        let o: L1Opts = $opts;
         let hidden: usize = $hidden;
         let l1n: usize = $l1;
         // shared: one hidden layer for all positions (only the final layer
@@ -175,13 +179,17 @@ macro_rules! build_kb_l1 {
             .inputs(ChessBucketsMirrored::new($layout))
             .output_buckets(MaterialCount::<OUTPUT_BUCKETS>)
             .save_format(&[
-                SavedFormat::id("l0w")
-                    .transform(|store, weights| {
-                        let factoriser = store.get("l0f").values.f32().repeat(NB);
-                        weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
-                    })
-                    .round()
-                    .quantise::<i16>(255),
+                if o.fact {
+                    SavedFormat::id("l0w")
+                        .transform(|store, weights| {
+                            let factoriser = store.get("l0f").values.f32().repeat(NB);
+                            weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
+                        })
+                        .round()
+                        .quantise::<i16>(255)
+                } else {
+                    SavedFormat::id("l0w").round().quantise::<i16>(255)
+                },
                 SavedFormat::id("l0b").round().quantise::<i16>(255),
                 SavedFormat::id("l1w").round().quantise::<i8>(128).transpose(),
                 SavedFormat::id("l1b"),
@@ -190,23 +198,52 @@ macro_rules! build_kb_l1 {
             ])
             .loss_fn(|output, target| output.sigmoid().squared_error(target))
             .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
-                let l0f = builder.new_weights("l0f", Shape::new(hidden, 768), InitSettings::Zeroed);
                 let mut l0 = builder.new_affine("l0", 768 * NB, hidden);
-                l0.weights = l0.weights + l0f.repeat(NB);
+                if o.fact {
+                    let l0f = builder.new_weights("l0f", Shape::new(hidden, 768), InitSettings::Zeroed);
+                    l0.weights = l0.weights + l0f.repeat(NB);
+                }
                 let l1 = builder.new_affine("l1", 2 * hidden, if shared { l1n } else { OUTPUT_BUCKETS * l1n });
                 let l2 = builder.new_affine("l2", l1n, OUTPUT_BUCKETS);
                 let stm = l0.forward(stm_inputs).screlu();
                 let ntm = l0.forward(ntm_inputs).screlu();
                 let z = l1.forward(stm.concat(ntm));
-                let h = if shared { z.screlu() } else { z.select(output_buckets).screlu() };
+                let z = if shared { z } else { z.select(output_buckets) };
+                let h = if o.crelu { z.crelu() } else { z.screlu() };
                 l2.forward(h).select(output_buckets)
             });
         let clip = AdamWParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
         trainer.optimiser.set_params_for_weight("l0w", clip);
-        trainer.optimiser.set_params_for_weight("l0f", clip);
-        trainer.optimiser.set_params_for_weight("l1w", clip);
+        if o.fact {
+            trainer.optimiser.set_params_for_weight("l0f", clip);
+        }
+        // Weight decay on the layers after the FT: a hidden neuron with no
+        // gradient (inactive on every position) decays to exactly zero.
+        trainer.optimiser.set_params_for_weight("l1w", AdamWParams { decay: o.decay, ..clip });
+        for id in ["l1b", "l2w", "l2b"] {
+            trainer.optimiser.set_params_for_weight(id, AdamWParams { decay: o.decay, ..Default::default() });
+        }
         trainer
     }};
+}
+
+/// Hidden-layer training options (defaults: the first hidden-layer recipe).
+#[derive(Clone, Copy)]
+struct L1Opts {
+    crelu: bool, // CReLU instead of SCReLU on the hidden layer
+    decay: f32,  // AdamW decay on l1w, l1b, l2w, l2b
+    fact: bool,  // factoriser on the FT
+}
+
+impl L1Opts {
+    fn from_args(args: &[String]) -> Self {
+        let opt = |k: &str, d: f32| -> f32 {
+            args.iter()
+                .find_map(|a| a.strip_prefix(k).and_then(|r| r.strip_prefix('=')).map(|v| v.parse().unwrap()))
+                .unwrap_or(d)
+        };
+        L1Opts { crelu: opt("l1act", 0.0) != 0.0, decay: opt("l1decay", 0.01), fact: opt("fact", 1.0) != 0.0 }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -259,13 +296,14 @@ fn parse_inputs(s: &str) -> Inputs {
     }
 }
 
-/// Linear warm-up from peak/10 over the first `warmup` fraction of the run,
+/// Linear warm-up from peak * wstart over the first `warmup` fraction of the run,
 /// then cosine decay from `peak` to `floor` at the last superbatch.
 #[derive(Clone, Debug)]
 struct WarmupCosine {
     peak: f32,
     floor: f32,
     warmup: f32,
+    wstart: f32,
     superbatches: usize,
     batches_per_superbatch: usize,
 }
@@ -274,14 +312,14 @@ impl lr::LrScheduler for WarmupCosine {
     fn lr(&self, batch: usize, superbatch: usize) -> f32 {
         let t = ((superbatch - 1) as f32 + batch as f32 / self.batches_per_superbatch as f32) / self.superbatches as f32;
         if t < self.warmup {
-            return self.peak * (0.1 + 0.9 * t / self.warmup);
+            return self.peak * (self.wstart + (1.0 - self.wstart) * t / self.warmup);
         }
         let u = if self.warmup < 1.0 { (t - self.warmup) / (1.0 - self.warmup) } else { 1.0 };
         self.floor + 0.5 * (self.peak - self.floor) * (1.0 + (std::f32::consts::PI * u.min(1.0)).cos())
     }
 
     fn colourful(&self) -> String {
-        format!("warmup {:.0}% then cosine {} -> {}", self.warmup * 100.0, self.peak, self.floor)
+        format!("warmup {:.0}% from x{} then cosine {} -> {}", self.warmup * 100.0, self.wstart, self.peak, self.floor)
     }
 }
 
@@ -299,8 +337,9 @@ fn main() {
         if l1n > 0 {
             assert!(parse_inputs(&args[4]) == Inputs::Kb4, "l1= needs kb4 inputs");
             let shared = args.iter().any(|a| a == "l1shared=1");
-            let args: Vec<String> = args.iter().filter(|a| !a.starts_with("l1shared=")).cloned().collect();
-            let mut trainer = build_kb_l1!(KB4, KB4_BUCKETS, hidden, l1n, shared);
+            let o = L1Opts::from_args(&args);
+            let args: Vec<String> = args.iter().filter(|a| !a.contains('=')).cloned().collect();
+            let mut trainer = build_kb_l1!(KB4, KB4_BUCKETS, hidden, l1n, shared, o);
             trainer.load_from_checkpoint(&args[2]);
             for fen in &args[6..] {
                 println!("{:.1}\t{}", trainer.eval(fen) * 400.0, fen);
@@ -326,6 +365,8 @@ fn main() {
     // One hidden layer of this many neurons after the FT (0 = none; kb4 only).
     let l1n = opt("l1", 0.0) as usize;
     let l1shared = opt("l1shared", 0.0) != 0.0;
+    let l1o = L1Opts::from_args(&args);
+    let wstart = opt("wstart", 0.1);
     let args: Vec<String> = args.iter().filter(|a| !a.contains('=')).cloned().collect();
     let (data_dir, net_id, out_dir) = (&args[1], &args[2], &args[3]);
     let superbatches: usize = args.get(4).map_or(60, |s| s.parse().unwrap());
@@ -360,7 +401,10 @@ fn main() {
         superbatches,
         wdl_proportion
     );
-    println!("lr {} -> {}, warmup {}, skip {}, min_ply {}, hidden layer {}{}", peak_lr, floor_lr, warmup, skip, min_ply, l1n, if l1shared { " (shared)" } else { "" });
+    println!("lr {} -> {}, warmup {} from x{}, skip {}, min_ply {}, hidden layer {}{}", peak_lr, floor_lr, warmup, wstart, skip, min_ply, l1n, if l1shared { " (shared)" } else { "" });
+    if l1n > 0 {
+        println!("hidden layer: {}, decay {}, factoriser {}", if l1o.crelu { "CReLU" } else { "SCReLU" }, l1o.decay, l1o.fact);
+    }
 
     let schedule = TrainingSchedule {
         net_id: net_id.clone(),
@@ -372,7 +416,7 @@ fn main() {
             end_superbatch: superbatches,
         },
         wdl_scheduler: wdl::ConstantWDL { value: wdl_proportion },
-        lr_scheduler: WarmupCosine { peak: peak_lr, floor: floor_lr, warmup, superbatches, batches_per_superbatch: 6104 },
+        lr_scheduler: WarmupCosine { peak: peak_lr, floor: floor_lr, warmup, wstart, superbatches, batches_per_superbatch: 6104 },
         save_rate: 10,
     };
     let settings = LocalSettings { threads: 8, test_set: None, output_directory: out_dir, batch_queue_size: 64 };
@@ -381,7 +425,7 @@ fn main() {
     let loader = ViriBinpackLoader::new_interleave_multiple(&paths, 1024, 8, ViriFilter::Builtin(filter));
     if l1n > 0 {
         assert!(inputs == Inputs::Kb4 && !pairwise, "l1= is only implemented for kb4 SCReLU nets");
-        let mut trainer = build_kb_l1!(KB4, KB4_BUCKETS, hidden, l1n, l1shared);
+        let mut trainer = build_kb_l1!(KB4, KB4_BUCKETS, hidden, l1n, l1shared, l1o);
         trainer.run(&schedule, &settings, &loader);
         return;
     }
