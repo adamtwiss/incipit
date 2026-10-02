@@ -25,6 +25,7 @@ struct Frame {
     cont_idx: usize, // piece*64+to of the move made at this ply
     excluded: Move,
     mv: Move,
+    dext: i32, // double extensions on the line to this node
 }
 
 /// Search statistics, cumulative until reset (bench sums them over its
@@ -376,6 +377,7 @@ impl Searcher {
         self.seldepth = 0;
         self.acc[0].refresh(root);
         self.root_pos = *root;
+        self.stack[0].dext = 0;
         for r in self.root_node_counts.iter_mut() {
             *r = [0; 64];
         }
@@ -546,6 +548,9 @@ impl Searcher {
     fn negamax(&mut self, pos: &Position, mut alpha: i32, mut beta: i32, mut depth: i32, ply: usize, cut_node: bool) -> i32 {
         let pv_node = beta - alpha > 1;
         let root = ply == 0;
+        // Children (null move, probcut, moves) inherit the line's count of
+        // double extensions; the move loop adds this node's own.
+        self.stack[ply + 1].dext = self.stack[ply].dext;
         self.pv_len[ply] = 0;
         if depth <= 0 {
             return self.qsearch(pos, alpha, beta, ply);
@@ -895,7 +900,9 @@ impl Searcher {
                 }
                 if v < sbeta {
                     ext = 1;
-                    if !pv_node && v < sbeta - tp(P::SeDouble) {
+                    // At most DextMax double extensions on one line, so
+                    // forcing lines can't stack them without limit.
+                    if !pv_node && v < sbeta - tp(P::SeDouble) && self.stack[ply].dext < tp(P::DextMax) {
                         ext = 2;
                         self.stats.se_double += 1;
                     } else {
@@ -920,6 +927,7 @@ impl Searcher {
             self.hash_hist.push(pos.hash);
             let nodes_before = self.nodes;
             let new_depth = depth - 1 + ext;
+            self.stack[ply + 1].dext = self.stack[ply].dext + (ext == 2) as i32;
             let mut score;
             if legal == 1 {
                 score = -self.negamax(&child, -beta, -alpha, new_depth, ply + 1, !pv_node && !cut_node);

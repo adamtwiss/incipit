@@ -44,6 +44,8 @@ params! {
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 20, 0, 60, 3;
     NmpMarginBase = "NmpMarginBase", 150, 0, 400, 20;
+    // Most double extensions on one line.
+    DextMax = "DextMax", 4, 1, 12, 1;
     NmpBase = "NmpBase", 4, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
     SeMul = "SeMul", 21, 8, 40, 2;
