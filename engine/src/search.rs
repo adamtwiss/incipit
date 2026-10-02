@@ -671,12 +671,13 @@ impl Searcher {
 
         if !pv_node && !in_check && excluded == 0 {
             // reverse futility pruning
-            if depth <= tp(P::RfpDepth) && eval.abs() < MATE_BOUND && eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta {
+            // (gates on the corrected static eval, not the TT-adjusted one)
+            if depth <= tp(P::RfpDepth) && static_eval.abs() < MATE_BOUND && static_eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta {
                 self.stats.rfp += 1;
-                return (eval + beta) / 2;
+                return (static_eval + beta) / 2;
             }
             // razoring
-            if depth <= 3 && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth <= alpha {
+            if depth <= 3 && static_eval + tp(P::RazorBase) + tp(P::RazorMul) * depth <= alpha {
                 self.stats.razor_tries += 1;
                 let v = self.qsearch(pos, alpha, alpha + 1, ply);
                 if v <= alpha {
@@ -686,7 +687,7 @@ impl Searcher {
             }
             // null move pruning
             if depth >= 3
-                && eval >= beta
+                && static_eval >= beta
                 && static_eval >= beta - tp(P::NmpDepthMul) * depth + tp(P::NmpMarginBase)
                 && ply >= 1
                 && self.stack[ply - 1].mv != 0
