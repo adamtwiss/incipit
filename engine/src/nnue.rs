@@ -31,6 +31,9 @@ const TYPE_F32: u8 = 4;
 pub const L1_SIZE: usize = 16;
 /// Most neurons in the optional second hidden layer.
 pub const L2_MAX: usize = 32;
+/// Capacity of the non-zero group lists: AVX-512 lists groups of 4 inputs,
+/// AVX2 pairs (2 * MAX_H / 2), plus slack for full-width stores.
+const NZ_CAP: usize = 2 * MAX_H / 2 + 16;
 const OUTPUT_MATERIAL: u8 = 1;
 
 // Path chosen by build.rs (EVALFILE, or the net named in net.txt).
@@ -62,7 +65,8 @@ struct Hidden {
     shift: u32,
     in_scale: f32,          // QA^2 / 2^shift: one input unit in real terms
     w_scale: f32,           // int8 weight quantisation
-    w1: AlignedI8,          // [bucket][input / 4][n][4], the kernels' layout
+    w1: AlignedI8,          // [bucket][input / 4][n][4], the AVX-512 kernels' layout
+    w1p: Aligned,           // the same as i16 in pairs, [bucket][input / 2][n][2]: the AVX2 kernels' layout
     b1: Vec<[f32; L1_SIZE]>, // [bucket]
     shared: bool,           // one hidden layer for all buckets (w1, b1 have one entry)
     w2: Vec<[f32; L1_SIZE]>, // output layer [bucket] (no second hidden layer)
@@ -382,6 +386,7 @@ fn load_hidden(
         }
     }
     o += nb1 * ln * 2 * h;
+    let w1p = pair_layout(&w1, ln);
     let mut f32s = |n: usize| {
         let v: Vec<f32> = d[o..o + 4 * n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
         o += 4 * n;
@@ -443,6 +448,7 @@ fn load_hidden(
             in_scale: (qa as f32 * qa as f32) / (1u64 << shift) as f32,
             w_scale: w_scale as f32,
             w1,
+            w1p,
             b1,
             shared,
             w2,
@@ -742,7 +748,7 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize>(n: &Network, l1:
     let mut x: Inputs = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
     // Indices of the 4-input groups with any non-zero input (+ 8 of slack).
     #[allow(invalid_value, clippy::uninit_assumed_init)]
-    let mut nz: [u16; 2 * MAX_H / 4 + 8] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+    let mut nz: [u16; NZ_CAP] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
     let count = if n.qa == 255 && l1.shift == 9 {
         // Converts and lists the non-zero groups in one pass.
         unsafe { to_u8_nz_255_9(acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h), &mut x.0[..2 * h], &mut nz) }
@@ -754,7 +760,8 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize>(n: &Network, l1:
     // A shared hidden layer has one block for all buckets (branch-free).
     let b1i = bucket & !(l1.shared as usize).wrapping_neg();
     let w = &l1.w1[b1i * L * 2 * h..(b1i + 1) * L * 2 * h];
-    let z = unsafe { l1_product::<L>(&x.0[..2 * h], &nz[..count + 8], count, w) };
+    let wp = &l1.w1p[b1i * L * 2 * h..(b1i + 1) * L * 2 * h];
+    let z = unsafe { l1_product::<L>(&x.0[..2 * h], &nz[..count + 16], count, w, wp) };
     let k = 1.0 / (l1.in_scale * l1.w_scale);
     // The float layers, 8 lanes at a time with AVX2 (every build has it; the
     // x86-64-v3 baseline). Separate multiply and add (no FMA) and a fixed
@@ -908,8 +915,9 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
             let p = _mm256_permute4x64_epi64(_mm256_packus_epi16(sq(i), sq(i + 16)), 0b11_01_10_00);
             let o = base + i;
             _mm256_storeu_si256(x.as_mut_ptr().add(o) as *mut __m256i, p);
-            let m = !(_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(p, zero))) as u32) & 0xff;
-            count = push_nz(nz, count, m, (o / 4) as u16);
+            let m = pair_mask(p);
+            count = push_nz(nz, count, m & 0xff, (o / 2) as u16);
+            count = push_nz(nz, count, m >> 8, (o / 2) as u16 + 8);
         }
     }
     count
@@ -968,10 +976,11 @@ unsafe fn push_nz(nz: &mut [u16], count: usize, m: u32, base: u16) -> usize {
 #[inline(always)]
 fn l1_matmul<const L: usize>(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
     #[allow(invalid_value, clippy::uninit_assumed_init)]
-    let mut nz: [u16; 2 * MAX_H / 4 + 8] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+    let mut nz: [u16; NZ_CAP] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
     unsafe {
         let count = scan_nz(x, &mut nz);
-        l1_product::<L>(x, &nz[..count + 8], count, w)
+        let wp = pair_layout(w, L);
+        l1_product::<L>(x, &nz[..count + 16], count, w, &wp)
     }
 }
 
@@ -996,12 +1005,25 @@ unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
     use std::arch::x86_64::*;
     let zero = _mm256_setzero_si256();
     let mut count = 0;
+    let _ = zero;
     for c in (0..x.len()).step_by(32) {
         let v = _mm256_loadu_si256(x.as_ptr().add(c) as *const __m256i);
-        let m = !(_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(v, zero))) as u32) & 0xff;
-        count = push_nz(nz, count, m, (c / 4) as u16);
+        let m = pair_mask(v);
+        count = push_nz(nz, count, m & 0xff, (c / 2) as u16);
+        count = push_nz(nz, count, m >> 8, (c / 2) as u16 + 8);
     }
     count
+}
+
+/// AVX2: the 16-bit mask of the non-zero byte pairs of v (pair k = bit k).
+#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[inline(always)]
+unsafe fn pair_mask(v: std::arch::x86_64::__m256i) -> u32 {
+    use std::arch::x86_64::*;
+    let z = _mm256_cmpeq_epi16(v, _mm256_setzero_si256());
+    // packs: per 128-bit lane, the 8 word flags as bytes (twice).
+    let m = _mm256_movemask_epi8(_mm256_packs_epi16(z, z)) as u32;
+    !((m & 0xff) | ((m >> 8) & 0xff00)) & 0xffff
 }
 
 /// AVX-512: one register holds all 16 outputs; each group of 4 inputs is a
@@ -1052,21 +1074,22 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
     z
 }
 
-/// AVX2: two registers of 8 outputs; per group of 4 inputs, maddubs + madd.
+/// AVX2: two registers of 8 outputs; per listed pair of inputs (as i16), one
+/// madd per register with the pair's i16 weights (exact integer arithmetic,
+/// so the result equals the AVX-512 kernels').
 #[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
 #[inline(always)]
-unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i16]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
-    let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
-    let ones = _mm256_set1_epi16(1);
+    let (xp, wp) = (x.as_ptr() as *const u16, w.as_ptr());
     let mut a = [_mm256_setzero_si256(); 4];
-    // Only the listed non-zero groups (see the AVX-512 version).
-    let mut step = |k: usize, g: usize| {
-        let xb = _mm256_set1_epi32(xp.add(g).read_unaligned());
-        let w0 = _mm256_load_si256(wp.add(g * 64) as *const __m256i);
-        let w1 = _mm256_load_si256(wp.add(g * 64 + 32) as *const __m256i);
-        a[2 * k] = _mm256_add_epi32(a[2 * k], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, w0), ones));
-        a[2 * k + 1] = _mm256_add_epi32(a[2 * k + 1], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, w1), ones));
+    let mut step = |k: usize, q: usize| {
+        let pr = xp.add(q).read_unaligned() as i32;
+        let xb = _mm256_set1_epi32((pr & 0xff) | ((pr >> 8) << 16));
+        let w0 = _mm256_load_si256(wp.add(q * 32) as *const __m256i);
+        let w1 = _mm256_load_si256(wp.add(q * 32 + 16) as *const __m256i);
+        a[2 * k] = _mm256_add_epi32(a[2 * k], _mm256_madd_epi16(xb, w0));
+        a[2 * k + 1] = _mm256_add_epi32(a[2 * k + 1], _mm256_madd_epi16(xb, w1));
     };
     let mut i = 0;
     while i + 1 < count {
@@ -1085,7 +1108,11 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
 
 /// The hidden-layer product for L (8 or 16) outputs; outputs past L are 0.
 #[inline(always)]
-unsafe fn l1_product<const L: usize>(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product<const L: usize>(x: &[u8], nz: &[u16], count: usize, w: &[i8], wp: &[i16]) -> [i32; L1_SIZE] {
+    #[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
+    let _ = wp;
+    #[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+    let (w, _) = (wp, w);
     if L == 8 {
         l1_product8(x, nz, count, w)
     } else {
@@ -1140,18 +1167,18 @@ unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_
     z
 }
 
-/// AVX2, 8 outputs: one register per group; maddubs + madd.
+/// AVX2, 8 outputs: one madd per listed pair of inputs.
 #[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
 #[inline(always)]
-unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i16]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
-    let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
-    let ones = _mm256_set1_epi16(1);
+    let (xp, wp) = (x.as_ptr() as *const u16, w.as_ptr());
     let mut a = [_mm256_setzero_si256(); 4];
-    let mut step = |k: usize, g: usize| {
-        let xb = _mm256_set1_epi32(xp.add(g).read_unaligned());
-        let wv = _mm256_load_si256(wp.add(g * 32) as *const __m256i);
-        a[k] = _mm256_add_epi32(a[k], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, wv), ones));
+    let mut step = |k: usize, q: usize| {
+        let pr = xp.add(q).read_unaligned() as i32;
+        let xb = _mm256_set1_epi32((pr & 0xff) | ((pr >> 8) << 16));
+        let wv = _mm256_load_si256(wp.add(q * 16) as *const __m256i);
+        a[k] = _mm256_add_epi32(a[k], _mm256_madd_epi16(xb, wv));
     };
     let mut i = 0;
     while i + 3 < count {
@@ -1168,6 +1195,21 @@ unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_
     let mut z = [0i32; L1_SIZE];
     _mm256_storeu_si256(z.as_mut_ptr() as *mut __m256i, r);
     z
+}
+
+/// The hidden-layer weights from the [input / 4][l][4] i8 layout to the AVX2
+/// kernels' [input / 2][l][2] i16 layout (any number of blocks of l rows).
+fn pair_layout(w: &[i8], l: usize) -> Aligned {
+    let n = w.len();
+    let mut v = vec![0i16; n];
+    for (k, &x) in w.iter().enumerate() {
+        // k = (i / 4) * l * 4 + o * 4 + i % 4, within a block of l * inputs
+        let (g, r) = (k / (l * 4), k % (l * 4));
+        let (o, j) = (r / 4, r % 4);
+        let i = g * 4 + j;
+        v[(i / 2) * l * 2 + o * 2 + i % 2] = x as i16;
+    }
+    Aligned::from(v.into_iter())
 }
 
 /// Scalar reference for the hidden-layer product with `l` outputs (used by
@@ -1273,8 +1315,8 @@ pub fn l1check(trials: usize) -> usize {
             }
             // Fused conversion + scan (two halves) vs conversion then scan.
             let mut x3 = vec![0u8; 2 * h];
-            let mut nz1 = vec![0u16; 2 * h / 4 + 8];
-            let mut nz2 = vec![0u16; 2 * h / 4 + 8];
+            let mut nz1 = vec![0u16; h + 16];
+            let mut nz2 = vec![0u16; h + 16];
             let c1 = unsafe { to_u8_nz_255_9(&a[..h], &a[h..], &mut x3, &mut nz1) };
             let c2 = unsafe { scan_nz(&x2, &mut nz2) };
             if x3 != x2 || c1 != c2 || nz1[..c1] != nz2[..c2] {
