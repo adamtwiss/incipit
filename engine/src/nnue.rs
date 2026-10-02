@@ -660,12 +660,21 @@ fn eval_hidden<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Positi
     // eval showed up in profiles).
     #[allow(invalid_value, clippy::uninit_assumed_init)]
     let mut x: Inputs = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
-    to_u8(acc.side(pos.stm, h), &mut x.0[..h], n.qa, l1.shift);
-    to_u8(acc.side(pos.stm ^ 1, h), &mut x.0[h..2 * h], n.qa, l1.shift);
+    // Indices of the 4-input groups with any non-zero input (+ 8 of slack).
+    #[allow(invalid_value, clippy::uninit_assumed_init)]
+    let mut nz: [u16; 2 * MAX_H / 4 + 8] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+    let count = if n.qa == 255 && l1.shift == 9 {
+        // Converts and lists the non-zero groups in one pass.
+        unsafe { to_u8_nz_255_9(acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h), &mut x.0[..2 * h], &mut nz) }
+    } else {
+        to_u8_scalar(acc.side(pos.stm, h), &mut x.0[..h], n.qa, l1.shift);
+        to_u8_scalar(acc.side(pos.stm ^ 1, h), &mut x.0[h..2 * h], n.qa, l1.shift);
+        unsafe { scan_nz(&x.0[..2 * h], &mut nz) }
+    };
     // A shared hidden layer has one block for all buckets (branch-free).
     let b1i = bucket & !(l1.shared as usize).wrapping_neg();
     let w = &l1.w1[b1i * L1_SIZE * 2 * h..(b1i + 1) * L1_SIZE * 2 * h];
-    let z = l1_matmul(&x.0[..2 * h], w);
+    let z = unsafe { l1_product(&x.0[..2 * h], &nz[..count + 8], count, w) };
     let k = 1.0 / (l1.in_scale * l1.w_scale);
     let (b1, w2) = (&l1.b1[b1i], &l1.w2[bucket]);
     let mut out = l1.b2[bucket];
@@ -718,6 +727,66 @@ unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
     }
 }
 
+/// to_u8 (QA 255, shift 9) of both perspectives into x (a0 then a1), listing
+/// the non-zero 4-input groups in nz as each 64-byte block is produced (no
+/// second pass over x). Returns the number of groups listed.
+#[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
+#[inline(always)]
+unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
+    use std::arch::x86_64::*;
+    let zero = _mm512_setzero_si512();
+    let qa = _mm512_set1_epi16(255);
+    let order = _mm512_set_epi64(7, 5, 3, 1, 6, 4, 2, 0);
+    let mut count = 0;
+    for (half, a) in [a0, a1].into_iter().enumerate() {
+        let base = half * a0.len();
+        for i in (0..a.len()).step_by(64) {
+            let sq = |o: usize| {
+                let c = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero), qa);
+                _mm512_mulhi_epu16(_mm512_slli_epi16(c, 7), c)
+            };
+            let (lo, hi) = (sq(i), if i + 32 < a.len() { sq(i + 32) } else { zero });
+            let p = _mm512_permutexvar_epi64(order, _mm512_packus_epi16(lo, hi));
+            let o = base + i;
+            if i + 64 <= a.len() {
+                _mm512_storeu_si512(x.as_mut_ptr().add(o) as *mut __m512i, p);
+            } else {
+                _mm256_storeu_si256(x.as_mut_ptr().add(o) as *mut __m256i, _mm512_castsi512_si256(p));
+            }
+            // The upper half of p is zero past the end of a.
+            let m = _mm512_test_epi32_mask(p, p) as u32;
+            count = push_nz(nz, count, m & 0xff, (o / 4) as u16);
+            count = push_nz(nz, count, m >> 8, (o / 4) as u16 + 8);
+        }
+    }
+    count
+}
+
+/// AVX2 version of to_u8_nz_255_9.
+#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[inline(always)]
+unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
+    use std::arch::x86_64::*;
+    let zero = _mm256_setzero_si256();
+    let qa = _mm256_set1_epi16(255);
+    let mut count = 0;
+    for (half, a) in [a0, a1].into_iter().enumerate() {
+        let base = half * a0.len();
+        for i in (0..a.len()).step_by(32) {
+            let sq = |o: usize| {
+                let c = _mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero), qa);
+                _mm256_mulhi_epu16(_mm256_slli_epi16(c, 7), c)
+            };
+            let p = _mm256_permute4x64_epi64(_mm256_packus_epi16(sq(i), sq(i + 16)), 0b11_01_10_00);
+            let o = base + i;
+            _mm256_storeu_si256(x.as_mut_ptr().add(o) as *mut __m256i, p);
+            let m = !(_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(p, zero))) as u32) & 0xff;
+            count = push_nz(nz, count, m, (o / 4) as u16);
+        }
+    }
+    count
+}
+
 #[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
 #[inline(always)]
 unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
@@ -766,10 +835,45 @@ unsafe fn push_nz(nz: &mut [u16], count: usize, m: u32, base: u16) -> usize {
 }
 
 /// z[n] = sum_i x[i] * w[n][i] for the L1_SIZE outputs, with w in the
-/// [in / 4][out][in % 4] layout. x.len() is a multiple of 64.
+/// [in / 4][out][in % 4] layout. x.len() is a multiple of 64. (Scan, then
+/// product; eval_hidden fuses the scan into the u8 conversion instead.)
 #[inline(always)]
 fn l1_matmul(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
-    unsafe { l1_matmul_simd(x, w) }
+    #[allow(invalid_value, clippy::uninit_assumed_init)]
+    let mut nz: [u16; 2 * MAX_H / 4 + 8] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+    unsafe {
+        let count = scan_nz(x, &mut nz);
+        l1_product(x, &nz[..count + 8], count, w)
+    }
+}
+
+/// Lists the 4-input groups of x with any non-zero input; returns the count.
+#[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
+#[inline(always)]
+unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
+    use std::arch::x86_64::*;
+    let mut count = 0;
+    for c in (0..x.len()).step_by(64) {
+        let v = _mm512_loadu_si512(x.as_ptr().add(c) as *const __m512i);
+        let m = _mm512_test_epi32_mask(v, v) as u32;
+        count = push_nz(nz, count, m & 0xff, (c / 4) as u16);
+        count = push_nz(nz, count, m >> 8, (c / 4) as u16 + 8);
+    }
+    count
+}
+
+#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[inline(always)]
+unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
+    use std::arch::x86_64::*;
+    let zero = _mm256_setzero_si256();
+    let mut count = 0;
+    for c in (0..x.len()).step_by(32) {
+        let v = _mm256_loadu_si256(x.as_ptr().add(c) as *const __m256i);
+        let m = !(_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(v, zero))) as u32) & 0xff;
+        count = push_nz(nz, count, m, (c / 4) as u16);
+    }
+    count
 }
 
 /// AVX-512: one register holds all 16 outputs; each group of 4 inputs is a
@@ -777,7 +881,7 @@ fn l1_matmul(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
 /// at most 127 and weights within +-127, so maddubs's i16 sums can't overflow.
 #[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
 #[inline(always)]
-unsafe fn l1_matmul_simd(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
     let mut s0 = _mm512_setzero_si512();
@@ -795,17 +899,8 @@ unsafe fn l1_matmul_simd(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
             _mm512_add_epi32(s, _mm512_madd_epi16(_mm512_maddubs_epi16(xb, wv), _mm512_set1_epi16(1)))
         }
     }
-    // SCReLU leaves most inputs at zero: list the groups of 4 with any
-    // non-zero input and skip the rest (their weights aren't even loaded).
-    #[allow(invalid_value, clippy::uninit_assumed_init)]
-    let mut nz: [u16; 2 * MAX_H / 4 + 8] = std::mem::MaybeUninit::uninit().assume_init();
-    let mut count = 0;
-    for c in (0..x.len()).step_by(64) {
-        let v = _mm512_loadu_si512(x.as_ptr().add(c) as *const __m512i);
-        let m = _mm512_test_epi32_mask(v, v) as u32;
-        count = push_nz(&mut nz, count, m & 0xff, (c / 4) as u16);
-        count = push_nz(&mut nz, count, m >> 8, (c / 4) as u16 + 8);
-    }
+    // SCReLU leaves most inputs at zero: only the listed groups of 4 with any
+    // non-zero input are used (the others' weights aren't even loaded).
     // Four accumulators so consecutive dpbusds don't wait on each other.
     let mut s2 = _mm512_setzero_si512();
     let mut s3 = _mm512_setzero_si512();
@@ -832,21 +927,12 @@ unsafe fn l1_matmul_simd(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
 /// AVX2: two registers of 8 outputs; per group of 4 inputs, maddubs + madd.
 #[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
 #[inline(always)]
-unsafe fn l1_matmul_simd(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
     let ones = _mm256_set1_epi16(1);
     let mut a = [_mm256_setzero_si256(); 4];
-    // Skip groups of 4 inputs that are all zero (see the AVX-512 version).
-    #[allow(invalid_value, clippy::uninit_assumed_init)]
-    let mut nz: [u16; 2 * MAX_H / 4 + 8] = std::mem::MaybeUninit::uninit().assume_init();
-    let mut count = 0;
-    let zero = _mm256_setzero_si256();
-    for c in (0..x.len()).step_by(32) {
-        let v = _mm256_loadu_si256(x.as_ptr().add(c) as *const __m256i);
-        let m = !(_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(v, zero))) as u32) & 0xff;
-        count = push_nz(&mut nz, count, m, (c / 4) as u16);
-    }
+    // Only the listed non-zero groups (see the AVX-512 version).
     let mut step = |k: usize, g: usize| {
         let xb = _mm256_set1_epi32(xp.add(g).read_unaligned());
         let w0 = _mm256_load_si256(wp.add(g * 64) as *const __m256i);
@@ -966,6 +1052,16 @@ pub fn l1check(trials: usize) -> usize {
             to_u8(&a, &mut x1, 255, 9);
             to_u8_scalar(&a, &mut x2, 255, 9);
             if x1 != x2 {
+                bad += 1;
+                continue;
+            }
+            // Fused conversion + scan (two halves) vs conversion then scan.
+            let mut x3 = vec![0u8; 2 * h];
+            let mut nz1 = vec![0u16; 2 * h / 4 + 8];
+            let mut nz2 = vec![0u16; 2 * h / 4 + 8];
+            let c1 = unsafe { to_u8_nz_255_9(&a[..h], &a[h..], &mut x3, &mut nz1) };
+            let c2 = unsafe { scan_nz(&x2, &mut nz2) };
+            if x3 != x2 || c1 != c2 || nz1[..c1] != nz2[..c2] {
                 bad += 1;
                 continue;
             }
