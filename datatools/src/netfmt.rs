@@ -42,6 +42,9 @@ pub struct Arch {
     pub description: String,
     /// Neurons in one hidden layer after the FT (0 = none).
     pub l1: usize,
+    /// The hidden layer is shared by all output buckets (only the final
+    /// layer is per bucket).
+    pub l1_shared: bool,
 }
 
 impl Arch {
@@ -84,17 +87,19 @@ pub fn hidden_shift(qa: i32) -> u32 {
 }
 
 /// Serialises a network with one hidden layer: FT -> l1 (SCReLU, i8 weights
-/// at QB, f32 biases) -> 1 (f32), both per output bucket. `w1` is
-/// [bucket][out][2h]; `b1`, `w2` are [bucket][out]; `b2` is [bucket].
+/// at QB, f32 biases; per output bucket unless `l1_shared`) -> 1 (f32, per
+/// bucket). `w1` is [bucket][out][2h] (or [out][2h]); `b1` is [bucket][out]
+/// (or [out]); `w2` is [bucket][out]; `b2` is [bucket].
 pub fn write_hidden(arch: &Arch, ftw: &[i16], ftb: &[i16], w1: &[i8], b1: &[f32], w2: &[f32], b2: &[f32]) -> Vec<u8> {
     let (h, nb, l1) = (arch.hidden, arch.output_buckets, arch.l1);
-    assert_eq!(w1.len(), nb * l1 * 2 * h);
-    assert_eq!(b1.len(), nb * l1);
+    let nb1 = if arch.l1_shared { 1 } else { nb };
+    assert_eq!(w1.len(), nb1 * l1 * 2 * h);
+    assert_eq!(b1.len(), nb1 * l1);
     assert_eq!(w2.len(), nb * l1);
     assert_eq!(b2.len(), nb);
     let mut p1 = ((2 * h) as u32).to_le_bytes().to_vec();
     p1.extend_from_slice(&(l1 as u32).to_le_bytes());
-    p1.extend_from_slice(&[ACT_SCRELU, TYPE_I8, TYPE_F32, 1]);
+    p1.extend_from_slice(&[ACT_SCRELU, TYPE_I8, TYPE_F32, !arch.l1_shared as u8]);
     let mut p2 = (l1 as u32).to_le_bytes().to_vec();
     p2.extend_from_slice(&1u32.to_le_bytes());
     p2.extend_from_slice(&[ACT_NONE, TYPE_F32, TYPE_F32, 1]);
@@ -225,8 +230,9 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
         return Err("--l1 needs a bullet source".into());
     }
     let (h, nkb, nb, l1) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets, arch.l1);
+    let nb1 = if arch.l1_shared { 1 } else { nb };
     let n_ftw = nkb * 768 * h;
-    let expect = 2 * (n_ftw + h) + nb * l1 * 2 * h + 4 * (nb * l1 * 2 + nb);
+    let expect = 2 * (n_ftw + h) + nb1 * l1 * 2 * h + 4 * (nb1 * l1 + nb * l1 + nb);
     let ok = data.len() == expect.div_ceil(64) * 64
         && (data[expect..].iter().all(|&b| b == 0) || data[expect..].iter().zip(b"bullet".iter().cycle()).all(|(a, b)| a == b));
     if !ok {
@@ -243,9 +249,9 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     };
     let ftw = i16s(take(2 * n_ftw));
     let ftb = i16s(take(2 * h));
-    let w1: Vec<i8> = take(nb * l1 * 2 * h).iter().map(|&b| b as i8).collect();
+    let w1: Vec<i8> = take(nb1 * l1 * 2 * h).iter().map(|&b| b as i8).collect();
     let f32s = |b: &[u8]| -> Vec<f32> { b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect() };
-    let b1 = f32s(take(4 * nb * l1));
+    let b1 = f32s(take(4 * nb1 * l1));
     let w2 = f32s(take(4 * nb * l1));
     let b2 = f32s(take(4 * nb));
     Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, &w2, &b2))

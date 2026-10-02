@@ -44,6 +44,7 @@ usage:
       --qa N --qb N --scale N   quantisation (defaults 255, 64, 400); with --l1,
                            QB is the hidden layer's int8 weight scale
       --l1 N               one hidden layer of N neurons after the FT (bullet only)
+      --l1-shared          the hidden layer is shared by all output buckets
       --description TEXT   training run, data and settings
   datatools net-info <file.nnue> ...          show a network's header
   datatools fens <count> <seed> <file.vf> ... sample undecided positions across game phases
@@ -186,12 +187,18 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         scale: 400,
         description: String::new(),
         l1: 0,
+        l1_shared: false,
     };
     let mut i = 0;
     while i < opts.len() {
         let flag = opts[i].as_str();
         if flag == "--mirror" {
             arch.mirror = true;
+            i += 1;
+            continue;
+        }
+        if flag == "--l1-shared" {
+            arch.l1_shared = true;
             i += 1;
             continue;
         }

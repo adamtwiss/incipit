@@ -61,6 +61,7 @@ struct Hidden {
     w_scale: f32,           // int8 weight quantisation
     w1: AlignedI8,          // [bucket][input / 4][L1_SIZE][4], the kernels' layout
     b1: Vec<[f32; L1_SIZE]>, // [bucket]
+    shared: bool,           // one hidden layer for all buckets (w1, b1 have one entry)
     w2: Vec<[f32; L1_SIZE]>, // [bucket]
     b2: Vec<f32>,           // [bucket]
 }
@@ -321,9 +322,11 @@ fn load_hidden(
     if act != ACT_SCRELU {
         return Err("a hidden layer needs a SCReLU feature transformer".into());
     }
-    if l1 != (2 * h, L1_SIZE, ACT_SCRELU, TYPE_I8, TYPE_F32, 1) {
-        return Err(format!("unsupported hidden layer {:?} (need 2H -> {} SCReLU, i8 weights, f32 biases, per bucket)", l1, L1_SIZE));
+    let shared = l1.5 & 1 == 0;
+    if (l1.0, l1.1, l1.2, l1.3, l1.4) != (2 * h, L1_SIZE, ACT_SCRELU, TYPE_I8, TYPE_F32) {
+        return Err(format!("unsupported hidden layer {:?} (need 2H -> {} SCReLU, i8 weights, f32 biases)", l1, L1_SIZE));
     }
+    let nb1 = if shared { 1 } else { buckets };
     if l2 != (L1_SIZE, 1, ACT_NONE, TYPE_F32, TYPE_F32, 1) {
         return Err(format!("unsupported final layer {:?} (need {} -> 1, f32, per bucket)", l2, L1_SIZE));
     }
@@ -334,7 +337,7 @@ fn load_hidden(
         return Err(format!("hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs", shift, w_scale));
     }
     let n_ftw = nkb * 768 * h;
-    let expect = 2 * (n_ftw + h) + buckets * L1_SIZE * 2 * h + 4 * buckets * (L1_SIZE + L1_SIZE + 1);
+    let expect = 2 * (n_ftw + h) + nb1 * L1_SIZE * 2 * h + 4 * (nb1 * L1_SIZE + buckets * (L1_SIZE + 1));
     if d.len() - header != expect {
         return Err(format!("weights are {} bytes, but the header describes {}", d.len() - header, expect));
     }
@@ -348,8 +351,8 @@ fn load_hidden(
     let ftb = i16s(h);
     // File: [bucket][out][in]. Kernels want each group of 4 inputs for all
     // outputs together: [bucket][in / 4][out][in % 4].
-    let mut w1 = AlignedI8::zeroed(buckets * L1_SIZE * 2 * h);
-    for b in 0..buckets {
+    let mut w1 = AlignedI8::zeroed(nb1 * L1_SIZE * 2 * h);
+    for b in 0..nb1 {
         for n in 0..L1_SIZE {
             for i in 0..2 * h {
                 let v = d[o + (b * L1_SIZE + n) * 2 * h + i] as i8;
@@ -357,14 +360,14 @@ fn load_hidden(
             }
         }
     }
-    o += buckets * L1_SIZE * 2 * h;
+    o += nb1 * L1_SIZE * 2 * h;
     let mut f32s = |n: usize| {
         let v: Vec<f32> = d[o..o + 4 * n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
         o += 4 * n;
         v
     };
     let rows = |v: Vec<f32>| v.chunks_exact(L1_SIZE).map(|c| <[f32; L1_SIZE]>::try_from(c).unwrap()).collect::<Vec<_>>();
-    let b1 = rows(f32s(buckets * L1_SIZE));
+    let b1 = rows(f32s(nb1 * L1_SIZE));
     let w2 = rows(f32s(buckets * L1_SIZE));
     let b2 = f32s(buckets);
     Ok(Network {
@@ -388,6 +391,7 @@ fn load_hidden(
             w_scale: w_scale as f32,
             w1,
             b1,
+            shared,
             w2,
             b2,
         }),
@@ -658,10 +662,12 @@ fn eval_hidden<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Positi
     let mut x: Inputs = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
     to_u8(acc.side(pos.stm, h), &mut x.0[..h], n.qa, l1.shift);
     to_u8(acc.side(pos.stm ^ 1, h), &mut x.0[h..2 * h], n.qa, l1.shift);
-    let w = &l1.w1[bucket * L1_SIZE * 2 * h..(bucket + 1) * L1_SIZE * 2 * h];
+    // A shared hidden layer has one block for all buckets (branch-free).
+    let b1i = bucket & !(l1.shared as usize).wrapping_neg();
+    let w = &l1.w1[b1i * L1_SIZE * 2 * h..(b1i + 1) * L1_SIZE * 2 * h];
     let z = l1_matmul(&x.0[..2 * h], w);
     let k = 1.0 / (l1.in_scale * l1.w_scale);
-    let (b1, w2) = (&l1.b1[bucket], &l1.w2[bucket]);
+    let (b1, w2) = (&l1.b1[b1i], &l1.w2[bucket]);
     let mut out = l1.b2[bucket];
     for i in 0..L1_SIZE {
         let v = (z[i] as f32 * k + b1[i]).clamp(0.0, 1.0);
