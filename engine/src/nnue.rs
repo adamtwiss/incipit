@@ -56,10 +56,11 @@ pub struct Network {
 /// outputs become u8 inputs (clamp(a, 0, QA)^2 >> shift), times int8 weights,
 /// then a float SCReLU and a float output layer, all per output bucket.
 struct Hidden {
+    n: usize,               // neurons: 8 or 16 (b1 and w2 rows padded to L1_SIZE with zeros)
     shift: u32,
     in_scale: f32,          // QA^2 / 2^shift: one input unit in real terms
     w_scale: f32,           // int8 weight quantisation
-    w1: AlignedI8,          // [bucket][input / 4][L1_SIZE][4], the kernels' layout
+    w1: AlignedI8,          // [bucket][input / 4][n][4], the kernels' layout
     b1: Vec<[f32; L1_SIZE]>, // [bucket]
     shared: bool,           // one hidden layer for all buckets (w1, b1 have one entry)
     w2: Vec<[f32; L1_SIZE]>, // [bucket]
@@ -323,12 +324,13 @@ fn load_hidden(
         return Err("a hidden layer needs a SCReLU feature transformer".into());
     }
     let shared = l1.5 & 1 == 0;
-    if (l1.0, l1.1, l1.2, l1.3, l1.4) != (2 * h, L1_SIZE, ACT_SCRELU, TYPE_I8, TYPE_F32) {
-        return Err(format!("unsupported hidden layer {:?} (need 2H -> {} SCReLU, i8 weights, f32 biases)", l1, L1_SIZE));
+    let ln = l1.1;
+    if (l1.0, l1.2, l1.3, l1.4) != (2 * h, ACT_SCRELU, TYPE_I8, TYPE_F32) || (ln != 8 && ln != 16) {
+        return Err(format!("unsupported hidden layer {:?} (need 2H -> 8 or 16 SCReLU, i8 weights, f32 biases)", l1));
     }
     let nb1 = if shared { 1 } else { buckets };
-    if l2 != (L1_SIZE, 1, ACT_NONE, TYPE_F32, TYPE_F32, 1) {
-        return Err(format!("unsupported final layer {:?} (need {} -> 1, f32, per bucket)", l2, L1_SIZE));
+    if l2 != (ln, 1, ACT_NONE, TYPE_F32, TYPE_F32, 1) {
+        return Err(format!("unsupported final layer {:?} (need {} -> 1, f32, per bucket)", l2, ln));
     }
     let &[(shift, w_scale), _] = layer_quant else {
         return Err("a hidden layer needs a LAYER_QUANT field for both layers".into());
@@ -337,7 +339,7 @@ fn load_hidden(
         return Err(format!("hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs", shift, w_scale));
     }
     let n_ftw = nkb * 768 * h;
-    let expect = 2 * (n_ftw + h) + nb1 * L1_SIZE * 2 * h + 4 * (nb1 * L1_SIZE + buckets * (L1_SIZE + 1));
+    let expect = 2 * (n_ftw + h) + nb1 * ln * 2 * h + 4 * (nb1 * ln + buckets * (ln + 1));
     if d.len() - header != expect {
         return Err(format!("weights are {} bytes, but the header describes {}", d.len() - header, expect));
     }
@@ -351,24 +353,32 @@ fn load_hidden(
     let ftb = i16s(h);
     // File: [bucket][out][in]. Kernels want each group of 4 inputs for all
     // outputs together: [bucket][in / 4][out][in % 4].
-    let mut w1 = AlignedI8::zeroed(nb1 * L1_SIZE * 2 * h);
+    let mut w1 = AlignedI8::zeroed(nb1 * ln * 2 * h);
     for b in 0..nb1 {
-        for n in 0..L1_SIZE {
+        for n in 0..ln {
             for i in 0..2 * h {
-                let v = d[o + (b * L1_SIZE + n) * 2 * h + i] as i8;
-                w1[b * L1_SIZE * 2 * h + (i / 4) * L1_SIZE * 4 + n * 4 + i % 4] = v;
+                let v = d[o + (b * ln + n) * 2 * h + i] as i8;
+                w1[b * ln * 2 * h + (i / 4) * ln * 4 + n * 4 + i % 4] = v;
             }
         }
     }
-    o += nb1 * L1_SIZE * 2 * h;
+    o += nb1 * ln * 2 * h;
     let mut f32s = |n: usize| {
         let v: Vec<f32> = d[o..o + 4 * n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
         o += 4 * n;
         v
     };
-    let rows = |v: Vec<f32>| v.chunks_exact(L1_SIZE).map(|c| <[f32; L1_SIZE]>::try_from(c).unwrap()).collect::<Vec<_>>();
-    let b1 = rows(f32s(nb1 * L1_SIZE));
-    let w2 = rows(f32s(buckets * L1_SIZE));
+    let rows = |v: Vec<f32>| {
+        v.chunks_exact(ln)
+            .map(|c| {
+                let mut r = [0f32; L1_SIZE];
+                r[..ln].copy_from_slice(c);
+                r
+            })
+            .collect::<Vec<_>>()
+    };
+    let b1 = rows(f32s(nb1 * ln));
+    let w2 = rows(f32s(buckets * ln));
     let b2 = f32s(buckets);
     Ok(Network {
         h,
@@ -386,6 +396,7 @@ fn load_hidden(
         ow: Aligned::from(std::iter::empty()),
         ob: Vec::new(),
         l1: Some(Hidden {
+            n: ln,
             shift,
             in_scale: (qa as f32 * qa as f32) / (1u64 << shift) as f32,
             w_scale: w_scale as f32,
@@ -643,7 +654,8 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
     let n = net();
     match &n.l1 {
         None => with_h!(n.h, eval_n(n, acc, pos)),
-        Some(l1) => with_h!(n.h, eval_hidden(n, l1, acc, pos)),
+        Some(l1) if l1.n == 8 => with_h!(n.h, eval_hidden8(n, l1, acc, pos)),
+        Some(l1) => with_h!(n.h, eval_hidden16(n, l1, acc, pos)),
     }
 }
 
@@ -651,7 +663,17 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
 /// move first), an int8 matrix product per output bucket, then float SCReLU
 /// and the float output layer.
 #[inline(never)]
-fn eval_hidden<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+fn eval_hidden16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden8<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 8>(n, l1, acc, pos)
+}
+
+#[inline(always)]
+fn eval_hidden<const H: usize, const L: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
     let h = hidden::<H>(n);
     let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
     #[repr(C, align(64))]
@@ -673,12 +695,12 @@ fn eval_hidden<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Positi
     };
     // A shared hidden layer has one block for all buckets (branch-free).
     let b1i = bucket & !(l1.shared as usize).wrapping_neg();
-    let w = &l1.w1[b1i * L1_SIZE * 2 * h..(b1i + 1) * L1_SIZE * 2 * h];
-    let z = unsafe { l1_product(&x.0[..2 * h], &nz[..count + 8], count, w) };
+    let w = &l1.w1[b1i * L * 2 * h..(b1i + 1) * L * 2 * h];
+    let z = unsafe { l1_product::<L>(&x.0[..2 * h], &nz[..count + 8], count, w) };
     let k = 1.0 / (l1.in_scale * l1.w_scale);
     let (b1, w2) = (&l1.b1[b1i], &l1.w2[bucket]);
     let mut out = l1.b2[bucket];
-    for i in 0..L1_SIZE {
+    for i in 0..L {
         let v = (z[i] as f32 * k + b1[i]).clamp(0.0, 1.0);
         out += v * v * w2[i];
     }
@@ -838,12 +860,12 @@ unsafe fn push_nz(nz: &mut [u16], count: usize, m: u32, base: u16) -> usize {
 /// [in / 4][out][in % 4] layout. x.len() is a multiple of 64. (Scan, then
 /// product; eval_hidden fuses the scan into the u8 conversion instead.)
 #[inline(always)]
-fn l1_matmul(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
+fn l1_matmul<const L: usize>(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
     #[allow(invalid_value, clippy::uninit_assumed_init)]
     let mut nz: [u16; 2 * MAX_H / 4 + 8] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
     unsafe {
         let count = scan_nz(x, &mut nz);
-        l1_product(x, &nz[..count + 8], count, w)
+        l1_product::<L>(x, &nz[..count + 8], count, w)
     }
 }
 
@@ -881,7 +903,7 @@ unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
 /// at most 127 and weights within +-127, so maddubs's i16 sums can't overflow.
 #[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
 #[inline(always)]
-unsafe fn l1_product(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
     let mut s0 = _mm512_setzero_si512();
@@ -927,7 +949,7 @@ unsafe fn l1_product(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_S
 /// AVX2: two registers of 8 outputs; per group of 4 inputs, maddubs + madd.
 #[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
 #[inline(always)]
-unsafe fn l1_product(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
     let ones = _mm256_set1_epi16(1);
@@ -955,12 +977,100 @@ unsafe fn l1_product(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_S
     z
 }
 
-/// Scalar reference for l1_matmul (used by `l1check`).
-pub fn l1_matmul_scalar(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
+/// The hidden-layer product for L (8 or 16) outputs; outputs past L are 0.
+#[inline(always)]
+unsafe fn l1_product<const L: usize>(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+    if L == 8 {
+        l1_product8(x, nz, count, w)
+    } else {
+        l1_product16(x, nz, count, w)
+    }
+}
+
+/// AVX-512, 8 outputs: a group's weight row is 32 bytes, so two listed groups
+/// share one register (one in each half) and one VNNI dpbusd.
+#[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
+#[inline(always)]
+unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+    use std::arch::x86_64::*;
+    let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
+    #[inline(always)]
+    unsafe fn step(s: __m512i, xa: i32, xb: i32, wa: *const i8, wb: *const i8) -> __m512i {
+        let xv = _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_set1_epi32(xa)), _mm256_set1_epi32(xb), 1);
+        let wv = _mm512_inserti64x4(
+            _mm512_castsi256_si512(_mm256_load_si256(wa as *const __m256i)),
+            _mm256_load_si256(wb as *const __m256i),
+            1,
+        );
+        #[cfg(target_feature = "avx512vnni")]
+        {
+            _mm512_dpbusd_epi32(s, xv, wv)
+        }
+        #[cfg(not(target_feature = "avx512vnni"))]
+        {
+            _mm512_add_epi32(s, _mm512_madd_epi16(_mm512_maddubs_epi16(xv, wv), _mm512_set1_epi16(1)))
+        }
+    }
+    let g = |i: usize| *nz.get_unchecked(i) as usize;
+    let mut s0 = _mm512_setzero_si512();
+    let mut s1 = _mm512_setzero_si512();
+    let mut i = 0;
+    while i + 3 < count {
+        let (g0, g1, g2, g3) = (g(i), g(i + 1), g(i + 2), g(i + 3));
+        s0 = step(s0, xp.add(g0).read_unaligned(), xp.add(g1).read_unaligned(), wp.add(g0 * 32), wp.add(g1 * 32));
+        s1 = step(s1, xp.add(g2).read_unaligned(), xp.add(g3).read_unaligned(), wp.add(g2 * 32), wp.add(g3 * 32));
+        i += 4;
+    }
+    while i < count {
+        // A lone group: the other half multiplies zero inputs.
+        let g0 = g(i);
+        s0 = step(s0, xp.add(g0).read_unaligned(), 0, wp.add(g0 * 32), wp.add(g0 * 32));
+        i += 1;
+    }
+    let s = _mm512_add_epi32(s0, s1);
+    let r = _mm256_add_epi32(_mm512_castsi512_si256(s), _mm512_extracti64x4_epi64(s, 1));
+    let mut z = [0i32; L1_SIZE];
+    _mm256_storeu_si256(z.as_mut_ptr() as *mut __m256i, r);
+    z
+}
+
+/// AVX2, 8 outputs: one register per group; maddubs + madd.
+#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[inline(always)]
+unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+    use std::arch::x86_64::*;
+    let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
+    let ones = _mm256_set1_epi16(1);
+    let mut a = [_mm256_setzero_si256(); 4];
+    let mut step = |k: usize, g: usize| {
+        let xb = _mm256_set1_epi32(xp.add(g).read_unaligned());
+        let wv = _mm256_load_si256(wp.add(g * 32) as *const __m256i);
+        a[k] = _mm256_add_epi32(a[k], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, wv), ones));
+    };
+    let mut i = 0;
+    while i + 3 < count {
+        for k in 0..4 {
+            step(k, *nz.get_unchecked(i + k) as usize);
+        }
+        i += 4;
+    }
+    while i < count {
+        step(0, *nz.get_unchecked(i) as usize);
+        i += 1;
+    }
+    let r = _mm256_add_epi32(_mm256_add_epi32(a[0], a[1]), _mm256_add_epi32(a[2], a[3]));
+    let mut z = [0i32; L1_SIZE];
+    _mm256_storeu_si256(z.as_mut_ptr() as *mut __m256i, r);
+    z
+}
+
+/// Scalar reference for the hidden-layer product with `l` outputs (used by
+/// `l1check` and the diagnostics).
+pub fn l1_matmul_scalar(x: &[u8], w: &[i8], l: usize) -> [i32; L1_SIZE] {
     let mut z = [0i32; L1_SIZE];
     for (g, xs) in x.chunks_exact(4).enumerate() {
-        let wg = &w[g * L1_SIZE * 4..(g + 1) * L1_SIZE * 4];
-        for n in 0..L1_SIZE {
+        let wg = &w[g * l * 4..(g + 1) * l * 4];
+        for n in 0..l {
             for j in 0..4 {
                 z[n] += xs[j] as i32 * wg[n * 4 + j] as i32;
             }
@@ -1069,7 +1179,10 @@ pub fn l1check(trials: usize) -> usize {
             for v in w.iter_mut() {
                 *v = ((rnd() % 255) as i32 - 127) as i8;
             }
-            if l1_matmul(&x1, &w) != l1_matmul_scalar(&x1, &w) {
+            if l1_matmul::<16>(&x1, &w) != l1_matmul_scalar(&x1, &w, 16) {
+                bad += 1;
+            }
+            if l1_matmul::<8>(&x1, &w[..8 * 2 * h]) != l1_matmul_scalar(&x1, &w[..8 * 2 * h], 8) {
                 bad += 1;
             }
         }
@@ -1107,11 +1220,12 @@ pub fn l1stats(path: &str, fens: &str) -> Result<(), String> {
         to_u8_scalar(acc.side(pos.stm, h), &mut x[..h], n.qa, l1.shift);
         to_u8_scalar(acc.side(pos.stm ^ 1, h), &mut x[h..], n.qa, l1.shift);
         let b1i = if l1.shared { 0 } else { bucket };
-        let w = &l1.w1[b1i * L1_SIZE * 2 * h..(b1i + 1) * L1_SIZE * 2 * h];
-        let z = l1_matmul_scalar(&x, w);
+        let ln = l1.n;
+        let w = &l1.w1[b1i * ln * 2 * h..(b1i + 1) * ln * 2 * h];
+        let z = l1_matmul_scalar(&x, w, ln);
         let k = 1.0 / (l1.in_scale * l1.w_scale);
         cnt[bucket] += 1;
-        for i in 0..L1_SIZE {
+        for i in 0..l1.n {
             let v = z[i] as f32 * k + l1.b1[b1i][i];
             act[bucket][i] += (v > 0.0) as u64;
             sat[bucket][i] += (v >= 1.0) as u64;
@@ -1120,22 +1234,22 @@ pub fn l1stats(path: &str, fens: &str) -> Result<(), String> {
     }
     for b in 0..nb {
         let b1i = if l1.shared { 0 } else { b };
-        let w = &l1.w1[b1i * L1_SIZE * 2 * h..(b1i + 1) * L1_SIZE * 2 * h];
+        let w = &l1.w1[b1i * l1.n * 2 * h..(b1i + 1) * l1.n * 2 * h];
         let clip = w.iter().filter(|&&v| v.unsigned_abs() >= 126).count();
         let c = cnt[b].max(1) as f64;
-        let dead = (0..L1_SIZE).filter(|&i| act[b][i] == 0).count();
-        let always = (0..L1_SIZE).filter(|&i| sat[b][i] == cnt[b] && cnt[b] > 0).count();
+        let dead = (0..l1.n).filter(|&i| act[b][i] == 0).count();
+        let always = (0..l1.n).filter(|&i| sat[b][i] == cnt[b] && cnt[b] > 0).count();
         print!("bucket {} positions {} dead {} always-saturated {} clipped {:.2}% | active%:",
                b, cnt[b], dead, always, 100.0 * clip as f64 / w.len() as f64);
-        for i in 0..L1_SIZE {
+        for i in 0..l1.n {
             print!(" {:.0}", 100.0 * act[b][i] as f64 / c);
         }
         print!(" | max:");
-        for i in 0..L1_SIZE {
+        for i in 0..l1.n {
             print!(" {:.2}", maxv[b][i]);
         }
         print!(" | b1:");
-        for i in 0..L1_SIZE {
+        for i in 0..l1.n {
             print!(" {:.2}", l1.b1[b1i][i]);
         }
         println!();
