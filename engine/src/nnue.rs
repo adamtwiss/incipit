@@ -766,6 +766,7 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize>(n: &Network, l1:
 /// After the int8 product z: SCReLU of the first hidden layer (L neurons),
 /// then either the output layer, or the second hidden layer (L2 neurons,
 /// SCReLU) and the output layer. Returns the output before scaling.
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 unsafe fn hidden_float<const L: usize, const L2: usize>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
     use std::arch::x86_64::*;
@@ -811,6 +812,100 @@ unsafe fn hidden_float<const L: usize, const L2: usize>(l1: &Hidden, z: &[i32; L
     let mut lanes = [0f32; 8];
     _mm256_storeu_ps(lanes.as_mut_ptr(), acc);
     l1.b2[bucket] + ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5])) + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]))
+}
+
+/// Portable version of hidden_float with the same operations in the same
+/// order per lane (8 lanes; separate multiply and add; the same final
+/// reduction), so it gives the same result as the AVX2 version.
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn hidden_float<const L: usize, const L2: usize>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
+    let screlu = |v: f32| {
+        let c = v.max(0.0).min(1.0);
+        c * c
+    };
+    let b1 = &l1.b1[b1i];
+    let mut v1 = [0f32; L1_SIZE];
+    for i in 0..L {
+        v1[i] = screlu(z[i] as f32 * k + b1[i]);
+    }
+    let mut acc = [0f32; 8];
+    if L2 == 0 {
+        let w2 = &l1.w2[bucket];
+        for i in 0..L {
+            acc[i % 8] = acc[i % 8] + v1[i] * w2[i];
+        }
+    } else {
+        let (wm, bm, wo) = (&l1.wm[bucket], &l1.bm[bucket], &l1.wo[bucket]);
+        let mut u = [0f32; L2_MAX];
+        u[..L2].copy_from_slice(&bm[..L2]);
+        for i in 0..L {
+            let x = v1[i];
+            for j in 0..L2 {
+                u[j] = u[j] + x * wm[i][j];
+            }
+        }
+        for j in 0..L2 {
+            acc[j % 8] = acc[j % 8] + screlu(u[j]) * wo[j];
+        }
+    }
+    l1.b2[bucket] + ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]))
+}
+
+/// Portable kernels (non-x86 targets; NEON versions to come): the same
+/// results as the SIMD ones.
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
+    to_u8_scalar(a, x, 255, 9)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
+    let h = a0.len();
+    to_u8_scalar(a0, &mut x[..h], 255, 9);
+    to_u8_scalar(a1, &mut x[h..2 * h], 255, 9);
+    scan_nz(&x[..2 * h], nz)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
+    let mut count = 0;
+    for (g, c) in x.chunks_exact(4).enumerate() {
+        nz[count] = g as u16;
+        count += (c != [0, 0, 0, 0]) as usize;
+    }
+    count
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn l1_product_portable(x: &[u8], nz: &[u16], count: usize, w: &[i8], l: usize) -> [i32; L1_SIZE] {
+    let mut z = [0i32; L1_SIZE];
+    for &g in &nz[..count] {
+        let g = g as usize;
+        let wg = &w[g * l * 4..(g + 1) * l * 4];
+        for n in 0..l {
+            for j in 0..4 {
+                z[n] += x[4 * g + j] as i32 * wg[n * 4 + j] as i32;
+            }
+        }
+    }
+    z
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+    l1_product_portable(x, nz, count, w, 16)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+    l1_product_portable(x, nz, count, w, 8)
 }
 
 /// clamp(a, 0, qa)^2 >> shift as u8 (load() checks it fits 0..127). The
@@ -891,7 +986,7 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
 }
 
 /// AVX2 version of to_u8_nz_255_9.
-#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
 #[inline(always)]
 unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
     use std::arch::x86_64::*;
@@ -915,7 +1010,7 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
     count
 }
 
-#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
 #[inline(always)]
 unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
     use std::arch::x86_64::*;
@@ -934,6 +1029,7 @@ unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
 
 /// For each 8-bit mask, the positions of its set bits (unused slots 0): lets
 /// the kernels list non-zero input groups without a branch per group.
+#[cfg(target_arch = "x86_64")]
 static NZ_TABLE: [[u16; 8]; 256] = {
     let mut t = [[0u16; 8]; 256];
     let mut m = 0;
@@ -954,6 +1050,7 @@ static NZ_TABLE: [[u16; 8]; 256] = {
 /// Appends the indices (base + bit) of the set bits of the 8-bit mask m to
 /// nz at count, with one 16-byte store; returns the new count. nz needs 8
 /// slots of slack past the last real entry.
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 unsafe fn push_nz(nz: &mut [u16], count: usize, m: u32, base: u16) -> usize {
     use std::arch::x86_64::*;
@@ -990,7 +1087,7 @@ unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
     count
 }
 
-#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
 #[inline(always)]
 unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
     use std::arch::x86_64::*;
@@ -1053,7 +1150,7 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
 }
 
 /// AVX2: two registers of 8 outputs; per group of 4 inputs, maddubs + madd.
-#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
 #[inline(always)]
 unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
@@ -1141,7 +1238,7 @@ unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_
 }
 
 /// AVX2, 8 outputs: one register per group; maddubs + madd.
-#[cfg(not(all(avx512_intrinsics, target_feature = "avx512bw")))]
+#[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
 #[inline(always)]
 unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
