@@ -41,6 +41,9 @@ params! {
     HistMax = "HistMax", 2739, 1000, 4000, 150;
     SeDouble = "SeDouble", 13, 5, 50, 2;
     RfpDepth = "RfpDepth", 8, 3, 12, 1;
+    // Fifty-move damping: halfmove where it starts, eval percent left at 100.
+    HmStart = "HmStart", 50, 0, 90, 5;
+    HmFloor = "HmFloor", 10, 0, 60, 3;
     NmpBase = "NmpBase", 4, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
     SeMul = "SeMul", 21, 8, 40, 2;

@@ -325,10 +325,18 @@ impl Searcher {
         e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
-    /// Pulls an eval towards a draw as the fifty-move counter rises.
+    /// Pulls an eval towards a draw as the fifty-move counter rises: no change
+    /// up to HmStart half-moves, then linear down to HmFloor percent of the eval
+    /// at the fifty-move draw (halfmove 100).
     #[inline(always)]
     fn damp(pos: &Position, v: i32) -> i32 {
-        v * (200 - pos.halfmove as i32) / 200
+        let (start, floor) = (tp(P::HmStart), tp(P::HmFloor));
+        let hm = (pos.halfmove as i32).min(100);
+        if hm <= start {
+            return v;
+        }
+        let span = 100 - start;
+        v * (floor * span + (100 - floor) * (100 - hm)) / (100 * span)
     }
 
     #[inline(always)]
