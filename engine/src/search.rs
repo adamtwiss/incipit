@@ -528,8 +528,12 @@ impl Searcher {
         }
         let in_check = pos.checkers != 0;
         if !root {
-            if pos.halfmove >= 100 || self.is_repetition(pos) {
+            if self.is_repetition(pos) || pos.insufficient_material() {
                 return 0;
+            }
+            // Fifty-move rule, unless the side to move is checkmated.
+            if pos.halfmove >= 100 {
+                return if in_check && !pos.has_legal_move() { -MATE + ply as i32 } else { 0 };
             }
             if ply >= MAX_PLY - 2 {
                 return if in_check { 0 } else { self.evaluate(pos, ply) };
@@ -1079,8 +1083,11 @@ impl Searcher {
         if ply >= MAX_PLY - 2 {
             return if in_check { 0 } else { self.evaluate(pos, ply) };
         }
-        if pos.halfmove >= 100 {
+        if pos.insufficient_material() {
             return 0;
+        }
+        if pos.halfmove >= 100 {
+            return if in_check && !pos.has_legal_move() { -MATE + ply as i32 } else { 0 };
         }
         let pv_node = beta - alpha > 1;
         self.stats.tt_probes += 1;

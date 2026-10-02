@@ -563,6 +563,24 @@ impl Position {
         }
     }
 
+    /// Neither side can mate: bare kings plus at most one minor piece.
+    #[inline]
+    pub fn insufficient_material(&self) -> bool {
+        let heavy = self.pieces[PAWN] | self.pieces[ROOK] | self.pieces[QUEEN];
+        let minors = self.pieces[KNIGHT] | self.pieces[BISHOP];
+        heavy == 0 && minors.count_ones() <= 1
+    }
+
+    /// Whether the side to move has any legal move (slow; for rare cases).
+    pub fn has_legal_move(&self) -> bool {
+        let mut list = MoveList::new();
+        self.gen_moves(&mut list, false);
+        (0..list.len).any(|i| {
+            let mut c = *self;
+            c.make_move(list.moves[i])
+        })
+    }
+
     pub fn has_non_pawns(&self, c: usize) -> bool {
         (self.colors[c] & !(self.pieces[PAWN] | self.pieces[KING])) != 0
     }
