@@ -54,6 +54,8 @@ pub struct Arch {
     /// Hidden-layer input shift: u8 input = clamp(a, 0, QA)^2 >> shift
     /// (0 = the smallest shift that fits 0..127).
     pub l1_shift: u32,
+    /// Neurons in a second hidden layer (f32, SCReLU, per bucket; 0 = none).
+    pub l2: usize,
 }
 
 impl Arch {
@@ -99,17 +101,34 @@ pub fn hidden_shift(qa: i32) -> u32 {
 /// at QB, f32 biases; per output bucket unless `l1_shared`) -> 1 (f32, per
 /// bucket). `w1` is [bucket][out][2h] (or [out][2h]); `b1` is [bucket][out]
 /// (or [out]); `w2` is [bucket][out]; `b2` is [bucket].
-pub fn write_hidden(arch: &Arch, ftw: &[i16], ftb: &[i16], w1: &[i8], b1: &[f32], w2: &[f32], b2: &[f32]) -> Vec<u8> {
-    let (h, nb, l1) = (arch.hidden, arch.output_buckets, arch.l1);
+/// With a second hidden layer (`arch.l2` > 0), `mid` holds its weights
+/// [bucket][l2][l1] and biases [bucket][l2], and `w2` is [bucket][l2].
+#[allow(clippy::too_many_arguments)]
+pub fn write_hidden(
+    arch: &Arch,
+    ftw: &[i16],
+    ftb: &[i16],
+    w1: &[i8],
+    b1: &[f32],
+    mid: Option<(&[f32], &[f32])>,
+    w2: &[f32],
+    b2: &[f32],
+) -> Vec<u8> {
+    let (h, nb, l1, l2) = (arch.hidden, arch.output_buckets, arch.l1, arch.l2);
     let nb1 = if arch.l1_shared { 1 } else { nb };
+    let last = if l2 > 0 { l2 } else { l1 };
     assert_eq!(w1.len(), nb1 * l1 * 2 * h);
     assert_eq!(b1.len(), nb1 * l1);
-    assert_eq!(w2.len(), nb * l1);
+    assert_eq!(w2.len(), nb * last);
     assert_eq!(b2.len(), nb);
+    assert_eq!(mid.is_some(), l2 > 0);
     let mut p1 = ((2 * h) as u32).to_le_bytes().to_vec();
     p1.extend_from_slice(&(l1 as u32).to_le_bytes());
     p1.extend_from_slice(&[ACT_SCRELU, TYPE_I8, TYPE_F32, !arch.l1_shared as u8]);
-    let mut p2 = (l1 as u32).to_le_bytes().to_vec();
+    let mut pm = (l1 as u32).to_le_bytes().to_vec();
+    pm.extend_from_slice(&(l2 as u32).to_le_bytes());
+    pm.extend_from_slice(&[ACT_SCRELU, TYPE_F32, TYPE_F32, 1]);
+    let mut p2 = (last as u32).to_le_bytes().to_vec();
     p2.extend_from_slice(&1u32.to_le_bytes());
     p2.extend_from_slice(&[ACT_NONE, TYPE_F32, TYPE_F32, 1]);
     let mut lq = Vec::new();
@@ -118,10 +137,18 @@ pub fn write_hidden(arch: &Arch, ftw: &[i16], ftb: &[i16], w1: &[i8], b1: &[f32]
         lq.extend_from_slice(&v.to_le_bytes());
     }
     let mut weights: Vec<u8> = w1.iter().map(|&v| v as u8).collect();
-    for v in b1.iter().chain(w2).chain(b2) {
+    let (wm, bm): (&[f32], &[f32]) = mid.unwrap_or((&[], &[]));
+    for v in b1.iter().chain(wm).chain(bm).chain(w2).chain(b2) {
         weights.extend_from_slice(&v.to_le_bytes());
     }
-    assemble(arch, ftw, ftb, &[p1, p2], Some(&lq), &weights)
+    if l2 > 0 {
+        for v in [0i32, 0] {
+            lq.extend_from_slice(&v.to_le_bytes());
+        }
+        assemble(arch, ftw, ftb, &[p1, pm, p2], Some(&lq), &weights)
+    } else {
+        assemble(arch, ftw, ftb, &[p1, p2], Some(&lq), &weights)
+    }
 }
 
 /// Header plus FT weights, then the given layer records and their weights.
@@ -242,7 +269,9 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let (h, nkb, nb, l1) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets, arch.l1);
     let nb1 = if arch.l1_shared { 1 } else { nb };
     let n_ftw = nkb * 768 * h;
-    let expect = 2 * (n_ftw + h) + nb1 * l1 * 2 * h + 4 * (nb1 * l1 + nb * l1 + nb);
+    let l2 = arch.l2;
+    let last = if l2 > 0 { l2 } else { l1 };
+    let expect = 2 * (n_ftw + h) + nb1 * l1 * 2 * h + 4 * (nb1 * l1 + nb * l2 * (l1 + 1) + nb * last + nb);
     let ok = data.len() == expect.div_ceil(64) * 64
         && (data[expect..].iter().all(|&b| b == 0) || data[expect..].iter().zip(b"bullet".iter().cycle()).all(|(a, b)| a == b));
     if !ok {
@@ -262,10 +291,13 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let w1: Vec<i8> = take(nb1 * l1 * 2 * h).iter().map(|&b| b as i8).collect();
     let f32s = |b: &[u8]| -> Vec<f32> { b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect() };
     let b1 = f32s(take(4 * nb1 * l1));
-    let w2 = f32s(take(4 * nb * l1));
+    let wm = f32s(take(4 * nb * l2 * l1));
+    let bm = f32s(take(4 * nb * l2));
+    let w2 = f32s(take(4 * nb * last));
     let b2 = f32s(take(4 * nb));
+    let mid = (l2 > 0).then_some((&wm[..], &bm[..]));
     if arch.perm.is_empty() {
-        return Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, &w2, &b2));
+        return Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2));
     }
     let p = &arch.perm;
     let mut seen = vec![false; h];
@@ -278,7 +310,7 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
         .chunks_exact(2 * h)
         .flat_map(|row| p.iter().map(move |&i| row[i]).chain(p.iter().map(move |&i| row[h + i])))
         .collect();
-    Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, &w2, &b2))
+    Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2))
 }
 
 /// Describes a network file's header (and checks its size), for `net-info`.

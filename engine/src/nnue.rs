@@ -29,6 +29,8 @@ const TYPE_F32: u8 = 4;
 
 /// Hidden-layer width the engine supports (one zmm / two ymm of i32 outputs).
 pub const L1_SIZE: usize = 16;
+/// Most neurons in the optional second hidden layer.
+pub const L2_MAX: usize = 32;
 const OUTPUT_MATERIAL: u8 = 1;
 
 // Path chosen by build.rs (EVALFILE, or the net named in net.txt).
@@ -63,8 +65,15 @@ struct Hidden {
     w1: AlignedI8,          // [bucket][input / 4][n][4], the kernels' layout
     b1: Vec<[f32; L1_SIZE]>, // [bucket]
     shared: bool,           // one hidden layer for all buckets (w1, b1 have one entry)
-    w2: Vec<[f32; L1_SIZE]>, // [bucket]
-    b2: Vec<f32>,           // [bucket]
+    w2: Vec<[f32; L1_SIZE]>, // output layer [bucket] (no second hidden layer)
+    b2: Vec<f32>,           // output bias [bucket]
+    // Optional second hidden layer (f32, SCReLU, per bucket): n2 neurons
+    // (0 = none). wm is [bucket][n2][L1_SIZE], bm [bucket][n2]; the output
+    // layer is then wo [bucket][n2] with bias b2.
+    n2: usize,
+    wm: Vec<[[f32; L1_SIZE]; L2_MAX]>,
+    bm: Vec<[f32; L2_MAX]>,
+    wo: Vec<[f32; L2_MAX]>,
 }
 
 /// A 64-byte-aligned i8 buffer.
@@ -253,11 +262,11 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         return Err(format!("unsupported output buckets (scheme {}, {} buckets)", scheme, buckets));
     }
     let (qa, qb, scale) = quant.ok_or_else(|| missing("QUANTISATION"))?;
-    if layers.len() == 2 {
+    if layers.len() == 2 || layers.len() == 3 {
         return load_hidden(d, header, h, nkb, mirror, king_bucket, act, buckets, qa, qb, scale, &layers, &layer_quant);
     }
     let &[(lin, lout, lact, lwt, lbt, lflags)] = layers.as_slice() else {
-        return Err(format!("{} layers after the feature transformer; one or two are supported", layers.len()));
+        return Err(format!("{} layers after the feature transformer; one to three are supported", layers.len()));
     };
     if lin != 2 * h || lout != 1 || lact != ACT_NONE || lwt != TYPE_I16 || !(lbt == TYPE_I16 || lbt == TYPE_I32) || lflags & 1 == 0 {
         return Err("unsupported output layer (need 2H -> 1, no activation, i16 weights, per output bucket)".into());
@@ -319,7 +328,9 @@ fn load_hidden(
     layers: &[(usize, usize, u8, u8, u8, u8)],
     layer_quant: &[(u32, i32)],
 ) -> Result<Network, String> {
-    let (l1, l2) = (layers[0], layers[1]);
+    let (l1, l2) = (layers[0], layers[layers.len() - 1]);
+    // A middle layer: the second hidden layer.
+    let mid = (layers.len() == 3).then(|| layers[1]);
     if act != ACT_SCRELU {
         return Err("a hidden layer needs a SCReLU feature transformer".into());
     }
@@ -329,17 +340,24 @@ fn load_hidden(
         return Err(format!("unsupported hidden layer {:?} (need 2H -> 8 or 16 SCReLU, i8 weights, f32 biases)", l1));
     }
     let nb1 = if shared { 1 } else { buckets };
-    if l2 != (ln, 1, ACT_NONE, TYPE_F32, TYPE_F32, 1) {
-        return Err(format!("unsupported final layer {:?} (need {} -> 1, f32, per bucket)", l2, ln));
+    let n2 = mid.map_or(0, |m| m.1);
+    if let Some(m) = mid {
+        if m != (ln, n2, ACT_SCRELU, TYPE_F32, TYPE_F32, 1) || n2 == 0 || n2 > L2_MAX {
+            return Err(format!("unsupported second hidden layer {:?} (need {} -> 1..{} SCReLU, f32, per bucket)", m, ln, L2_MAX));
+        }
     }
-    let &[(shift, w_scale), _] = layer_quant else {
-        return Err("a hidden layer needs a LAYER_QUANT field for both layers".into());
+    let last_in = if n2 > 0 { n2 } else { ln };
+    if l2 != (last_in, 1, ACT_NONE, TYPE_F32, TYPE_F32, 1) {
+        return Err(format!("unsupported final layer {:?} (need {} -> 1, f32, per bucket)", l2, last_in));
+    }
+    let &[(shift, w_scale), ..] = layer_quant else {
+        return Err("a hidden layer needs a LAYER_QUANT field".into());
     };
     if shift > 30 || w_scale <= 0 || ((qa as i64 * qa as i64) >> shift) > 127 {
         return Err(format!("hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs", shift, w_scale));
     }
     let n_ftw = nkb * 768 * h;
-    let expect = 2 * (n_ftw + h) + nb1 * ln * 2 * h + 4 * (nb1 * ln + buckets * (ln + 1));
+    let expect = 2 * (n_ftw + h) + nb1 * ln * 2 * h + 4 * (nb1 * ln + buckets * n2 * (ln + 1) + buckets * (last_in + 1));
     if d.len() - header != expect {
         return Err(format!("weights are {} bytes, but the header describes {}", d.len() - header, expect));
     }
@@ -378,7 +396,28 @@ fn load_hidden(
             .collect::<Vec<_>>()
     };
     let b1 = rows(f32s(nb1 * ln));
-    let w2 = rows(f32s(buckets * ln));
+    let (mut wm, mut bm, mut wo) = (Vec::new(), Vec::new(), Vec::new());
+    let w2;
+    if n2 > 0 {
+        let wmf = f32s(buckets * n2 * ln);
+        let bmf = f32s(buckets * n2);
+        let wof = f32s(buckets * n2);
+        for b in 0..buckets {
+            let mut m = [[0f32; L1_SIZE]; L2_MAX];
+            let (mut mb, mut ow) = ([0f32; L2_MAX], [0f32; L2_MAX]);
+            for j in 0..n2 {
+                m[j][..ln].copy_from_slice(&wmf[(b * n2 + j) * ln..(b * n2 + j + 1) * ln]);
+                mb[j] = bmf[b * n2 + j];
+                ow[j] = wof[b * n2 + j];
+            }
+            wm.push(m);
+            bm.push(mb);
+            wo.push(ow);
+        }
+        w2 = vec![[0f32; L1_SIZE]; buckets];
+    } else {
+        w2 = rows(f32s(buckets * ln));
+    }
     let b2 = f32s(buckets);
     Ok(Network {
         h,
@@ -405,6 +444,10 @@ fn load_hidden(
             shared,
             w2,
             b2,
+            n2,
+            wm,
+            bm,
+            wo,
         }),
     })
 }
@@ -654,6 +697,8 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
     let n = net();
     match &n.l1 {
         None => with_h!(n.h, eval_n(n, acc, pos)),
+        Some(l1) if l1.n2 == 32 => with_h!(n.h, eval_hidden16x32(n, l1, acc, pos)),
+        Some(l1) if l1.n2 == 16 => with_h!(n.h, eval_hidden16x16(n, l1, acc, pos)),
         Some(l1) if l1.n == 8 => with_h!(n.h, eval_hidden8(n, l1, acc, pos)),
         Some(l1) => with_h!(n.h, eval_hidden16(n, l1, acc, pos)),
     }
@@ -664,16 +709,26 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
 /// and the float output layer.
 #[inline(never)]
 fn eval_hidden16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 0>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden8<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 8>(n, l1, acc, pos)
+    eval_hidden::<H, 8, 0>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 16>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 32>(n, l1, acc, pos)
 }
 
 #[inline(always)]
-fn eval_hidden<const H: usize, const L: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+fn eval_hidden<const H: usize, const L: usize, const L2: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
     let h = hidden::<H>(n);
     let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
     #[repr(C, align(64))]
@@ -698,11 +753,29 @@ fn eval_hidden<const H: usize, const L: usize>(n: &Network, l1: &Hidden, acc: &A
     let w = &l1.w1[b1i * L * 2 * h..(b1i + 1) * L * 2 * h];
     let z = unsafe { l1_product::<L>(&x.0[..2 * h], &nz[..count + 8], count, w) };
     let k = 1.0 / (l1.in_scale * l1.w_scale);
-    let (b1, w2) = (&l1.b1[b1i], &l1.w2[bucket]);
+    let b1 = &l1.b1[b1i];
     let mut out = l1.b2[bucket];
-    for i in 0..L {
-        let v = (z[i] as f32 * k + b1[i]).clamp(0.0, 1.0);
-        out += v * v * w2[i];
+    if L2 == 0 {
+        let w2 = &l1.w2[bucket];
+        for i in 0..L {
+            let v = (z[i] as f32 * k + b1[i]).clamp(0.0, 1.0);
+            out += v * v * w2[i];
+        }
+    } else {
+        let mut v1 = [0f32; L1_SIZE];
+        for i in 0..L {
+            let v = (z[i] as f32 * k + b1[i]).clamp(0.0, 1.0);
+            v1[i] = v * v;
+        }
+        let (wm, bm, wo) = (&l1.wm[bucket], &l1.bm[bucket], &l1.wo[bucket]);
+        for j in 0..L2 {
+            let mut u = bm[j];
+            for i in 0..L {
+                u += v1[i] * wm[j][i];
+            }
+            let u = u.clamp(0.0, 1.0);
+            out += u * u * wo[j];
+        }
     }
     (out * n.scale as f32) as i32
 }

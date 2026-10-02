@@ -253,6 +253,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         l1_shared: false,
         perm: Vec::new(),
         l1_shift: 0,
+        l2: 0,
     };
     let mut i = 0;
     while i < opts.len() {
@@ -273,6 +274,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
             "--hidden" => arch.hidden = num()? as usize,
             "--l1" => arch.l1 = num()? as usize,
             "--l1-shift" => arch.l1_shift = num()? as u32,
+            "--l2" => arch.l2 = num()? as usize,
             "--output-buckets" => arch.output_buckets = num()? as usize,
             "--qa" => arch.qa = num()? as i32,
             "--qb" => arch.qb = num()? as i32,
