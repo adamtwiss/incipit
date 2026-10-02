@@ -68,10 +68,11 @@ struct Hidden {
     w2: Vec<[f32; L1_SIZE]>, // output layer [bucket] (no second hidden layer)
     b2: Vec<f32>,           // output bias [bucket]
     // Optional second hidden layer (f32, SCReLU, per bucket): n2 neurons
-    // (0 = none). wm is [bucket][n2][L1_SIZE], bm [bucket][n2]; the output
-    // layer is then wo [bucket][n2] with bias b2.
+    // (0 = none). wm is [bucket][input][n2] (input-major, so the product
+    // vectorises over the outputs), bm [bucket][n2]; the output layer is then
+    // wo [bucket][n2] with bias b2.
     n2: usize,
-    wm: Vec<[[f32; L1_SIZE]; L2_MAX]>,
+    wm: Vec<[[f32; L2_MAX]; L1_SIZE]>,
     bm: Vec<[f32; L2_MAX]>,
     wo: Vec<[f32; L2_MAX]>,
 }
@@ -403,10 +404,12 @@ fn load_hidden(
         let bmf = f32s(buckets * n2);
         let wof = f32s(buckets * n2);
         for b in 0..buckets {
-            let mut m = [[0f32; L1_SIZE]; L2_MAX];
+            let mut m = [[0f32; L2_MAX]; L1_SIZE];
             let (mut mb, mut ow) = ([0f32; L2_MAX], [0f32; L2_MAX]);
             for j in 0..n2 {
-                m[j][..ln].copy_from_slice(&wmf[(b * n2 + j) * ln..(b * n2 + j + 1) * ln]);
+                for i in 0..ln {
+                    m[i][j] = wmf[(b * n2 + j) * ln + i];
+                }
                 mb[j] = bmf[b * n2 + j];
                 ow[j] = wof[b * n2 + j];
             }
@@ -753,31 +756,61 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize>(n: &Network, l1:
     let w = &l1.w1[b1i * L * 2 * h..(b1i + 1) * L * 2 * h];
     let z = unsafe { l1_product::<L>(&x.0[..2 * h], &nz[..count + 8], count, w) };
     let k = 1.0 / (l1.in_scale * l1.w_scale);
+    // The float layers, 8 lanes at a time with AVX2 (every build has it; the
+    // x86-64-v3 baseline). Separate multiply and add (no FMA) and a fixed
+    // reduction order: every ISA gives the same result.
+    let out = unsafe { hidden_float::<L, L2>(l1, &z, k, b1i, bucket) };
+    (out * n.scale as f32) as i32
+}
+
+/// After the int8 product z: SCReLU of the first hidden layer (L neurons),
+/// then either the output layer, or the second hidden layer (L2 neurons,
+/// SCReLU) and the output layer. Returns the output before scaling.
+#[inline(always)]
+unsafe fn hidden_float<const L: usize, const L2: usize>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
+    use std::arch::x86_64::*;
+    let (zero, one, kv) = (_mm256_setzero_ps(), _mm256_set1_ps(1.0), _mm256_set1_ps(k));
+    let screlu = |v: __m256| {
+        let c = _mm256_min_ps(_mm256_max_ps(v, zero), one);
+        _mm256_mul_ps(c, c)
+    };
+    // First hidden layer activations, 8 at a time.
     let b1 = &l1.b1[b1i];
-    let mut out = l1.b2[bucket];
+    let mut v1 = [zero; L1_SIZE / 8];
+    for c in 0..L / 8 {
+        let zi = _mm256_loadu_si256(z.as_ptr().add(8 * c) as *const __m256i);
+        let pre = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(zi), kv), _mm256_loadu_ps(b1.as_ptr().add(8 * c)));
+        v1[c] = screlu(pre);
+    }
+    let mut acc = zero;
     if L2 == 0 {
         let w2 = &l1.w2[bucket];
-        for i in 0..L {
-            let v = (z[i] as f32 * k + b1[i]).clamp(0.0, 1.0);
-            out += v * v * w2[i];
+        for c in 0..L / 8 {
+            acc = _mm256_add_ps(acc, _mm256_mul_ps(v1[c], _mm256_loadu_ps(w2.as_ptr().add(8 * c))));
         }
     } else {
-        let mut v1 = [0f32; L1_SIZE];
-        for i in 0..L {
-            let v = (z[i] as f32 * k + b1[i]).clamp(0.0, 1.0);
-            v1[i] = v * v;
-        }
         let (wm, bm, wo) = (&l1.wm[bucket], &l1.bm[bucket], &l1.wo[bucket]);
-        for j in 0..L2 {
-            let mut u = bm[j];
-            for i in 0..L {
-                u += v1[i] * wm[j][i];
+        let mut a1 = [0f32; L1_SIZE];
+        for c in 0..L / 8 {
+            _mm256_storeu_ps(a1.as_mut_ptr().add(8 * c), v1[c]);
+        }
+        let mut u = [zero; L2_MAX / 8];
+        for c in 0..L2 / 8 {
+            u[c] = _mm256_loadu_ps(bm.as_ptr().add(8 * c));
+        }
+        for i in 0..L {
+            let x = _mm256_set1_ps(a1[i]);
+            for c in 0..L2 / 8 {
+                u[c] = _mm256_add_ps(u[c], _mm256_mul_ps(x, _mm256_loadu_ps(wm[i].as_ptr().add(8 * c))));
             }
-            let u = u.clamp(0.0, 1.0);
-            out += u * u * wo[j];
+        }
+        for c in 0..L2 / 8 {
+            acc = _mm256_add_ps(acc, _mm256_mul_ps(screlu(u[c]), _mm256_loadu_ps(wo.as_ptr().add(8 * c))));
         }
     }
-    (out * n.scale as f32) as i32
+    let mut lanes = [0f32; 8];
+    _mm256_storeu_ps(lanes.as_mut_ptr(), acc);
+    l1.b2[bucket] + ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5])) + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]))
 }
 
 /// clamp(a, 0, qa)^2 >> shift as u8 (load() checks it fits 0..127). The
