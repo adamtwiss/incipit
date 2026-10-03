@@ -618,9 +618,7 @@ impl Searcher {
                 if tt_score >= beta && tt_move != 0 && !is_noisy(tt_move) {
                     // reward quiet tt move causing cutoff
                     let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).min(tp(P::HistMax));
-                    let pc = pos.board[mfrom(tt_move)] as usize;
                     upd(&mut self.hist[pos.stm][mfrom(tt_move)][mto(tt_move)], bonus);
-                    let _ = pc;
                 }
                 self.stats.tt_cutoffs += 1;
                 return tt_score;
@@ -752,7 +750,8 @@ impl Searcher {
                         return 0;
                     }
                     if v >= pc_beta {
-                        self.tt.store(pos.hash, m, v, raw_eval, depth - 3, BOUND_LOWER);
+                        let ss = if v >= MATE_BOUND { v + ply as i32 } else { v };
+                        self.tt.store(pos.hash, m, ss, raw_eval, depth - 3, BOUND_LOWER);
                         self.stats.probcut_cuts += 1;
                         return v;
                     }
