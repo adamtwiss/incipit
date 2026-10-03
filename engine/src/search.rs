@@ -919,7 +919,10 @@ impl Searcher {
                     ext = -1;
                     self.stats.se_negative += 1;
                 }
-            } else if on(P::UseCheckExt) && child.checkers != 0 {
+            }
+            // A checking move keeps its check extension when singular
+            // verification ran but found nothing (ext still 0).
+            if ext == 0 && on(P::UseCheckExt) && child.checkers != 0 {
                 self.stats.check_ext += 1;
                 ext = 1;
             }
