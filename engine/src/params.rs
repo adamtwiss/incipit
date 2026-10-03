@@ -55,6 +55,15 @@ params! {
     TmSoftDiv = "TmSoftDiv", 27, 12, 40, 1;
     TmIncPct = "TmIncPct", 75, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
+    // Depth gates (formerly constants).
+    NmpDepth = "NmpDepth", 3, 2, 6, 1;
+    ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
+    ProbcutRed = "ProbcutRed", 4, 2, 6, 1;
+    IirDepth = "IirDepth", 4, 2, 8, 1;
+    FutDepth = "FutDepth", 8, 4, 12, 1;
+    HistPruneDepth = "HistPruneDepth", 4, 2, 8, 1;
+    SeeNoisyDepth = "SeeNoisyDepth", 6, 3, 10, 1;
+    SeDepth = "SeDepth", 7, 4, 10, 1;
     // Feature switches for ablation tests (1 = on, 0 = off). Step 0 keeps them out of
     // tune-spec; OpenBench builds advertise them, so a test can set e.g. UseProbcut=0.
     UseTtCut = "UseTtCut", 1, 0, 1, 0;

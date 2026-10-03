@@ -698,7 +698,7 @@ impl Searcher {
             }
             // null move pruning
             if on(P::UseNmp)
-                && depth >= 3
+                && depth >= tp(P::NmpDepth)
                 && eval >= beta
                 && static_eval >= beta - tp(P::NmpDepthMul) * depth + tp(P::NmpMarginBase)
                 && ply >= 1
@@ -727,7 +727,7 @@ impl Searcher {
             // probcut
             let pc_beta = beta + tp(P::ProbcutMargin);
             if on(P::UseProbcut)
-                && depth >= 5
+                && depth >= tp(P::ProbcutDepth)
                 && beta.abs() < MATE_BOUND
                 && !(tte.is_some() && tt_depth >= depth - 3 && tt_score < pc_beta)
             {
@@ -749,7 +749,7 @@ impl Searcher {
                     self.hash_hist.push(pos.hash);
                     let mut v = -self.qsearch(&child, -pc_beta, -pc_beta + 1, ply + 1);
                     if v >= pc_beta {
-                        v = -self.negamax(&child, -pc_beta, -pc_beta + 1, depth - 4, ply + 1, !cut_node);
+                        v = -self.negamax(&child, -pc_beta, -pc_beta + 1, depth - tp(P::ProbcutRed), ply + 1, !cut_node);
                     }
                     self.hash_hist.pop();
                     if self.stopped {
@@ -765,7 +765,7 @@ impl Searcher {
             }
         }
         // internal iterative reduction
-        if on(P::UseIir) && depth >= 4 && tt_move == 0 && (pv_node || cut_node) {
+        if on(P::UseIir) && depth >= tp(P::IirDepth) && tt_move == 0 && (pv_node || cut_node) {
             self.stats.iir += 1;
             depth -= 1;
         }
@@ -863,12 +863,12 @@ impl Searcher {
                         continue;
                     }
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
-                    if on(P::UseFut) && !in_check && lmr_d <= 8 && static_eval + tp(P::FutBase) + tp(P::FutMul) * lmr_d <= alpha {
+                    if on(P::UseFut) && !in_check && lmr_d <= tp(P::FutDepth) && static_eval + tp(P::FutBase) + tp(P::FutMul) * lmr_d <= alpha {
                         self.stats.futility += 1;
                         skip_quiets = true;
                         continue;
                     }
-                    if on(P::UseHistPrune) && !in_check && lmr_d <= 4 && hist_score < -tp(P::HistPrune) * depth {
+                    if on(P::UseHistPrune) && !in_check && lmr_d <= tp(P::HistPruneDepth) && hist_score < -tp(P::HistPrune) * depth {
                         self.stats.hist_prunes += 1;
                         continue;
                     }
@@ -876,7 +876,7 @@ impl Searcher {
                         self.stats.see_quiet += 1;
                         continue;
                     }
-                } else if on(P::UseSeeNoisy) && depth <= 6 && !pos.see_ge(m, -tp(P::SeeNoisy) * depth) {
+                } else if on(P::UseSeeNoisy) && depth <= tp(P::SeeNoisyDepth) && !pos.see_ge(m, -tp(P::SeeNoisy) * depth) {
                     self.stats.see_noisy += 1;
                     continue;
                 }
@@ -893,7 +893,7 @@ impl Searcher {
             let mut ext = 0;
             if on(P::UseSe)
                 && !root
-                && depth >= 7
+                && depth >= tp(P::SeDepth)
                 && m == tt_move
                 && excluded == 0
                 && tt_depth >= depth - 3
