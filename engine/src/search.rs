@@ -57,7 +57,6 @@ pub struct Stats {
     pub se_double: u64,
     pub se_negative: u64,
     pub multicut: u64,
-    pub check_ext: u64,
     pub beta_cuts: u64,
     pub cut_pos_sum: u64,
     pub cut_pos_sq_sum: u64,
@@ -125,7 +124,6 @@ impl Stats {
                 self.se_tries, self.se_single, self.se_double, self.se_negative, self.multicut
             ),
         );
-        line("Check ext:", format!("{}", self.check_ext));
         o
     }
 }
@@ -926,9 +924,6 @@ impl Searcher {
                     ext = -1;
                     self.stats.se_negative += 1;
                 }
-            } else if on(P::UseCheckExt) && child.checkers != 0 {
-                self.stats.check_ext += 1;
-                ext = 1;
             }
 
             self.push_acc(ply, pos, &child, m);
