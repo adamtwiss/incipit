@@ -672,7 +672,15 @@ impl Searcher {
             }
         }
         self.stack[ply].static_eval = static_eval;
-        let improving = !in_check && ply >= 2 && self.stack[ply - 2].static_eval != -INF && static_eval > self.stack[ply - 2].static_eval;
+        // Compare with our previous move's eval; if we were in check then, with the one before.
+        let improving = !in_check
+            && if ply >= 2 && self.stack[ply - 2].static_eval != -INF {
+                static_eval > self.stack[ply - 2].static_eval
+            } else if ply >= 4 && self.stack[ply - 4].static_eval != -INF {
+                static_eval > self.stack[ply - 4].static_eval
+            } else {
+                false
+            };
         self.killers[ply + 1] = [0, 0];
 
         if !pv_node && !in_check && excluded == 0 {
