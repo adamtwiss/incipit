@@ -53,11 +53,41 @@ params! {
     TmSoftDiv = "TmSoftDiv", 27, 12, 40, 1;
     TmIncPct = "TmIncPct", 75, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
+    // Feature switches for ablation tests (1 = on, 0 = off). Step 0 keeps them out of
+    // tune-spec; OpenBench builds advertise them, so a test can set e.g. UseProbcut=0.
+    UseTtCut = "UseTtCut", 1, 0, 1, 0;
+    UseRfp = "UseRfp", 1, 0, 1, 0;
+    UseRazor = "UseRazor", 1, 0, 1, 0;
+    UseNmp = "UseNmp", 1, 0, 1, 0;
+    UseProbcut = "UseProbcut", 1, 0, 1, 0;
+    UseIir = "UseIir", 1, 0, 1, 0;
+    UseLmp = "UseLmp", 1, 0, 1, 0;
+    UseFut = "UseFut", 1, 0, 1, 0;
+    UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
+    UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
+    UseSeeNoisy = "UseSeeNoisy", 1, 0, 1, 0;
+    UseSe = "UseSe", 1, 0, 1, 0;
+    UseSeDoubleExt = "UseSeDoubleExt", 1, 0, 1, 0;
+    UseMulticut = "UseMulticut", 1, 0, 1, 0;
+    UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;
+    UseCheckExt = "UseCheckExt", 1, 0, 1, 0;
+    UseLmr = "UseLmr", 1, 0, 1, 0;
+    UseQsFut = "UseQsFut", 1, 0, 1, 0;
+    UseQsSee = "UseQsSee", 1, 0, 1, 0;
+    UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
+    UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
+    UseAsp = "UseAsp", 1, 0, 1, 0;
 }
 
 #[inline(always)]
 pub fn tp(p: P) -> i32 {
     unsafe { PARAMS[p as usize].val }
+}
+
+/// A feature switch (a step-0 parameter) is on.
+#[inline(always)]
+pub fn on(p: P) -> bool {
+    tp(p) != 0
 }
 
 pub fn set(name: &str, v: i32) -> bool {
@@ -83,7 +113,7 @@ pub fn print_options() {
 /// SPSA parameter list in OpenBench's input format: name, int, default, min, max, c_end, r_end.
 pub fn print_spec() {
     unsafe {
-        for p in (*addr_of!(PARAMS)).iter() {
+        for p in (*addr_of!(PARAMS)).iter().filter(|p| p.step > 0) {
             println!("{}, int, {}, {}, {}, {}, 0.002", p.name, p.val, p.min, p.max, p.step);
         }
     }

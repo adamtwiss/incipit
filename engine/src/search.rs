@@ -1,6 +1,6 @@
 // Search: iterative deepening PVS with the usual pruning/reduction heuristics.
 use crate::nnue::{self, Acc};
-use crate::params::{tp, P};
+use crate::params::{on, tp, P};
 use crate::position::*;
 use crate::tt::*;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -334,6 +334,9 @@ impl Searcher {
     #[inline(always)]
     fn corrected(&self, pos: &Position, raw: i32) -> i32 {
         let m = CORR_SIZE - 1;
+        if !on(P::UseCorrHist) {
+            return Self::damp(pos, raw).clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
+        }
         let c = (2 * self.corr[pos.stm][(pos.pawn_key as usize) & m]
             + self.corr_np[pos.stm][0][(pos.np_key[0] as usize) & m]
             + self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m])
@@ -424,7 +427,7 @@ impl Searcher {
             let nodes_at_start = self.nodes;
             self.root_depth = d;
             let mut delta = tp(P::AspDelta);
-            let (mut a, mut b) = if d >= 4 { (score - delta, score + delta) } else { (-INF, INF) };
+            let (mut a, mut b) = if d >= 4 && on(P::UseAsp) { (score - delta, score + delta) } else { (-INF, INF) };
             let mut fh_move: Move = 0;
             let mut fh_score = 0;
             let mut s;
@@ -602,6 +605,7 @@ impl Searcher {
             tt_depth = e.depth as i32;
             tt_bound = e.bound;
             if !pv_node
+                && on(P::UseTtCut)
                 && tt_depth >= depth
                 // Near the fifty-move draw a stored score may be stale (the
                 // counter isn't in the key); refuse only scores well away
@@ -675,12 +679,12 @@ impl Searcher {
 
         if !pv_node && !in_check && excluded == 0 {
             // reverse futility pruning
-            if depth <= tp(P::RfpDepth) && eval.abs() < MATE_BOUND && eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta {
+            if on(P::UseRfp) && depth <= tp(P::RfpDepth) && eval.abs() < MATE_BOUND && eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta {
                 self.stats.rfp += 1;
                 return (eval + beta) / 2;
             }
             // razoring
-            if depth <= 3 && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth <= alpha {
+            if on(P::UseRazor) && depth <= 3 && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth <= alpha {
                 self.stats.razor_tries += 1;
                 let v = self.qsearch(pos, alpha, alpha + 1, ply);
                 if v <= alpha {
@@ -689,7 +693,8 @@ impl Searcher {
                 }
             }
             // null move pruning
-            if depth >= 3
+            if on(P::UseNmp)
+                && depth >= 3
                 && eval >= beta
                 && static_eval >= beta - tp(P::NmpDepthMul) * depth + tp(P::NmpMarginBase)
                 && ply >= 1
@@ -717,7 +722,8 @@ impl Searcher {
             }
             // probcut
             let pc_beta = beta + tp(P::ProbcutMargin);
-            if depth >= 5
+            if on(P::UseProbcut)
+                && depth >= 5
                 && beta.abs() < MATE_BOUND
                 && !(tte.is_some() && tt_depth >= depth - 3 && tt_score < pc_beta)
             {
@@ -754,7 +760,7 @@ impl Searcher {
             }
         }
         // internal iterative reduction
-        if depth >= 4 && tt_move == 0 && (pv_node || cut_node) {
+        if on(P::UseIir) && depth >= 4 && tt_move == 0 && (pv_node || cut_node) {
             self.stats.iir += 1;
             depth -= 1;
         }
@@ -846,26 +852,26 @@ impl Searcher {
             let hist_score = if quiet && mscore < (1 << 27) { mscore } else { 0 };
             if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
                 if quiet {
-                    if legal >= lmp_limit && !in_check {
+                    if on(P::UseLmp) && legal >= lmp_limit && !in_check {
                         self.stats.lmp += 1;
                         skip_quiets = true;
                         continue;
                     }
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
-                    if !in_check && lmr_d <= 8 && static_eval + tp(P::FutBase) + tp(P::FutMul) * lmr_d <= alpha {
+                    if on(P::UseFut) && !in_check && lmr_d <= 8 && static_eval + tp(P::FutBase) + tp(P::FutMul) * lmr_d <= alpha {
                         self.stats.futility += 1;
                         skip_quiets = true;
                         continue;
                     }
-                    if lmr_d <= 4 && hist_score < -tp(P::HistPrune) * depth {
+                    if on(P::UseHistPrune) && lmr_d <= 4 && hist_score < -tp(P::HistPrune) * depth {
                         self.stats.hist_prunes += 1;
                         continue;
                     }
-                    if !pos.see_ge(m, -tp(P::SeeQuiet) * lmr_d * lmr_d) {
+                    if on(P::UseSeeQuiet) && !pos.see_ge(m, -tp(P::SeeQuiet) * lmr_d * lmr_d) {
                         self.stats.see_quiet += 1;
                         continue;
                     }
-                } else if depth <= 6 && !pos.see_ge(m, -tp(P::SeeNoisy) * depth) {
+                } else if on(P::UseSeeNoisy) && depth <= 6 && !pos.see_ge(m, -tp(P::SeeNoisy) * depth) {
                     self.stats.see_noisy += 1;
                     continue;
                 }
@@ -880,7 +886,8 @@ impl Searcher {
 
             // extensions
             let mut ext = 0;
-            if !root
+            if on(P::UseSe)
+                && !root
                 && depth >= 7
                 && m == tt_move
                 && excluded == 0
@@ -899,20 +906,20 @@ impl Searcher {
                 }
                 if v < sbeta {
                     ext = 1;
-                    if !pv_node && v < sbeta - tp(P::SeDouble) {
+                    if on(P::UseSeDoubleExt) && !pv_node && v < sbeta - tp(P::SeDouble) {
                         ext = 2;
                         self.stats.se_double += 1;
                     } else {
                         self.stats.se_single += 1;
                     }
-                } else if sbeta >= beta {
+                } else if on(P::UseMulticut) && sbeta >= beta {
                     self.stats.multicut += 1;
                     return sbeta;
-                } else if tt_score >= beta {
+                } else if on(P::UseSeNegExt) && tt_score >= beta {
                     ext = -1;
                     self.stats.se_negative += 1;
                 }
-            } else if child.checkers != 0 {
+            } else if on(P::UseCheckExt) && child.checkers != 0 {
                 self.stats.check_ext += 1;
                 ext = 1;
             }
@@ -929,7 +936,7 @@ impl Searcher {
                 score = -self.negamax(&child, -beta, -alpha, new_depth, ply + 1, !pv_node && !cut_node);
             } else {
                 let mut r = 0;
-                if depth >= 3 && legal > 1 + root as i32 && (quiet || mscore < 0) {
+                if on(P::UseLmr) && depth >= 3 && legal > 1 + root as i32 && (quiet || mscore < 0) {
                     r = self.lmr[depth.min(63) as usize][legal.min(63) as usize];
                     if !pv_node {
                         r += 1;
@@ -1223,15 +1230,15 @@ impl Searcher {
             pick(&mut list.moves, &mut scores, i, list.len);
             let m = list.moves[i];
             if !in_check {
-                if !pos.see_ge(m, 0) {
+                if on(P::UseQsSee) && !pos.see_ge(m, 0) {
                     continue;
                 }
                 let ct = pos.captured_type(m);
-                if !is_promo(m) && static_eval + tp(P::QsFut) + SEE_VAL[ct.min(5)] <= alpha {
+                if on(P::UseQsFut) && !is_promo(m) && static_eval + tp(P::QsFut) + SEE_VAL[ct.min(5)] <= alpha {
                     best = best.max(static_eval + tp(P::QsFut) + SEE_VAL[ct.min(5)]);
                     continue;
                 }
-            } else if legal > 0 && best > -MATE_BOUND && !is_noisy(m) && legal >= 3 {
+            } else if on(P::UseQsEvasionLimit) && legal > 0 && best > -MATE_BOUND && !is_noisy(m) && legal >= 3 {
                 // limit quiet evasions
                 continue;
             }
