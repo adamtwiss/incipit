@@ -682,7 +682,7 @@ impl Searcher {
                 return (eval + beta) / 2;
             }
             // razoring
-            if on(P::UseRazor) && depth <= 3 && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth <= alpha {
+            if on(P::UseRazor) && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth * depth <= alpha {
                 self.stats.razor_tries += 1;
                 let v = self.qsearch(pos, alpha, alpha + 1, ply);
                 if v <= alpha {

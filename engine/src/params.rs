@@ -22,8 +22,10 @@ macro_rules! params {
 // name = UCI name, default, min, max, SPSA step (c_end). Step = (max - min) / 20, at least 1.
 params! {
     RfpMargin = "RfpMargin", 68, 30, 150, 6;
-    RazorBase = "RazorBase", 242, 50, 400, 18;
-    RazorMul = "RazorMul", 312, 100, 400, 15;
+    // Razoring at any depth: eval + RazorBase + RazorMul * depth^2 <= alpha. Starting values
+    // fit the old tuned linear margin (242 + 312 * depth, depth <= 3) at depths 1 and 3.
+    RazorBase = "RazorBase", 480, 100, 800, 35;
+    RazorMul = "RazorMul", 80, 20, 200, 9;
     NmpEvalDiv = "NmpEvalDiv", 182, 100, 400, 15;
     ProbcutMargin = "ProbcutMargin", 226, 100, 350, 13;
     FutBase = "FutBase", 87, 30, 250, 11;
