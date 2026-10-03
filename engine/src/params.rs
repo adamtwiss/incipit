@@ -44,6 +44,8 @@ params! {
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 20, 0, 60, 3;
     NmpMarginBase = "NmpMarginBase", 150, 0, 400, 20;
+    // Largest |TT score| still used for a cutoff at halfmove >= 90 (half a pawn).
+    HmGuard = "HmGuard", 50, 0, 300, 15;
     NmpBase = "NmpBase", 4, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
     SeMul = "SeMul", 21, 8, 40, 2;
