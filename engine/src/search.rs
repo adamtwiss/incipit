@@ -862,11 +862,11 @@ impl Searcher {
                         skip_quiets = true;
                         continue;
                     }
-                    if on(P::UseHistPrune) && lmr_d <= 4 && hist_score < -tp(P::HistPrune) * depth {
+                    if on(P::UseHistPrune) && !in_check && lmr_d <= 4 && hist_score < -tp(P::HistPrune) * depth {
                         self.stats.hist_prunes += 1;
                         continue;
                     }
-                    if on(P::UseSeeQuiet) && !pos.see_ge(m, -tp(P::SeeQuiet) * lmr_d * lmr_d) {
+                    if on(P::UseSeeQuiet) && !in_check && !pos.see_ge(m, -tp(P::SeeQuiet) * lmr_d * lmr_d) {
                         self.stats.see_quiet += 1;
                         continue;
                     }
