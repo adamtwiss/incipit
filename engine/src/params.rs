@@ -22,8 +22,10 @@ macro_rules! params {
 // name = UCI name, default, min, max, SPSA step (c_end). Step = (max - min) / 20, at least 1.
 params! {
     RfpMargin = "RfpMargin", 68, 30, 150, 6;
-    RazorBase = "RazorBase", 242, 50, 400, 18;
-    RazorMul = "RazorMul", 312, 100, 400, 15;
+    // Razoring at any depth: eval + RazorBase + RazorMul * depth^2 <= alpha. Starting values
+    // fit the old tuned linear margin (242 + 312 * depth, depth <= 3) at depths 1 and 3.
+    RazorBase = "RazorBase", 480, 100, 800, 35;
+    RazorMul = "RazorMul", 80, 20, 200, 9;
     NmpEvalDiv = "NmpEvalDiv", 182, 100, 400, 15;
     ProbcutMargin = "ProbcutMargin", 226, 100, 350, 13;
     FutBase = "FutBase", 87, 30, 250, 11;
@@ -41,6 +43,11 @@ params! {
     HistMax = "HistMax", 2739, 1000, 4000, 150;
     SeDouble = "SeDouble", 13, 5, 50, 2;
     RfpDepth = "RfpDepth", 8, 3, 12, 1;
+    // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
+    NmpDepthMul = "NmpDepthMul", 20, 0, 60, 3;
+    NmpMarginBase = "NmpMarginBase", 150, 0, 400, 20;
+    // Largest |TT score| still used for a cutoff at halfmove >= 90 (half a pawn).
+    HmGuard = "HmGuard", 50, 0, 300, 15;
     NmpBase = "NmpBase", 4, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
     SeMul = "SeMul", 21, 8, 40, 2;
@@ -48,11 +55,49 @@ params! {
     TmSoftDiv = "TmSoftDiv", 27, 12, 40, 1;
     TmIncPct = "TmIncPct", 75, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
+    // Depth gates (formerly constants).
+    NmpDepth = "NmpDepth", 3, 2, 6, 1;
+    ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
+    ProbcutRed = "ProbcutRed", 4, 2, 6, 1;
+    IirDepth = "IirDepth", 4, 2, 8, 1;
+    FutDepth = "FutDepth", 8, 4, 12, 1;
+    HistPruneDepth = "HistPruneDepth", 4, 2, 8, 1;
+    SeeNoisyDepth = "SeeNoisyDepth", 6, 3, 10, 1;
+    SeDepth = "SeDepth", 7, 4, 10, 1;
+    // Feature switches for ablation tests (1 = on, 0 = off). Step 0 keeps them out of
+    // tune-spec; OpenBench builds advertise them, so a test can set e.g. UseProbcut=0.
+    UseTtCut = "UseTtCut", 1, 0, 1, 0;
+    UseRfp = "UseRfp", 1, 0, 1, 0;
+    UseRazor = "UseRazor", 1, 0, 1, 0;
+    UseNmp = "UseNmp", 1, 0, 1, 0;
+    UseProbcut = "UseProbcut", 1, 0, 1, 0;
+    UseIir = "UseIir", 1, 0, 1, 0;
+    UseLmp = "UseLmp", 1, 0, 1, 0;
+    UseFut = "UseFut", 1, 0, 1, 0;
+    UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
+    UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
+    UseSeeNoisy = "UseSeeNoisy", 1, 0, 1, 0;
+    UseSe = "UseSe", 1, 0, 1, 0;
+    UseSeDoubleExt = "UseSeDoubleExt", 1, 0, 1, 0;
+    UseMulticut = "UseMulticut", 1, 0, 1, 0;
+    UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;
+    UseLmr = "UseLmr", 1, 0, 1, 0;
+    UseQsFut = "UseQsFut", 1, 0, 1, 0;
+    UseQsSee = "UseQsSee", 1, 0, 1, 0;
+    UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
+    UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
+    UseAsp = "UseAsp", 1, 0, 1, 0;
 }
 
 #[inline(always)]
 pub fn tp(p: P) -> i32 {
     unsafe { PARAMS[p as usize].val }
+}
+
+/// A feature switch (a step-0 parameter) is on.
+#[inline(always)]
+pub fn on(p: P) -> bool {
+    tp(p) != 0
 }
 
 pub fn set(name: &str, v: i32) -> bool {
@@ -78,7 +123,7 @@ pub fn print_options() {
 /// SPSA parameter list in OpenBench's input format: name, int, default, min, max, c_end, r_end.
 pub fn print_spec() {
     unsafe {
-        for p in (*addr_of!(PARAMS)).iter() {
+        for p in (*addr_of!(PARAMS)).iter().filter(|p| p.step > 0) {
             println!("{}, int, {}, {}, {}, {}, 0.002", p.name, p.val, p.min, p.max, p.step);
         }
     }

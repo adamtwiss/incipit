@@ -292,6 +292,15 @@ fn main() {
                 return;
             }
             "bench" => {
+                // `bench [depth] [Param=value ...]`, e.g. `bench 13 UseProbcut=0` for ablations.
+                for a in args.iter().skip(3) {
+                    if let Some((k, v)) = a.split_once('=') {
+                        if !v.parse().is_ok_and(|v| params::set(k, v)) {
+                            eprintln!("unknown parameter {a}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
                 bench(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(13));
                 return;
             }
