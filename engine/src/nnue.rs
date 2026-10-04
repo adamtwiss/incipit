@@ -1767,6 +1767,14 @@ mod tests {
 
     /// The SIMD `dot` matches the scalar reference, including where the
     /// 16-bit products and 32-bit sums wrap.
+    /// The hidden-layer kernels (u8 conversion, fused conversion + non-zero
+    /// scan, pairwise conversion, sparse int8 products) against their scalar
+    /// versions on random inputs.
+    #[test]
+    fn hidden_kernels_match_scalar() {
+        assert_eq!(l1check(20), 0);
+    }
+
     #[test]
     fn dot_matches_scalar() {
         let mut r = 0x9E3779B97F4A7C15u64;
