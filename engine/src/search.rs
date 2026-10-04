@@ -921,7 +921,7 @@ impl Searcher {
                     self.stats.multicut += 1;
                     return sbeta;
                 } else if on(P::UseSeNegExt) && tt_score >= beta {
-                    ext = -1;
+                    ext = if cut_node { -2 } else { -1 };
                     self.stats.se_negative += 1;
                 }
             }
