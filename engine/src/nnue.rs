@@ -22,6 +22,9 @@ const INPUT_PSQ768: u16 = 1;
 const ACT_NONE: u8 = 0;
 const ACT_CRELU: u8 = 2;
 const ACT_SCRELU: u8 = 3;
+/// Pairwise CReLU: clamp to [0, QA], then each perspective's first half times
+/// its second half (h/2 values per perspective; same QA^2 scale as SCReLU).
+const ACT_PAIRWISE: u8 = 4;
 const TYPE_I8: u8 = 1;
 const TYPE_I16: u8 = 2;
 const TYPE_I32: u8 = 3;
@@ -65,6 +68,7 @@ struct Hidden {
     w1: AlignedI8,          // [bucket][input / 4][n][4], the kernels' layout
     b1: Vec<[f32; L1_SIZE]>, // [bucket]
     shared: bool,           // one hidden layer for all buckets (w1, b1 have one entry)
+    pw: bool,               // pairwise FT: the hidden layer has h inputs, not 2h
     w2: Vec<[f32; L1_SIZE]>, // output layer [bucket] (no second hidden layer)
     b2: Vec<f32>,           // output bias [bucket]
     // Optional second hidden layer (f32, SCReLU, per bucket): n2 neurons
@@ -332,13 +336,19 @@ fn load_hidden(
     let (l1, l2) = (layers[0], layers[layers.len() - 1]);
     // A middle layer: the second hidden layer.
     let mid = (layers.len() == 3).then(|| layers[1]);
-    if act != ACT_SCRELU {
-        return Err("a hidden layer needs a SCReLU feature transformer".into());
+    if act != ACT_SCRELU && act != ACT_PAIRWISE {
+        return Err("a hidden layer needs a SCReLU or pairwise feature transformer".into());
     }
+    let pw = act == ACT_PAIRWISE;
+    if pw && h % 128 != 0 {
+        return Err(format!("pairwise needs a hidden size that is a multiple of 128, got {}", h));
+    }
+    // Hidden-layer inputs: both perspectives, h each (SCReLU) or h/2 each (pairwise).
+    let inl = if pw { h } else { 2 * h };
     let shared = l1.5 & 1 == 0;
     let ln = l1.1;
-    if (l1.0, l1.2, l1.3, l1.4) != (2 * h, ACT_SCRELU, TYPE_I8, TYPE_F32) || (ln != 8 && ln != 16) {
-        return Err(format!("unsupported hidden layer {:?} (need 2H -> 8 or 16 SCReLU, i8 weights, f32 biases)", l1));
+    if (l1.0, l1.2, l1.3, l1.4) != (inl, ACT_SCRELU, TYPE_I8, TYPE_F32) || (ln != 8 && ln != 16) {
+        return Err(format!("unsupported hidden layer {:?} (need {} -> 8 or 16 SCReLU, i8 weights, f32 biases)", l1, inl));
     }
     let nb1 = if shared { 1 } else { buckets };
     let n2 = mid.map_or(0, |m| m.1);
@@ -346,6 +356,9 @@ fn load_hidden(
         if m != (ln, n2, ACT_SCRELU, TYPE_F32, TYPE_F32, 1) || n2 == 0 || n2 > L2_MAX {
             return Err(format!("unsupported second hidden layer {:?} (need {} -> 1..{} SCReLU, f32, per bucket)", m, ln, L2_MAX));
         }
+    }
+    if pw && !(ln == 16 && (n2 == 0 || n2 == 16)) {
+        return Err(format!("pairwise hidden nets support 16 or 16 -> 16 hidden layers, got {} -> {}", ln, n2));
     }
     let last_in = if n2 > 0 { n2 } else { ln };
     if l2 != (last_in, 1, ACT_NONE, TYPE_F32, TYPE_F32, 1) {
@@ -358,7 +371,7 @@ fn load_hidden(
         return Err(format!("hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs", shift, w_scale));
     }
     let n_ftw = nkb * 768 * h;
-    let expect = 2 * (n_ftw + h) + nb1 * ln * 2 * h + 4 * (nb1 * ln + buckets * n2 * (ln + 1) + buckets * (last_in + 1));
+    let expect = 2 * (n_ftw + h) + nb1 * ln * inl + 4 * (nb1 * ln + buckets * n2 * (ln + 1) + buckets * (last_in + 1));
     if d.len() - header != expect {
         return Err(format!("weights are {} bytes, but the header describes {}", d.len() - header, expect));
     }
@@ -372,16 +385,16 @@ fn load_hidden(
     let ftb = i16s(h);
     // File: [bucket][out][in]. Kernels want each group of 4 inputs for all
     // outputs together: [bucket][in / 4][out][in % 4].
-    let mut w1 = AlignedI8::zeroed(nb1 * ln * 2 * h);
+    let mut w1 = AlignedI8::zeroed(nb1 * ln * inl);
     for b in 0..nb1 {
         for n in 0..ln {
-            for i in 0..2 * h {
-                let v = d[o + (b * ln + n) * 2 * h + i] as i8;
-                w1[b * ln * 2 * h + (i / 4) * ln * 4 + n * 4 + i % 4] = v;
+            for i in 0..inl {
+                let v = d[o + (b * ln + n) * inl + i] as i8;
+                w1[b * ln * inl + (i / 4) * ln * 4 + n * 4 + i % 4] = v;
             }
         }
     }
-    o += nb1 * ln * 2 * h;
+    o += nb1 * ln * inl;
     let mut f32s = |n: usize| {
         let v: Vec<f32> = d[o..o + 4 * n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
         o += 4 * n;
@@ -445,6 +458,7 @@ fn load_hidden(
             w1,
             b1,
             shared,
+            pw,
             w2,
             b2,
             n2,
@@ -700,6 +714,8 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
     let n = net();
     match &n.l1 {
         None => with_h!(n.h, eval_n(n, acc, pos)),
+        Some(l1) if l1.pw && l1.n2 == 16 => with_h!(n.h, eval_hidden_pw16x16(n, l1, acc, pos)),
+        Some(l1) if l1.pw => with_h!(n.h, eval_hidden_pw16(n, l1, acc, pos)),
         Some(l1) if l1.n2 == 32 => with_h!(n.h, eval_hidden16x32(n, l1, acc, pos)),
         Some(l1) if l1.n2 == 16 => with_h!(n.h, eval_hidden16x16(n, l1, acc, pos)),
         Some(l1) if l1.n == 8 => with_h!(n.h, eval_hidden8(n, l1, acc, pos)),
@@ -712,27 +728,39 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
 /// and the float output layer.
 #[inline(never)]
 fn eval_hidden16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 0>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 0, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden8<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 8, 0>(n, l1, acc, pos)
+    eval_hidden::<H, 8, 0, false>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden_pw16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 0, true>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden_pw16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 16, true>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 16, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 32, false>(n, l1, acc, pos)
 }
 
 #[inline(always)]
-fn eval_hidden<const H: usize, const L: usize, const L2: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
     let h = hidden::<H>(n);
+    // Hidden-layer inputs: h per perspective (SCReLU) or h/2 (pairwise).
+    let inl = if PW { h } else { 2 * h };
     let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
     #[repr(C, align(64))]
     struct Inputs([u8; 2 * MAX_H]);
@@ -743,7 +771,16 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize>(n: &Network, l1:
     // Indices of the 4-input groups with any non-zero input (+ 8 of slack).
     #[allow(invalid_value, clippy::uninit_assumed_init)]
     let mut nz: [u16; 2 * MAX_H / 4 + 8] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
-    let count = if n.qa == 255 && l1.shift == 9 {
+    let count = if PW {
+        let (us, them) = (acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h));
+        if n.qa == 255 && l1.shift == 9 {
+            unsafe { to_u8_pw_nz_255_9(us, them, &mut x.0[..h], &mut nz) }
+        } else {
+            to_u8_pw_scalar(us, &mut x.0[..h / 2], n.qa, l1.shift);
+            to_u8_pw_scalar(them, &mut x.0[h / 2..h], n.qa, l1.shift);
+            unsafe { scan_nz(&x.0[..h], &mut nz) }
+        }
+    } else if n.qa == 255 && l1.shift == 9 {
         // Converts and lists the non-zero groups in one pass.
         unsafe { to_u8_nz_255_9(acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h), &mut x.0[..2 * h], &mut nz) }
     } else {
@@ -753,8 +790,8 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize>(n: &Network, l1:
     };
     // A shared hidden layer has one block for all buckets (branch-free).
     let b1i = bucket & !(l1.shared as usize).wrapping_neg();
-    let w = &l1.w1[b1i * L * 2 * h..(b1i + 1) * L * 2 * h];
-    let z = unsafe { l1_product::<L>(&x.0[..2 * h], &nz[..count + 8], count, w) };
+    let w = &l1.w1[b1i * L * inl..(b1i + 1) * L * inl];
+    let z = unsafe { l1_product::<L>(&x.0[..inl], &nz[..count + 8], count, w) };
     let k = 1.0 / (l1.in_scale * l1.w_scale);
     // The float layers, 8 lanes at a time with AVX2 (every build has it; the
     // x86-64-v3 baseline). Separate multiply and add (no FMA) and a fixed
@@ -862,6 +899,15 @@ unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
 
 #[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
+unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
+    let half = a0.len() / 2;
+    to_u8_pw_scalar(a0, &mut x[..half], 255, 9);
+    to_u8_pw_scalar(a1, &mut x[half..2 * half], 255, 9);
+    scan_nz(&x[..2 * half], nz)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
 unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
     let h = a0.len();
     to_u8_scalar(a0, &mut x[..h], 255, 9);
@@ -926,6 +972,15 @@ fn to_u8_scalar(a: &[i16], x: &mut [u8], qa: i32, shift: u32) {
     }
 }
 
+/// Pairwise: x[i] = (clamp(a[i]) * clamp(a[i + h/2])) >> shift, h/2 outputs.
+fn to_u8_pw_scalar(a: &[i16], x: &mut [u8], qa: i32, shift: u32) {
+    let half = a.len() / 2;
+    for i in 0..half {
+        let (c1, c2) = ((a[i] as i32).clamp(0, qa), (a[half + i] as i32).clamp(0, qa));
+        x[i] = ((c1 * c2) >> shift) as u8;
+    }
+}
+
 /// QA 255, shift 9: (c * c) >> 9 = mulhi_u16(c << 7, c) (c << 7 fits u16).
 #[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
 #[inline(always)]
@@ -980,6 +1035,58 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
             let m = _mm512_test_epi32_mask(p, p) as u32;
             count = push_nz(nz, count, m & 0xff, (o / 4) as u16);
             count = push_nz(nz, count, m >> 8, (o / 4) as u16 + 8);
+        }
+    }
+    count
+}
+
+/// Pairwise version of to_u8_nz_255_9: per perspective, the first half times
+/// the second half, (c1 * c2) >> 9 = mulhi_u16(c1 << 7, c2); h/2 outputs each
+/// (h/2 is a multiple of 64).
+#[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
+#[inline(always)]
+unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
+    use std::arch::x86_64::*;
+    let zero = _mm512_setzero_si512();
+    let qa = _mm512_set1_epi16(255);
+    let order = _mm512_set_epi64(7, 5, 3, 1, 6, 4, 2, 0);
+    let half = a0.len() / 2;
+    let mut count = 0;
+    for (p, a) in [a0, a1].into_iter().enumerate() {
+        let base = p * half;
+        let clamp = |o: usize| _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero), qa);
+        for i in (0..half).step_by(64) {
+            let prod = |o: usize| _mm512_mulhi_epu16(_mm512_slli_epi16(clamp(o), 7), clamp(half + o));
+            let q = _mm512_permutexvar_epi64(order, _mm512_packus_epi16(prod(i), prod(i + 32)));
+            let o = base + i;
+            _mm512_storeu_si512(x.as_mut_ptr().add(o) as *mut __m512i, q);
+            let m = _mm512_test_epi32_mask(q, q) as u32;
+            count = push_nz(nz, count, m & 0xff, (o / 4) as u16);
+            count = push_nz(nz, count, m >> 8, (o / 4) as u16 + 8);
+        }
+    }
+    count
+}
+
+/// AVX2 version of to_u8_pw_nz_255_9.
+#[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
+#[inline(always)]
+unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
+    use std::arch::x86_64::*;
+    let zero = _mm256_setzero_si256();
+    let qa = _mm256_set1_epi16(255);
+    let half = a0.len() / 2;
+    let mut count = 0;
+    for (p, a) in [a0, a1].into_iter().enumerate() {
+        let base = p * half;
+        let clamp = |o: usize| _mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero), qa);
+        for i in (0..half).step_by(32) {
+            let prod = |o: usize| _mm256_mulhi_epu16(_mm256_slli_epi16(clamp(o), 7), clamp(half + o));
+            let q = _mm256_permute4x64_epi64(_mm256_packus_epi16(prod(i), prod(i + 16)), 0b11_01_10_00);
+            let o = base + i;
+            _mm256_storeu_si256(x.as_mut_ptr().add(o) as *mut __m256i, q);
+            let m = !(_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(q, zero))) as u32) & 0xff;
+            count = push_nz(nz, count, m, (o / 4) as u16);
         }
     }
     count
@@ -1404,6 +1511,21 @@ pub fn l1check(trials: usize) -> usize {
                 bad += 1;
                 continue;
             }
+            // Pairwise conversion + scan vs scalar (h/2 per perspective).
+            if h % 128 == 0 {
+                let mut p1 = vec![0u8; h];
+                let mut p2 = vec![0u8; h];
+                let mut pz1 = vec![0u16; h / 4 + 8];
+                let mut pz2 = vec![0u16; h / 4 + 8];
+                let d1 = unsafe { to_u8_pw_nz_255_9(&a[..h], &a[h..], &mut p1, &mut pz1) };
+                to_u8_pw_scalar(&a[..h], &mut p2[..h / 2], 255, 9);
+                to_u8_pw_scalar(&a[h..], &mut p2[h / 2..], 255, 9);
+                let d2 = unsafe { scan_nz(&p2, &mut pz2) };
+                if p1 != p2 || d1 != d2 || pz1[..d1] != pz2[..d2] {
+                    bad += 1;
+                    continue;
+                }
+            }
             let mut w = AlignedI8::zeroed(L1_SIZE * 2 * h);
             for v in w.iter_mut() {
                 *v = ((rnd() % 255) as i32 - 127) as i8;
@@ -1429,6 +1551,9 @@ pub fn l1stats(path: &str, fens: &str) -> Result<(), String> {
     unsafe { NET = Box::into_raw(Box::new(n)) };
     let n = net();
     let l1 = n.l1.as_ref().ok_or("network has no hidden layer")?;
+    if l1.pw {
+        return Err("not supported for pairwise nets yet".into());
+    }
     let h = n.h;
     let nb = l1.b2.len();
     let mut cnt = vec![0u64; nb];
@@ -1497,6 +1622,9 @@ pub fn l1perm(path: &str, fens: &str, out: &str) -> Result<(), String> {
     unsafe { NET = Box::into_raw(Box::new(n)) };
     let n = net();
     let l1 = n.l1.as_ref().ok_or("network has no hidden layer")?;
+    if l1.pw {
+        return Err("not supported for pairwise nets yet".into());
+    }
     let h = n.h;
     let text = std::fs::read_to_string(fens).map_err(|e| format!("{}: {}", fens, e))?;
     let mut inputs: Vec<Vec<u8>> = Vec::new();
