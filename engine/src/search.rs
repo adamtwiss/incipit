@@ -917,7 +917,7 @@ impl Searcher {
                     } else {
                         self.stats.se_single += 1;
                     }
-                } else if on(P::UseMulticut) && sbeta >= beta {
+                } else if on(P::UseMulticut) && cut_node && sbeta >= beta {
                     self.stats.multicut += 1;
                     return sbeta;
                 } else if on(P::UseSeNegExt) && tt_score >= beta {
