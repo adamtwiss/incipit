@@ -107,9 +107,9 @@ fn perft_suite(path: &str, maxd: usize) {
     println!("done fails={} nodes={} time={:?}", fails, total, t.elapsed());
 }
 
-fn bench(depth: i32, eval_cache_mb: usize) {
+fn bench(depth: i32, eval_cache_kb: usize) {
     let mut s = Searcher::new(16, Arc::new(AtomicBool::new(false)));
-    s.set_eval_cache_mb(eval_cache_mb);
+    s.set_eval_cache_kb(eval_cache_kb);
     s.silent = true;
     let t = Instant::now();
     let mut nodes = 0;
@@ -278,12 +278,12 @@ fn main() {
             }
             "bench" => {
                 // `bench [depth] [Param=value ...]`, e.g. `bench 13 UseProbcut=0` for ablations
-                // (also EvalCacheMB=N).
-                let mut eval_cache_mb = search::EVAL_CACHE_MB;
+                // (also EvalCacheKB=N).
+                let mut eval_cache_kb = search::EVAL_CACHE_KB;
                 for a in args.iter().skip(3) {
                     if let Some((k, v)) = a.split_once('=') {
-                        if k.eq_ignore_ascii_case("EvalCacheMB") {
-                            eval_cache_mb = v.parse().unwrap_or(eval_cache_mb);
+                        if k.eq_ignore_ascii_case("EvalCacheKB") {
+                            eval_cache_kb = v.parse().unwrap_or(eval_cache_kb);
                             continue;
                         }
                         if !v.parse().is_ok_and(|v| params::set(k, v)) {
@@ -292,7 +292,7 @@ fn main() {
                         }
                     }
                 }
-                bench(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(13), eval_cache_mb);
+                bench(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(13), eval_cache_kb);
                 return;
             }
             _ => {}
@@ -359,7 +359,7 @@ fn main() {
                 println!("id name {}", NAME);
                 println!("id author {}", AUTHOR);
                 println!("option name Hash type spin default 16 min 1 max 65536");
-                println!("option name EvalCacheMB type spin default {} min 1 max 1024", search::EVAL_CACHE_MB);
+                println!("option name EvalCacheKB type spin default {} min 16 max 1048576", search::EVAL_CACHE_KB);
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
                 println!("option name UCI_Chess960 type check default false");
@@ -380,9 +380,9 @@ fn main() {
                     let name = lower[ni + 1..vi].join(" ");
                     let val = toks.get(vi + 1).copied().unwrap_or("");
                     match name.as_str() {
-                        "evalcachemb" => {
-                            if let Ok(mb) = val.parse::<usize>() {
-                                uci.searcher.set_eval_cache_mb(mb.clamp(1, 1024));
+                        "evalcachekb" => {
+                            if let Ok(kb) = val.parse::<usize>() {
+                                uci.searcher.set_eval_cache_kb(kb.clamp(16, 1 << 20));
                             }
                         }
                         "hash" => {

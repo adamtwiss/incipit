@@ -9,16 +9,16 @@ use std::time::Instant;
 
 pub const INF: i32 = 32000;
 
-/// Entries in an eval cache of `mb` megabytes (8 bytes each, a power of two).
-fn eval_cache_entries(mb: usize) -> usize {
-    let n = (mb.max(1) << 20) / 8;
+/// Entries in an eval cache of `kb` kilobytes (8 bytes each, a power of two).
+fn eval_cache_entries(kb: usize) -> usize {
+    let n = (kb.max(1) << 10) / 8;
     1 << (usize::BITS - 1 - n.leading_zeros())
 }
 pub const MATE: i32 = 31000;
 pub const MATE_BOUND: i32 = MATE - 512;
 pub const MAX_PLY: usize = 128;
-/// Default eval cache size (UCI EvalCacheMB).
-pub const EVAL_CACHE_MB: usize = 2;
+/// Default eval cache size in KB (UCI EvalCacheKB).
+pub const EVAL_CACHE_KB: usize = 2048;
 /// Tablebase wins score TB_WIN - ply: above every eval (evals stay below
 /// MATE_BOUND) and below every mate (MATE - ply >= MATE - MAX_PLY), so code
 /// that treats |score| >= MATE_BOUND as decisive handles them like mates.
@@ -234,8 +234,8 @@ impl Searcher {
         }
         Searcher {
             tt: TT::new(hash_mb),
-            eval_cache: vec![0u64; eval_cache_entries(EVAL_CACHE_MB)].into_boxed_slice(),
-            eval_mask: eval_cache_entries(EVAL_CACHE_MB) - 1,
+            eval_cache: vec![0u64; eval_cache_entries(EVAL_CACHE_KB)].into_boxed_slice(),
+            eval_mask: eval_cache_entries(EVAL_CACHE_KB) - 1,
             nodes: 0,
             stop_flag,
             stopped: false,
@@ -291,9 +291,9 @@ impl Searcher {
     }
 
     /// Resizes (and clears) the eval cache to the largest power-of-two
-    /// number of entries that fits in `mb` megabytes.
-    pub fn set_eval_cache_mb(&mut self, mb: usize) {
-        let n = eval_cache_entries(mb);
+    /// number of entries that fits in `kb` kilobytes.
+    pub fn set_eval_cache_kb(&mut self, kb: usize) {
+        let n = eval_cache_entries(kb);
         self.eval_cache = vec![0u64; n].into_boxed_slice();
         self.eval_mask = n - 1;
     }
