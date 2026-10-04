@@ -1182,15 +1182,12 @@ impl Searcher {
             }
         }
         let mut best;
-        let static_eval;
         let mut raw_eval = -INF;
         if in_check {
             best = -INF;
-            static_eval = -INF;
         } else {
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
-            static_eval = self.corrected(pos, raw_eval);
-            best = static_eval;
+            best = self.corrected(pos, raw_eval);
             if let Some(e) = tte {
                 let s = e.score as i32;
                 if s.abs() < MATE_BOUND
@@ -1233,11 +1230,6 @@ impl Searcher {
             let m = list.moves[i];
             if !in_check {
                 if on(P::UseQsSee) && !pos.see_ge(m, 0) {
-                    continue;
-                }
-                let ct = pos.captured_type(m);
-                if on(P::UseQsFut) && !is_promo(m) && static_eval + tp(P::QsFut) + SEE_VAL[ct.min(5)] <= alpha {
-                    best = best.max(static_eval + tp(P::QsFut) + SEE_VAL[ct.min(5)]);
                     continue;
                 }
             } else if on(P::UseQsEvasionLimit) && legal > 0 && best > -MATE_BOUND && !is_noisy(m) && legal >= 3 {
