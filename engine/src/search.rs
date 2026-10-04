@@ -8,11 +8,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub const INF: i32 = 32000;
+
+/// Entries in an eval cache of `mb` megabytes (8 bytes each, a power of two).
+fn eval_cache_entries(mb: usize) -> usize {
+    let n = (mb.max(1) << 20) / 8;
+    1 << (usize::BITS - 1 - n.leading_zeros())
+}
 pub const MATE: i32 = 31000;
 pub const MATE_BOUND: i32 = MATE - 512;
 pub const MAX_PLY: usize = 128;
-/// Eval cache entries: 2^18 (2 MB).
-const EVAL_CACHE_BITS: usize = 18;
+/// Default eval cache size (UCI EvalCacheMB).
+pub const EVAL_CACHE_MB: usize = 2;
 /// Tablebase wins score TB_WIN - ply: above every eval (evals stay below
 /// MATE_BOUND) and below every mate (MATE - ply >= MATE - MAX_PLY), so code
 /// that treats |score| >= MATE_BOUND as decisive handles them like mates.
@@ -145,6 +151,7 @@ pub struct Searcher {
     /// Raw static evals by position: hash bits 16..64 check the entry, bits
     /// 0..16 hold the eval (i16). Direct-mapped, indexed by the low hash bits.
     eval_cache: Box<[u64]>,
+    eval_mask: usize,
     pub nodes: u64,
     tb_hits: u64,
     pub stop_flag: Arc<AtomicBool>,
@@ -227,7 +234,8 @@ impl Searcher {
         }
         Searcher {
             tt: TT::new(hash_mb),
-            eval_cache: vec![0u64; 1 << EVAL_CACHE_BITS].into_boxed_slice(),
+            eval_cache: vec![0u64; eval_cache_entries(EVAL_CACHE_MB)].into_boxed_slice(),
+            eval_mask: eval_cache_entries(EVAL_CACHE_MB) - 1,
             nodes: 0,
             stop_flag,
             stopped: false,
@@ -265,6 +273,29 @@ impl Searcher {
                 self.lmr[d][m] = (tp(P::LmrBaseX100) as f64 / 100.0 + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDivX100) as f64 / 100.0)) as i32;
             }
         }
+    }
+
+    /// Starts loading the eval-cache slot for `hash` (the table is too large
+    /// for the CPU caches at bigger sizes).
+    #[inline(always)]
+    fn prefetch_eval(&self, hash: u64) {
+        let p = unsafe { self.eval_cache.as_ptr().add(hash as usize & self.eval_mask) } as *const i8;
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            std::arch::x86_64::_mm_prefetch(p, std::arch::x86_64::_MM_HINT_T0)
+        };
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            std::arch::asm!("prfm pldl1keep, [{0}]", in(reg) p, options(nostack, preserves_flags, readonly))
+        };
+    }
+
+    /// Resizes (and clears) the eval cache to the largest power-of-two
+    /// number of entries that fits in `mb` megabytes.
+    pub fn set_eval_cache_mb(&mut self, mb: usize) {
+        let n = eval_cache_entries(mb);
+        self.eval_cache = vec![0u64; n].into_boxed_slice();
+        self.eval_mask = n - 1;
     }
 
     pub fn clear(&mut self) {
@@ -328,7 +359,7 @@ impl Searcher {
         // Positions repeat within a search (transpositions, re-searches,
         // nodes that returned before storing to the TT): about 30% of
         // evaluations on bench.
-        let slot = &mut self.eval_cache[pos.hash as usize & ((1 << EVAL_CACHE_BITS) - 1)];
+        let slot = unsafe { self.eval_cache.get_unchecked_mut(pos.hash as usize & self.eval_mask) };
         if *slot & !0xffff == pos.hash & !0xffff && *slot != 0 {
             self.stats.eval_hits += 1;
             return *slot as u16 as i16 as i32;
@@ -908,6 +939,7 @@ impl Searcher {
                 continue;
             }
             self.tt.prefetch(child.hash);
+            self.prefetch_eval(child.hash);
             legal += 1;
 
             // extensions
@@ -1261,6 +1293,8 @@ impl Searcher {
             if !child.make_move(m) {
                 continue;
             }
+            self.tt.prefetch(child.hash);
+            self.prefetch_eval(child.hash);
             legal += 1;
             self.push_acc(ply, pos, &child, m);
             let score = -self.qsearch(&child, -beta, -alpha, ply + 1);
