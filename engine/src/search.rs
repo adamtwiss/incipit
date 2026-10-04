@@ -17,8 +17,11 @@ fn eval_cache_entries(kb: usize) -> usize {
 pub const MATE: i32 = 31000;
 pub const MATE_BOUND: i32 = MATE - 512;
 pub const MAX_PLY: usize = 128;
-/// Default eval cache size in KB (UCI EvalCacheKB).
-pub const EVAL_CACHE_KB: usize = 2048;
+/// Default eval cache size in KB (UCI EvalCacheKB). Sized for the per-core
+/// L2: under concurrent load (16 engines on sn1) 2 MB tables evict the FT
+/// weights from the shared L3 and cost ~9% nps, while 256 KB is neutral for
+/// the plain net and +5% for the hidden net.
+pub const EVAL_CACHE_KB: usize = 256;
 /// Tablebase wins score TB_WIN - ply: above every eval (evals stay below
 /// MATE_BOUND) and below every mate (MATE - ply >= MATE - MAX_PLY), so code
 /// that treats |score| >= MATE_BOUND as decisive handles them like mates.
