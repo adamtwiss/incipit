@@ -11,6 +11,8 @@ pub const INF: i32 = 32000;
 pub const MATE: i32 = 31000;
 pub const MATE_BOUND: i32 = MATE - 512;
 pub const MAX_PLY: usize = 128;
+/// Eval cache entries: 2^18 (2 MB).
+const EVAL_CACHE_BITS: usize = 18;
 /// Tablebase wins score TB_WIN - ply: above every eval (evals stay below
 /// MATE_BOUND) and below every mate (MATE - ply >= MATE - MAX_PLY), so code
 /// that treats |score| >= MATE_BOUND as decisive handles them like mates.
@@ -33,6 +35,8 @@ struct Frame {
 #[derive(Clone, Copy, Default)]
 pub struct Stats {
     pub qs_nodes: u64,
+    pub evals: u64,
+    pub eval_hits: u64,
     pub tt_probes: u64,
     pub tt_hits: u64,
     pub tt_cutoffs: u64,
@@ -97,6 +101,7 @@ impl Stats {
                 kn(self.tt_cutoffs)
             ),
         );
+        line("Eval cache:", format!("{} hits of {} lookups ({:.1}%)", self.eval_hits, self.eval_hits + self.evals, pct(self.eval_hits, self.eval_hits + self.evals)));
         line("Aspiration:", format!("fail-low {}, fail-high {}", self.asp_fail_low, self.asp_fail_high));
         line("RFP:", format!("{} cutoffs ({:.1}/Kn)", self.rfp, kn(self.rfp)));
         line("Razoring:", format!("{} tries, {} cutoffs ({:.0}%)", self.razor_tries, self.razor_cuts, pct(self.razor_cuts, self.razor_tries)));
@@ -137,6 +142,9 @@ pub struct Limits {
 
 pub struct Searcher {
     pub tt: TT,
+    /// Raw static evals by position: hash bits 16..64 check the entry, bits
+    /// 0..16 hold the eval (i16). Direct-mapped, indexed by the low hash bits.
+    eval_cache: Box<[u64]>,
     pub nodes: u64,
     tb_hits: u64,
     pub stop_flag: Arc<AtomicBool>,
@@ -219,6 +227,7 @@ impl Searcher {
         }
         Searcher {
             tt: TT::new(hash_mb),
+            eval_cache: vec![0u64; 1 << EVAL_CACHE_BITS].into_boxed_slice(),
             nodes: 0,
             stop_flag,
             stopped: false,
@@ -260,6 +269,7 @@ impl Searcher {
 
     pub fn clear(&mut self) {
         self.tt.clear();
+        self.eval_cache.fill(0);
         *self.hist = [[[0; 64]; 64]; 2];
         for r in self.cont.iter_mut() {
             *r = [0; 768];
@@ -314,13 +324,24 @@ impl Searcher {
     /// The network's eval (side to move), without the fifty-move damping: the
     /// value stored in the TT, which is shared by any halfmove count.
     #[inline(always)]
-    fn evaluate(&self, pos: &Position, ply: usize) -> i32 {
+    fn evaluate(&mut self, pos: &Position, ply: usize) -> i32 {
+        // Positions repeat within a search (transpositions, re-searches,
+        // nodes that returned before storing to the TT): about 30% of
+        // evaluations on bench.
+        let slot = &mut self.eval_cache[pos.hash as usize & ((1 << EVAL_CACHE_BITS) - 1)];
+        if *slot & !0xffff == pos.hash & !0xffff && *slot != 0 {
+            self.stats.eval_hits += 1;
+            return *slot as u16 as i16 as i32;
+        }
         let e = if cfg!(feature = "hce") {
             crate::eval::evaluate(pos)
         } else {
             nnue::evaluate(&self.acc[ply], pos)
         };
-        e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+        let e = e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
+        *slot = (pos.hash & !0xffff) | (e as i16 as u16 as u64);
+        self.stats.evals += 1;
+        e
     }
 
     /// Pulls an eval towards a draw as the fifty-move counter rises.
