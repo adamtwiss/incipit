@@ -256,7 +256,8 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     if h == 0 || h > MAX_H || h % 32 != 0 {
         return Err(format!("hidden size {} unsupported (must be a multiple of 32, at most {})", h, MAX_H));
     }
-    if act != ACT_SCRELU && act != ACT_CRELU {
+    // Pairwise is only supported with a hidden layer (load_hidden checks).
+    if act != ACT_SCRELU && act != ACT_CRELU && act != ACT_PAIRWISE {
         return Err(format!("unsupported feature transformer activation {}", act));
     }
     if wt != TYPE_I16 || bt != TYPE_I16 {
@@ -267,6 +268,9 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         return Err(format!("unsupported output buckets (scheme {}, {} buckets)", scheme, buckets));
     }
     let (qa, qb, scale) = quant.ok_or_else(|| missing("QUANTISATION"))?;
+    if act == ACT_PAIRWISE && !(layers.len() == 2 || layers.len() == 3) {
+        return Err("a pairwise feature transformer needs a hidden layer".into());
+    }
     if layers.len() == 2 || layers.len() == 3 {
         return load_hidden(d, header, h, nkb, mirror, king_bucket, act, buckets, qa, qb, scale, &layers, &layer_quant);
     }

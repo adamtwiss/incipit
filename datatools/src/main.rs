@@ -44,7 +44,7 @@ usage:
                            default: one bucket
       --mirror             features mirrored when the king is on files e-h
       --output-buckets N   material-count output buckets (default 8)
-      --activation A       screlu (default) or crelu
+      --activation A       screlu (default), crelu or pairwise (with --l1: pairwise FT)
       --qa N --qb N --scale N   quantisation (defaults 255, 64, 400); with --l1,
                            QB is the hidden layer's int8 weight scale
       --l1 N               one hidden layer of N neurons after the FT (bullet only)
@@ -288,6 +288,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
                 arch.activation = match val.as_str() {
                     "screlu" => netfmt::ACT_SCRELU,
                     "crelu" => netfmt::ACT_CRELU,
+                    "pairwise" => netfmt::ACT_PAIRWISE,
                     _ => return Err(format!("unknown activation {}", val)),
                 }
             }

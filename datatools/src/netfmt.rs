@@ -23,6 +23,8 @@ pub const INPUT_PSQ768: u16 = 1;
 pub const ACT_NONE: u8 = 0;
 pub const ACT_CRELU: u8 = 2;
 pub const ACT_SCRELU: u8 = 3;
+/// Pairwise CReLU FT: per perspective, first half times second half (h/2 values).
+pub const ACT_PAIRWISE: u8 = 4;
 pub const TYPE_I8: u8 = 1;
 pub const TYPE_I16: u8 = 2;
 pub const TYPE_I32: u8 = 3;
@@ -117,12 +119,14 @@ pub fn write_hidden(
     let (h, nb, l1, l2) = (arch.hidden, arch.output_buckets, arch.l1, arch.l2);
     let nb1 = if arch.l1_shared { 1 } else { nb };
     let last = if l2 > 0 { l2 } else { l1 };
-    assert_eq!(w1.len(), nb1 * l1 * 2 * h);
+    // Hidden-layer inputs: 2h (SCReLU) or h (pairwise).
+    let inl = if arch.activation == ACT_PAIRWISE { h } else { 2 * h };
+    assert_eq!(w1.len(), nb1 * l1 * inl);
     assert_eq!(b1.len(), nb1 * l1);
     assert_eq!(w2.len(), nb * last);
     assert_eq!(b2.len(), nb);
     assert_eq!(mid.is_some(), l2 > 0);
-    let mut p1 = ((2 * h) as u32).to_le_bytes().to_vec();
+    let mut p1 = (inl as u32).to_le_bytes().to_vec();
     p1.extend_from_slice(&(l1 as u32).to_le_bytes());
     p1.extend_from_slice(&[ACT_SCRELU, TYPE_I8, TYPE_F32, !arch.l1_shared as u8]);
     let mut pm = (l1 as u32).to_le_bytes().to_vec();
@@ -271,7 +275,12 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let n_ftw = nkb * 768 * h;
     let l2 = arch.l2;
     let last = if l2 > 0 { l2 } else { l1 };
-    let expect = 2 * (n_ftw + h) + nb1 * l1 * 2 * h + 4 * (nb1 * l1 + nb * l2 * (l1 + 1) + nb * last + nb);
+    let pw = arch.activation == ACT_PAIRWISE;
+    if pw && h % 128 != 0 {
+        return Err(format!("pairwise needs a hidden size that is a multiple of 128, got {}", h));
+    }
+    let inl = if pw { h } else { 2 * h };
+    let expect = 2 * (n_ftw + h) + nb1 * l1 * inl + 4 * (nb1 * l1 + nb * l2 * (l1 + 1) + nb * last + nb);
     let ok = data.len() == expect.div_ceil(64) * 64
         && (data[expect..].iter().all(|&b| b == 0) || data[expect..].iter().zip(b"bullet".iter().cycle()).all(|(a, b)| a == b));
     if !ok {
@@ -288,7 +297,7 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     };
     let ftw = i16s(take(2 * n_ftw));
     let ftb = i16s(take(2 * h));
-    let w1: Vec<i8> = take(nb1 * l1 * 2 * h).iter().map(|&b| b as i8).collect();
+    let w1: Vec<i8> = take(nb1 * l1 * inl).iter().map(|&b| b as i8).collect();
     let f32s = |b: &[u8]| -> Vec<f32> { b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect() };
     let b1 = f32s(take(4 * nb1 * l1));
     let wm = f32s(take(4 * nb * l2 * l1));
@@ -298,6 +307,9 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let mid = (l2 > 0).then_some((&wm[..], &bm[..]));
     if arch.perm.is_empty() {
         return Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2));
+    }
+    if pw {
+        return Err("--permute isn't supported for pairwise nets yet".into());
     }
     let p = &arch.perm;
     let mut seen = vec![false; h];
