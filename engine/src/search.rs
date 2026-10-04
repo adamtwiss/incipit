@@ -868,7 +868,7 @@ impl Searcher {
                         skip_quiets = true;
                         continue;
                     }
-                    if on(P::UseHistPrune) && !in_check && lmr_d <= tp(P::HistPruneDepth) && hist_score < -tp(P::HistPrune) * depth {
+                    if on(P::UseHistPrune) && !in_check && lmr_d <= tp(P::HistPruneDepth) && hist_score < -tp(P::HistPrune) * (lmr_d + 1) {
                         self.stats.hist_prunes += 1;
                         continue;
                     }
