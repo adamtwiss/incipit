@@ -1240,8 +1240,8 @@ impl Searcher {
                     best = best.max(static_eval + tp(P::QsFut) + SEE_VAL[ct.min(5)]);
                     continue;
                 }
-            } else if on(P::UseQsEvasionLimit) && legal > 0 && best > -MATE_BOUND && !is_noisy(m) && legal >= 3 {
-                // limit quiet evasions
+            } else if on(P::UseQsEvasionLimit) && legal > 0 && best > -MATE_BOUND && !is_noisy(m) && !pos.see_ge(m, 0) {
+                // skip quiet evasions that lose material once one move is searched
                 continue;
             }
             let mut child = *pos;
