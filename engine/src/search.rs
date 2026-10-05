@@ -216,6 +216,9 @@ fn upd(h: &mut i16, bonus: i32) {
 
 /// UCI_ShowWDL: append win/draw/loss permille to info lines.
 pub static SHOW_WDL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// TmLog: one "info string pgncomment tm ..." line per search with the time
+/// decision (budget, final target, why it stopped), for time-use analysis.
+pub static TM_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Incipit's WDL model (datatools wdlfit on 150M positions of c19-c22,
 /// 2026-10-05): P(win) = 1/(1+exp((a-x)/b)), P(loss) = 1/(1+exp((a+x)/b)),
@@ -510,6 +513,9 @@ impl Searcher {
         let mut reported: Move = 0;
         let max_depth = lim.depth.min(MAX_PLY as i32 - 4);
         let mut prev_iter_nodes = 0u64;
+        // TmLog: final soft target, its factors, the last completed depth and why we stopped.
+        let mut tm_stop = "depth";
+        let (mut tm_target, mut tm_frac, mut tm_done) = (0.0f64, 0.0f64, 0);
         for d in 1..=max_depth {
             let nodes_at_start = self.nodes;
             self.root_depth = d;
@@ -546,6 +552,13 @@ impl Searcher {
                 }
             }
             if self.stopped {
+                tm_stop = if self.stop_flag.load(Ordering::Relaxed) {
+                    "stop"
+                } else if lim.nodes.is_some_and(|n| self.nodes >= n) {
+                    "nodes"
+                } else {
+                    "hard"
+                };
                 if self.root_best != 0 {
                     best = self.root_best;
                 }
@@ -600,15 +613,31 @@ impl Searcher {
                 let score_scale = if USE_SCORE_TM { score_scale } else { 1.0 };
                 let (node_scale, stab_scale) = if on(P::UseTm) { (node_scale, stab_scale) } else { (1.0, 1.0) };
                 let target = soft as f64 * node_scale * stab_scale * score_scale;
+                (tm_target, tm_frac, tm_done) = (target, frac, d);
                 if self.elapsed_ms() as f64 >= target {
+                    tm_stop = "soft";
                     break;
                 }
             }
             if let Some(n) = lim.nodes {
                 if self.nodes >= n {
+                    tm_stop = "nodes";
                     break;
                 }
             }
+        }
+        if TM_LOG.load(Ordering::Relaxed) && !self.silent {
+            println!(
+                "info string pgncomment tm el={} soft={} hard={} tgt={:.0} stab={} frac={:.2} d={} stop={}",
+                self.elapsed_ms(),
+                lim.soft_ms.unwrap_or(0),
+                lim.hard_ms.unwrap_or(0),
+                tm_target,
+                stability,
+                tm_frac,
+                tm_done,
+                tm_stop
+            );
         }
         (best, score)
     }
