@@ -22,7 +22,7 @@ mod tests;
 mod viri;
 
 use std::fs::File;
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -80,22 +80,21 @@ fn main() {
     }
 }
 
-fn read_input(path: &str) -> Result<String, String> {
-    let mut text = String::new();
+fn open_input(path: &str) -> Result<Box<dyn std::io::BufRead>, String> {
     if path == "-" {
-        std::io::stdin().read_to_string(&mut text).map_err(|e| format!("stdin: {}", e))?;
+        Ok(Box::new(std::io::BufReader::with_capacity(1 << 20, std::io::stdin())))
     } else {
-        File::open(path).and_then(|mut f| f.read_to_string(&mut text)).map_err(|e| format!("{}: {}", path, e))?;
+        let f = File::open(path).map_err(|e| format!("{}: {}", path, e))?;
+        Ok(Box::new(std::io::BufReader::with_capacity(1 << 20, f)))
     }
-    Ok(text)
 }
 
 fn cmd_pgn(out: &str, inputs: &[String]) -> Result<(), String> {
     let mut w = BufWriter::new(File::create(out).map_err(|e| format!("{}: {}", out, e))?);
     let (mut games, mut moves, mut skipped) = (0u64, 0u64, 0u64);
     for input in inputs {
-        let text = read_input(input)?;
-        for g in pgn::split_games(&text) {
+        for g in pgn::Games::new(open_input(input)?) {
+            let g = g.map_err(|e| format!("{}: {}", input, e))?;
             match pgn::to_game(&g) {
                 Ok(game) => {
                     game.write(&mut w).map_err(|e| e.to_string())?;

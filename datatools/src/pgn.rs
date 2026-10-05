@@ -19,33 +19,60 @@ impl PgnGame {
 
 /// Splits PGN text into games. A game starts at a tag line following movetext
 /// (or at the first tag line).
+#[cfg(test)]
 pub fn split_games(text: &str) -> Vec<PgnGame> {
-    let mut games = Vec::new();
-    let mut cur: Option<PgnGame> = None;
-    let mut in_movetext = false;
-    for line in text.lines() {
-        let t = line.trim();
-        if t.starts_with('[') && t.ends_with(']') && !(in_movetext && t.contains('{')) {
-            if in_movetext || cur.is_none() {
-                if let Some(g) = cur.take() {
-                    games.push(g);
+    Games::new(text.as_bytes()).collect::<std::io::Result<_>>().unwrap()
+}
+
+/// Reads games one at a time from a stream, so memory stays at one game
+/// however large the input (a datagen shard group is several GB of PGN).
+pub struct Games<R> {
+    input: R,
+    line: String,
+    cur: Option<PgnGame>,
+    in_movetext: bool,
+}
+
+impl<R: std::io::BufRead> Games<R> {
+    pub fn new(input: R) -> Self {
+        Games { input, line: String::new(), cur: None, in_movetext: false }
+    }
+}
+
+impl<R: std::io::BufRead> Iterator for Games<R> {
+    type Item = std::io::Result<PgnGame>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            self.line.clear();
+            match self.input.read_line(&mut self.line) {
+                Err(e) => return Some(Err(e)),
+                Ok(0) => return self.cur.take().map(Ok),
+                Ok(_) => {}
+            }
+            let t = self.line.trim();
+            if t.starts_with('[') && t.ends_with(']') && !(self.in_movetext && t.contains('{')) {
+                let mut done = None;
+                if self.in_movetext || self.cur.is_none() {
+                    done = self.cur.take();
+                    self.cur = Some(PgnGame { tags: Vec::new(), movetext: String::new() });
+                    self.in_movetext = false;
                 }
-                cur = Some(PgnGame { tags: Vec::new(), movetext: String::new() });
-                in_movetext = false;
-            }
-            if let Some((k, v)) = parse_tag(t) {
-                cur.as_mut().unwrap().tags.push((k, v));
-            }
-        } else if !t.is_empty() {
-            if let Some(g) = cur.as_mut() {
-                in_movetext = true;
-                g.movetext.push_str(t);
-                g.movetext.push(' ');
+                if let Some((k, v)) = parse_tag(t) {
+                    self.cur.as_mut().unwrap().tags.push((k, v));
+                }
+                if let Some(g) = done {
+                    return Some(Ok(g));
+                }
+            } else if !t.is_empty() {
+                if let Some(g) = self.cur.as_mut() {
+                    self.in_movetext = true;
+                    g.movetext.push_str(t);
+                    g.movetext.push(' ');
+                }
             }
         }
     }
-    games.extend(cur);
-    games
 }
 
 fn parse_tag(t: &str) -> Option<(String, String)> {
