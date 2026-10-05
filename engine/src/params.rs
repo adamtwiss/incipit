@@ -54,6 +54,10 @@ params! {
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
+    // On a ponder hit, PonderCredit% of the time spent pondering counts as
+    // already thought; we still think at least PonderMinPct% of the soft limit.
+    PonderCredit = "PonderCredit", 50, 0, 100, 10;
+    PonderMinPct = "PonderMinPct", 25, 0, 100, 5;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
