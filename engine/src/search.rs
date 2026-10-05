@@ -598,6 +598,7 @@ impl Searcher {
                 let drop = (prev_score - score).clamp(-50, 150) as f64;
                 let score_scale = if d >= 6 { 1.0 + drop / 200.0 } else { 1.0 };
                 let score_scale = if USE_SCORE_TM { score_scale } else { 1.0 };
+                let (node_scale, stab_scale) = if on(P::UseTm) { (node_scale, stab_scale) } else { (1.0, 1.0) };
                 let target = soft as f64 * node_scale * stab_scale * score_scale;
                 if self.elapsed_ms() as f64 >= target {
                     break;
