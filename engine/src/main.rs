@@ -379,6 +379,7 @@ fn main() {
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
                 println!("option name UCI_Chess960 type check default false");
+                println!("option name UCI_ShowWDL type check default false");
                 println!("option name SyzygyPath type string default <empty>");
                 if cfg!(feature = "tune") {
                     params::print_options();
@@ -415,6 +416,9 @@ fn main() {
                             let path = toks[vi + 1..].join(" ");
                             let n = tb::init(&path);
                             println!("info string syzygy: {}-man tables loaded", n);
+                        }
+                        "uci_showwdl" => {
+                            search::SHOW_WDL.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed);
                         }
                         "uci_chess960" => {
                             CHESS960.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed);

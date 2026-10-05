@@ -214,6 +214,40 @@ fn upd(h: &mut i16, bonus: i32) {
     *h = (v + bonus - v * bonus.abs() / 16384) as i16;
 }
 
+/// UCI_ShowWDL: append win/draw/loss permille to info lines.
+pub static SHOW_WDL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Incipit's WDL model (datatools wdlfit on 150M positions of c19-c22,
+/// 2026-10-05): P(win) = 1/(1+exp((a-x)/b)), P(loss) = 1/(1+exp((a+x)/b)),
+/// a and b cubic in m = clamp(material, 17, 78) / 58 (1/3/3/5/9 over both
+/// sides), x the score in our cp units.
+const WDL_A: [f64; 4] = [-34.395460, 179.411649, -340.422392, 376.065278];
+const WDL_B: [f64; 4] = [161.627807, -447.755780, 467.867011, -24.333415];
+
+/// " wdl W D L" (permille, side to move, summing to 1000) when UCI_ShowWDL is
+/// on, else "".
+fn wdl_str(s: i32, pos: &Position) -> String {
+    if !SHOW_WDL.load(std::sync::atomic::Ordering::Relaxed) {
+        return String::new();
+    }
+    let (w, l) = if s.abs() >= MATE_BOUND {
+        if s > 0 { (1000, 0) } else { (0, 1000) }
+    } else {
+        let mat: u32 = [(PAWN, 1), (KNIGHT, 3), (BISHOP, 3), (ROOK, 5), (QUEEN, 9)]
+            .iter()
+            .map(|&(pt, v)| v * pos.pieces[pt].count_ones())
+            .sum();
+        let m = (mat as f64).clamp(17.0, 78.0) / 58.0;
+        let poly = |c: &[f64; 4]| ((c[0] * m + c[1]) * m + c[2]) * m + c[3];
+        let (a, b) = (poly(&WDL_A), poly(&WDL_B));
+        let x = s as f64;
+        let w = 1000.0 / (1.0 + ((a - x) / b).exp());
+        let l = 1000.0 / (1.0 + ((a + x) / b).exp());
+        (w.round() as i32, l.round() as i32)
+    };
+    format!(" wdl {} {} {}", w, (1000 - w - l).max(0), l)
+}
+
 fn score_str(s: i32) -> String {
     if s >= MATE - MAX_PLY as i32 {
         format!("mate {}", (MATE - s + 1) / 2)
@@ -463,7 +497,7 @@ impl Searcher {
                     crate::tb::Wdl::Draw => 0,
                 };
                 if !self.silent {
-                    println!("info depth 1 score {} nodes 0 tbhits 1 time 0 pv {}", score_str(s), root.move_uci(m));
+                    println!("info depth 1 score {}{} nodes 0 tbhits 1 time 0 pv {}", score_str(s), wdl_str(s, root), root.move_uci(m));
                 }
                 return (m, s);
             }
@@ -517,9 +551,9 @@ impl Searcher {
                 }
                 if !self.silent && best != reported {
                     let sc = if best == fh_move {
-                        format!("{} lowerbound", score_str(fh_score))
+                        format!("{} lowerbound{}", score_str(fh_score), wdl_str(fh_score, root))
                     } else {
-                        score_str(score)
+                        format!("{}{}", score_str(score), wdl_str(score, root))
                     };
                     let el = self.elapsed_ms();
                     println!(
@@ -587,10 +621,11 @@ impl Searcher {
             pv.push_str(&self.root_pos.move_uci(self.pv[0][i]));
         }
         println!(
-            "info depth {} seldepth {} score {} nodes {} nps {} hashfull {} tbhits {} time {} pv{}",
+            "info depth {} seldepth {} score {}{} nodes {} nps {} hashfull {} tbhits {} time {} pv{}",
             d,
             self.seldepth,
             score_str(score),
+            wdl_str(score, &self.root_pos),
             self.nodes,
             nps,
             self.tt.hashfull(),
