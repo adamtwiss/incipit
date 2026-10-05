@@ -37,7 +37,6 @@ params! {
     LmrDivX100 = "LmrDivX100", 288, 150, 350, 10;
     LmrHistDiv = "LmrHistDiv", 8139, 3000, 16000, 650;
     AspDelta = "AspDelta", 10, 3, 40, 2;
-    QsFut = "QsFut", 454, 50, 500, 23;
     HistMul = "HistMul", 301, 100, 500, 20;
     HistOff = "HistOff", 212, 0, 500, 25;
     HistMax = "HistMax", 2739, 1000, 4000, 150;
@@ -82,7 +81,6 @@ params! {
     UseMulticut = "UseMulticut", 1, 0, 1, 0;
     UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;
     UseLmr = "UseLmr", 1, 0, 1, 0;
-    UseQsFut = "UseQsFut", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
