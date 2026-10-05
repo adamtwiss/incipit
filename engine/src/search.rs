@@ -764,6 +764,8 @@ impl Searcher {
                 let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(3);
                 let mut child = *pos;
                 child.make_null();
+                self.tt.prefetch(child.hash);
+                self.prefetch_eval(child.hash);
                 let (a, b) = self.acc.split_at_mut(ply + 1);
                 b[0].copy_from(&a[ply]);
                 self.stack[ply].mv = 0;
@@ -797,6 +799,8 @@ impl Searcher {
                     if !child.make_move(m) {
                         continue;
                     }
+                    self.tt.prefetch(child.hash);
+                    self.prefetch_eval(child.hash);
                     self.push_acc(ply, pos, &child, m);
                     let pc = pos.board[mfrom(m)] as usize;
                     self.stack[ply].mv = m;
