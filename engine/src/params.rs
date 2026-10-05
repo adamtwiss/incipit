@@ -87,6 +87,8 @@ params! {
     UseAsp = "UseAsp", 1, 0, 1, 0;
     // Soft time limit scaled by best-move node share and stability (0: plain soft limit).
     UseTm = "UseTm", 1, 0, 1, 0;
+    UseKillers = "UseKillers", 1, 0, 1, 0;
+    UseCounterMove = "UseCounterMove", 1, 0, 1, 0;
 }
 
 #[inline(always)]
