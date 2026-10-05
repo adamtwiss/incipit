@@ -161,6 +161,7 @@ pub struct PonderTm {
     /// This search is a ponder search (go ponder).
     pub pondering: bool,
     start_ms: u64,
+    soft_ms: f64,
     /// Latest soft target (ms), for stopping mid-depth after a ponder hit.
     target_ms: f64,
     /// The current depth failed low at the root and hasn't resolved yet.
@@ -305,6 +306,7 @@ impl Searcher {
                 hit: Arc::new(AtomicU64::new(0)),
                 pondering: false,
                 start_ms: 0,
+                soft_ms: 0.0,
                 target_ms: f64::INFINITY,
                 root_fail_low: false,
                 last_pv2: (0, 0),
@@ -410,8 +412,9 @@ impl Searcher {
     /// ponder (an instant reply from the opponent) never gets an instant
     /// answer, so two pondering engines can't trade instant moves.
     fn ponder_done(&self, pondered: f64, since: u64, target: f64) -> bool {
-        pondered >= target * tp(P::PonderHitPct) as f64 / 100.0
-            || pondered * tp(P::PonderCredit) as f64 / 100.0 + since as f64 >= target
+        (since as f64) >= self.pt.soft_ms * tp(P::PonderMinPct) as f64 / 100.0
+            && (pondered >= target * tp(P::PonderHitPct) as f64 / 100.0
+                || pondered * tp(P::PonderCredit) as f64 / 100.0 + since as f64 >= target)
     }
 
     /// Soft-limit decision time: None means don't stop (still pondering).
@@ -537,6 +540,7 @@ impl Searcher {
         self.start = Instant::now();
         self.pt.start_ms = now_ms();
         self.pt.target_ms = lim.soft_ms.map_or(f64::INFINITY, |s| s as f64);
+        self.pt.soft_ms = lim.soft_ms.unwrap_or(0) as f64;
         self.tt.new_search();
         self.nodes = 0;
         self.tb_hits = 0;
