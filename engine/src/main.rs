@@ -223,13 +223,13 @@ impl Uci {
         }
         self.searcher.hash_hist.clear();
         self.searcher.hash_hist.extend_from_slice(&self.hist);
-        self.searcher.pondering = ponder;
+        self.searcher.pt.pondering = ponder;
         let (m, _) = self.searcher.search(&self.pos, &lim);
         // UCI: no bestmove while pondering, until ponderhit or stop.
-        while ponder && self.searcher.ponder_hit.load(Ordering::SeqCst) == 0 && !self.searcher.stop_flag.load(Ordering::SeqCst) {
+        while ponder && self.searcher.pt.hit.load(Ordering::SeqCst) == 0 && !self.searcher.stop_flag.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        self.searcher.pondering = false;
+        self.searcher.pt.pondering = false;
         let pm = self.searcher.ponder_move(m);
         let mut after = self.pos;
         let ok = pm != 0 && after.make_move(m) && after.is_pseudo_legal(pm) && { let mut q = after; q.make_move(pm) };
@@ -386,7 +386,7 @@ fn main() {
         searcher: Searcher::new(16, stop.clone()),
         overhead: 20,
     };
-    uci.searcher.ponder_hit = ponder_hit;
+    uci.searcher.pt.hit = ponder_hit;
     let mut hash_mb = 16usize;
     while let Ok(cmd) = rx.recv() {
         let toks: Vec<&str> = cmd.split_whitespace().collect();
