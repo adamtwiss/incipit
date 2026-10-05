@@ -54,6 +54,8 @@ params! {
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
+    TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
+    TmFailLow = "TmFailLow", 30, 0, 100, 8;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
@@ -87,6 +89,14 @@ params! {
     UseAsp = "UseAsp", 1, 0, 1, 0;
     // Soft time limit scaled by best-move node share and stability (0: plain soft limit).
     UseTm = "UseTm", 1, 0, 1, 0;
+    // Don't start a depth predicted (elapsed x last branching factor) to end past
+    // TmFinishPct% of the hard limit: it would be cut off anyway.
+    UseTmFinish = "UseTmFinish", 0, 0, 1, 0;
+    // Extend the soft target by TmFailLow% per root aspiration fail-low in the
+    // last depth (up to 3): the best line just got worse, so look harder.
+    UseTmFailLow = "UseTmFailLow", 0, 0, 1, 0;
+    // Extend the soft target when the score drops between depths.
+    UseTmScore = "UseTmScore", 0, 0, 1, 0;
 }
 
 #[inline(always)]
