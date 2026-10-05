@@ -35,6 +35,8 @@ usage:
                                               <out_dir>/<name>.vf per input, in parallel
   datatools stats <file.vf> ...               count games and positions
   datatools tbstats <tb_dir> <in.vf> ...      games reaching the Syzygy tables: game result vs tablebase result
+  datatools wdlstats <out.csv> <in.vf> ...    win/draw/loss counts by (material, eval), side to move,
+                                              for fitting a WDL model (from ply 16, not in check, scored)
   datatools net <source> <in> <out_dir> [options]
                                               convert a network to Incipit's format,
                                               writing <out_dir>/net-XXXXXXXX.nnue
@@ -63,6 +65,7 @@ fn main() {
         Some("bin") if args.len() >= 4 => cmd_bin(&args[2], &args[3..]),
         Some("stats") if args.len() >= 3 => cmd_stats(&args[2..]),
         Some("tbstats") if args.len() >= 4 => cmd_tbstats(&args[2], &args[3..]),
+        Some("wdlstats") if args.len() >= 4 => cmd_wdlstats(&args[2], &args[3..]),
         Some("net") if args.len() >= 5 => cmd_net(&args[2], &args[3], &args[4], &args[5..]),
         Some("net-info") if args.len() >= 3 => cmd_net_info(&args[2..]),
         Some("fens") if args.len() >= 5 => cmd_fens(&args[2], &args[3], &args[4..]),
@@ -183,6 +186,63 @@ fn cmd_stats(inputs: &[String]) -> Result<(), String> {
 
 /// For each game that reaches a position the tablebases cover, compares the
 /// game's result with the tablebase result of the first such position.
+/// Counts game results by (material, eval) from the side to move's point of
+/// view, for fitting a win/draw/loss model of our own eval. Material is
+/// 1/3/3/5/9 for P/N/B/R/Q over both sides (the definition viriformat's WDL
+/// filter uses); evals are bucketed to 5 cp and limited to +-2000; positions
+/// before ply 16, in check or unscored are skipped, as in training.
+fn cmd_wdlstats(out: &str, inputs: &[String]) -> Result<(), String> {
+    const EVAL_MAX: i32 = 2000;
+    const STEP: i32 = 5;
+    let nb = (2 * EVAL_MAX / STEP + 1) as usize;
+    // counts[material][eval bucket][stm result: 0 loss, 1 draw, 2 win]
+    let mut counts = vec![vec![[0u64; 3]; nb]; 79];
+    let mut used = 0u64;
+    for input in inputs {
+        let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
+        viri::for_each_position(&data, |pos, _, score, wdl| {
+            if score == viri::NO_SCORE || pos.checkers != 0 {
+                return;
+            }
+            let ply = 2 * (pos.fullmove as i32 - 1) + (pos.stm != position::WHITE) as i32;
+            if ply < 16 {
+                return;
+            }
+            let white = pos.stm == position::WHITE;
+            let eval = if white { score as i32 } else { -(score as i32) };
+            if eval.abs() > EVAL_MAX {
+                return;
+            }
+            // viri WDL codes are white-relative: 0 black win, 1 draw, 2 white win.
+            let r = if white { wdl } else { 2 - wdl } as usize;
+            let m = material(pos).min(78) as usize;
+            let b = ((eval + EVAL_MAX + STEP / 2).div_euclid(STEP)).clamp(0, nb as i32 - 1) as usize;
+            counts[m][b][r] += 1;
+            used += 1;
+        })?;
+    }
+    let mut w = String::from("material,eval,loss,draw,win\n");
+    for (m, row) in counts.iter().enumerate() {
+        for (b, c) in row.iter().enumerate() {
+            if c.iter().sum::<u64>() > 0 {
+                w.push_str(&format!("{},{},{},{},{}\n", m, b as i32 * STEP - EVAL_MAX, c[0], c[1], c[2]));
+            }
+        }
+    }
+    std::fs::write(out, w).map_err(|e| format!("{}: {}", out, e))?;
+    println!("{} positions counted -> {}", used, out);
+    Ok(())
+}
+
+/// 1/3/3/5/9 material over both sides.
+fn material(pos: &position::Position) -> u32 {
+    use position::{BISHOP, KNIGHT, PAWN, QUEEN, ROOK};
+    [(PAWN, 1), (KNIGHT, 3), (BISHOP, 3), (ROOK, 5), (QUEEN, 9)]
+        .iter()
+        .map(|&(pt, v)| v * pos.pieces[pt].count_ones())
+        .sum()
+}
+
 fn cmd_tbstats(tb_path: &str, inputs: &[String]) -> Result<(), String> {
     let largest = tb::init(tb_path);
     if largest == 0 {
