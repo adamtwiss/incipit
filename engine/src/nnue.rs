@@ -1150,20 +1150,37 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
 }
 
 /// AVX2: two registers of 8 outputs; per group of 4 inputs, maddubs + madd.
+/// acc + Σ (u8 x) · (i8 w) over each 4-byte group, per 32-bit lane: one
+/// vpdpbusd with AVX-VNNI (VEX, e.g. Alder Lake and later without AVX-512),
+/// else maddubs + madd + add. Same result either way: x <= 127 and |w| <= 127
+/// keep maddubs's i16 pair sums (at most 32258) from saturating.
+#[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
+#[inline(always)]
+unsafe fn dpbusd256(acc: std::arch::x86_64::__m256i, x: std::arch::x86_64::__m256i, w: std::arch::x86_64::__m256i) -> std::arch::x86_64::__m256i {
+    use std::arch::x86_64::*;
+    #[cfg(target_feature = "avxvnni")]
+    {
+        _mm256_dpbusd_avx_epi32(acc, x, w)
+    }
+    #[cfg(not(target_feature = "avxvnni"))]
+    {
+        _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(x, w), _mm256_set1_epi16(1)))
+    }
+}
+
 #[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
 #[inline(always)]
 unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
-    let ones = _mm256_set1_epi16(1);
     let mut a = [_mm256_setzero_si256(); 4];
     // Only the listed non-zero groups (see the AVX-512 version).
     let mut step = |k: usize, g: usize| {
         let xb = _mm256_set1_epi32(xp.add(g).read_unaligned());
         let w0 = _mm256_load_si256(wp.add(g * 64) as *const __m256i);
         let w1 = _mm256_load_si256(wp.add(g * 64 + 32) as *const __m256i);
-        a[2 * k] = _mm256_add_epi32(a[2 * k], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, w0), ones));
-        a[2 * k + 1] = _mm256_add_epi32(a[2 * k + 1], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, w1), ones));
+        a[2 * k] = dpbusd256(a[2 * k], xb, w0);
+        a[2 * k + 1] = dpbusd256(a[2 * k + 1], xb, w1);
     };
     let mut i = 0;
     while i + 1 < count {
@@ -1243,12 +1260,11 @@ unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_
 unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
-    let ones = _mm256_set1_epi16(1);
     let mut a = [_mm256_setzero_si256(); 4];
     let mut step = |k: usize, g: usize| {
         let xb = _mm256_set1_epi32(xp.add(g).read_unaligned());
         let wv = _mm256_load_si256(wp.add(g * 32) as *const __m256i);
-        a[k] = _mm256_add_epi32(a[k], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, wv), ones));
+        a[k] = dpbusd256(a[k], xb, wv);
     };
     let mut i = 0;
     while i + 3 < count {
