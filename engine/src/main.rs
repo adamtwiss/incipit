@@ -404,6 +404,7 @@ fn main() {
                 println!("option name Ponder type check default false");
                 println!("option name UCI_Chess960 type check default false");
                 println!("option name UCI_ShowWDL type check default false");
+                println!("option name TmLog type check default false");
                 println!("option name SyzygyPath type string default <empty>");
                 if cfg!(feature = "tune") {
                     params::print_options();
@@ -444,6 +445,7 @@ fn main() {
                         "uci_showwdl" => {
                             search::SHOW_WDL.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed);
                         }
+                        "tmlog" => search::TM_LOG.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed),
                         "uci_chess960" => {
                             CHESS960.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed);
                         }
