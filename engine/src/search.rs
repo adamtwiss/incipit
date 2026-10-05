@@ -385,33 +385,34 @@ impl Searcher {
         self.start.elapsed().as_millis() as u64
     }
 
-    /// After a ponder hit: (effective elapsed ms, ms since the hit). Effective
-    /// elapsed credits PonderCredit% of the pondering time against our budget.
-    /// None while still pondering.
+    /// After a ponder hit: (ms spent pondering, ms since the hit); None while
+    /// still pondering.
     fn ponder_clock(&self) -> Option<(f64, u64)> {
         let hit = self.ponder_hit.load(Ordering::Relaxed);
         if hit == 0 {
             return None;
         }
         let hit = hit - 1;
-        let since = now_ms().saturating_sub(hit);
-        let pondered = hit.saturating_sub(self.start_ms);
-        Some((since as f64 + pondered as f64 * tp(P::PonderCredit) as f64 / 100.0, since))
+        Some((hit.saturating_sub(self.start_ms) as f64, now_ms().saturating_sub(hit)))
     }
 
-    /// Least time to think after a ponder hit: never answer instantly, so two
-    /// pondering engines can't trade instant moves with full clocks.
-    fn ponder_min_ms(&self) -> u64 {
-        self.soft_ms.map_or(0, |s| s * tp(P::PonderMinPct) as u64 / 100)
+    /// Ponder hit: is the time we wanted for this move (`target`) used up? Move
+    /// at once if we pondered most of it (and give the opponent our time
+    /// back); else think on until pondering + thinking reaches it. A short
+    /// ponder (an instant reply from the opponent) never gets an instant
+    /// answer, so two pondering engines can't trade instant moves.
+    fn ponder_done(&self, pondered: f64, since: u64, target: f64) -> bool {
+        pondered >= target * tp(P::PonderHitPct) as f64 / 100.0
+            || pondered * tp(P::PonderCredit) as f64 / 100.0 + since as f64 >= target
     }
 
-    /// Time used for the soft-limit decision: None while pondering without a hit.
-    fn tm_elapsed(&self) -> Option<f64> {
+    /// Soft-limit decision time: None means don't stop (still pondering).
+    fn tm_elapsed(&self, target: f64) -> Option<f64> {
         if !self.pondering {
             return Some(self.elapsed_ms() as f64);
         }
-        let (eff, since) = self.ponder_clock()?;
-        (since >= self.ponder_min_ms()).then_some(eff)
+        let (pondered, since) = self.ponder_clock()?;
+        self.ponder_done(pondered, since, target).then_some(f64::INFINITY)
     }
 
     #[inline(always)]
@@ -426,10 +427,10 @@ impl Searcher {
         if let Some(h) = self.hard_ms {
             if self.pondering {
                 // Our clock runs only from the ponder hit.
-                if let Some((eff, since)) = self.ponder_clock() {
+                if let Some((pondered, since)) = self.ponder_clock() {
                     // A mid-depth stop keeps only finished work (aborted subtrees store
                     // nothing), but not while the previous best move has just failed low.
-                    if since >= h || (since >= self.ponder_min_ms() && eff >= self.target_ms && !self.root_fail_low) {
+                    if since >= h || (!self.root_fail_low && self.ponder_done(pondered, since, self.target_ms)) {
                         self.stopped = true;
                     }
                 }
@@ -679,7 +680,7 @@ impl Searcher {
                 let (node_scale, stab_scale) = if on(P::UseTm) { (node_scale, stab_scale) } else { (1.0, 1.0) };
                 let target = soft as f64 * node_scale * stab_scale * score_scale;
                 self.target_ms = target;
-                if self.tm_elapsed().is_some_and(|el| el >= target) {
+                if self.tm_elapsed(target).is_some_and(|el| el >= target) {
                     break;
                 }
             }
