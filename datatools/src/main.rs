@@ -35,6 +35,9 @@ usage:
                                               <out_dir>/<name>.vf per input, in parallel
   datatools stats <file.vf> ...               count games and positions
   datatools tbstats <tb_dir> <in.vf> ...      games reaching the Syzygy tables: game result vs tablebase result
+  datatools wdlstats <out.csv> <in.vf> ...    win/draw/loss counts by (material, eval), side to move,
+                                              for fitting a WDL model (from ply 16, not in check, scored)
+  datatools wdlfit <stats.csv>                 fit the WDL model to wdlstats output (maximum likelihood)
   datatools net <source> <in> <out_dir> [options]
                                               convert a network to Incipit's format,
                                               writing <out_dir>/net-XXXXXXXX.nnue
@@ -49,6 +52,7 @@ usage:
                            QB is the hidden layer's int8 weight scale
       --l1 N               one hidden layer of N neurons after the FT (bullet only)
       --l1-shared          the hidden layer is shared by all output buckets
+      --l1-dual            the second hidden layer takes SCReLU and CReLU of the first (needs --l2)
       --description TEXT   training run, data and settings
       --permute FILE       FT neuron order (hidden-layer nets; from the engine's l1perm)
   datatools net-info <file.nnue> ...          show a network's header
@@ -63,6 +67,8 @@ fn main() {
         Some("bin") if args.len() >= 4 => cmd_bin(&args[2], &args[3..]),
         Some("stats") if args.len() >= 3 => cmd_stats(&args[2..]),
         Some("tbstats") if args.len() >= 4 => cmd_tbstats(&args[2], &args[3..]),
+        Some("wdlstats") if args.len() >= 4 => cmd_wdlstats(&args[2], &args[3..]),
+        Some("wdlfit") if args.len() >= 3 => cmd_wdlfit(&args[2]),
         Some("net") if args.len() >= 5 => cmd_net(&args[2], &args[3], &args[4], &args[5..]),
         Some("net-info") if args.len() >= 3 => cmd_net_info(&args[2..]),
         Some("fens") if args.len() >= 5 => cmd_fens(&args[2], &args[3], &args[4..]),
@@ -183,6 +189,143 @@ fn cmd_stats(inputs: &[String]) -> Result<(), String> {
 
 /// For each game that reaches a position the tablebases cover, compares the
 /// game's result with the tablebase result of the first such position.
+/// Counts game results by (material, eval) from the side to move's point of
+/// view, for fitting a win/draw/loss model of our own eval. Material is
+/// 1/3/3/5/9 for P/N/B/R/Q over both sides (the definition viriformat's WDL
+/// filter uses); evals are bucketed to 5 cp and limited to +-2000; positions
+/// before ply 16, in check or unscored are skipped, as in training.
+fn cmd_wdlstats(out: &str, inputs: &[String]) -> Result<(), String> {
+    const EVAL_MAX: i32 = 2000;
+    const STEP: i32 = 5;
+    let nb = (2 * EVAL_MAX / STEP + 1) as usize;
+    // counts[material][eval bucket][stm result: 0 loss, 1 draw, 2 win]
+    let mut counts = vec![vec![[0u64; 3]; nb]; 79];
+    let mut used = 0u64;
+    for input in inputs {
+        let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
+        viri::for_each_position(&data, |pos, _, score, wdl| {
+            if score == viri::NO_SCORE || pos.checkers != 0 {
+                return;
+            }
+            let ply = 2 * (pos.fullmove as i32 - 1) + (pos.stm != position::WHITE) as i32;
+            if ply < 16 {
+                return;
+            }
+            let white = pos.stm == position::WHITE;
+            let eval = if white { score as i32 } else { -(score as i32) };
+            if eval.abs() > EVAL_MAX {
+                return;
+            }
+            // viri WDL codes are white-relative: 0 black win, 1 draw, 2 white win.
+            let r = if white { wdl } else { 2 - wdl } as usize;
+            let m = material(pos).min(78) as usize;
+            let b = ((eval + EVAL_MAX + STEP / 2).div_euclid(STEP)).clamp(0, nb as i32 - 1) as usize;
+            counts[m][b][r] += 1;
+            used += 1;
+        })?;
+    }
+    let mut w = String::from("material,eval,loss,draw,win\n");
+    for (m, row) in counts.iter().enumerate() {
+        for (b, c) in row.iter().enumerate() {
+            if c.iter().sum::<u64>() > 0 {
+                w.push_str(&format!("{},{},{},{},{}\n", m, b as i32 * STEP - EVAL_MAX, c[0], c[1], c[2]));
+            }
+        }
+    }
+    std::fs::write(out, w).map_err(|e| format!("{}: {}", out, e))?;
+    println!("{} positions counted -> {}", used, out);
+    Ok(())
+}
+
+/// Fits P(win) = 1 / (1 + exp((a - x) / b)), P(loss) = 1 / (1 + exp((a + x) / b)),
+/// with a and b cubic in m = clamp(material, MAT_MIN, MAT_MAX) / MAT_NORM (the
+/// form viriformat's WDL filter evaluates, coefficients highest power first),
+/// by maximum likelihood over the counted results. x is the eval in cp.
+fn cmd_wdlfit(stats: &str) -> Result<(), String> {
+    const MAT_MIN: f64 = 17.0;
+    const MAT_MAX: f64 = 78.0;
+    const MAT_NORM: f64 = 58.0;
+    let text = std::fs::read_to_string(stats).map_err(|e| format!("{}: {}", stats, e))?;
+    // (m, x, [loss, draw, win])
+    let mut rows: Vec<(f64, f64, [f64; 3])> = Vec::new();
+    for line in text.lines().skip(1) {
+        let v: Vec<f64> = line.split(',').map(|t| t.parse().unwrap_or(0.0)).collect();
+        if v.len() == 5 {
+            rows.push((v[0].clamp(MAT_MIN, MAT_MAX) / MAT_NORM, v[1], [v[2], v[3], v[4]]));
+        }
+    }
+    let total: f64 = rows.iter().map(|r| r.2.iter().sum::<f64>()).sum();
+    let poly = |c: &[f64], m: f64| ((c[0] * m + c[1]) * m + c[2]) * m + c[3];
+    let sig = |z: f64| 1.0 / (1.0 + (-z).exp());
+    // Mean negative log-likelihood and its gradient over the 8 coefficients.
+    let nll = |p: &[f64; 8]| -> (f64, [f64; 8]) {
+        let (mut f, mut g) = (0.0, [0.0; 8]);
+        for &(m, x, n) in &rows {
+            let (a, b) = (poly(&p[0..4], m), poly(&p[4..8], m).max(1.0));
+            let (zw, zl) = ((x - a) / b, (-x - a) / b);
+            let (w, l) = (sig(zw), sig(zl));
+            let d = (1.0 - w - l).max(1e-12);
+            let (w, l) = (w.max(1e-12), l.max(1e-12));
+            f -= n[2] * w.ln() + n[1] * d.ln() + n[0] * l.ln();
+            // d/da and d/db of the log-likelihood of each outcome.
+            let (dw, dl) = (w * (1.0 - w), l * (1.0 - l)); // d sigma / dz
+            let (dzw_da, dzw_db, dzl_da, dzl_db) = (-1.0 / b, -zw / b, -1.0 / b, -zl / b);
+            let dw_da = dw * dzw_da;
+            let dw_db = dw * dzw_db;
+            let dl_da = dl * dzl_da;
+            let dl_db = dl * dzl_db;
+            let ga = n[2] * dw_da / w + n[0] * dl_da / l - n[1] * (dw_da + dl_da) / d;
+            let gb = n[2] * dw_db / w + n[0] * dl_db / l - n[1] * (dw_db + dl_db) / d;
+            let pw = [m * m * m, m * m, m, 1.0];
+            for k in 0..4 {
+                g[k] -= ga * pw[k];
+                g[4 + k] -= gb * pw[k];
+            }
+        }
+        (f / total, g.map(|v| v / total))
+    };
+    // Adam from a flat start (a = 150, b = 100 cp).
+    let mut p = [0.0, 0.0, 0.0, 150.0, 0.0, 0.0, 0.0, 100.0];
+    let (mut mo, mut ve) = ([0.0; 8], [0.0; 8]);
+    let (lr, b1, b2) = (0.5, 0.9, 0.999);
+    let mut last = f64::MAX;
+    for it in 1..=20000 {
+        let (f, g) = nll(&p);
+        for k in 0..8 {
+            mo[k] = b1 * mo[k] + (1.0 - b1) * g[k];
+            ve[k] = b2 * ve[k] + (1.0 - b2) * g[k] * g[k];
+            let mh = mo[k] / (1.0 - b1.powi(it));
+            let vh = ve[k] / (1.0 - b2.powi(it));
+            p[k] -= lr * mh / (vh.sqrt() + 1e-12);
+        }
+        if it % 1000 == 0 {
+            if (last - f).abs() < 1e-9 {
+                break;
+            }
+            last = f;
+        }
+    }
+    let (f, _) = nll(&p);
+    println!("positions {}, mean NLL {:.5} (log 3 = {:.5} for a uniform guess)", total as u64, f, 3f64.ln());
+    println!("material {}..{}, normalised by {}", MAT_MIN, MAT_MAX, MAT_NORM);
+    println!("a = [{:.6}, {:.6}, {:.6}, {:.6}]", p[0], p[1], p[2], p[3]);
+    println!("b = [{:.6}, {:.6}, {:.6}, {:.6}]", p[4], p[5], p[6], p[7]);
+    for mat in [20.0, 30.0, 40.0, 50.0, 58.0, 70.0, 78.0] {
+        let m = f64::clamp(mat, MAT_MIN, MAT_MAX) / MAT_NORM;
+        println!("  material {:>2}: a {:6.1} cp (50% win), b {:5.1}", mat, poly(&p[0..4], m), poly(&p[4..8], m));
+    }
+    Ok(())
+}
+
+/// 1/3/3/5/9 material over both sides.
+fn material(pos: &position::Position) -> u32 {
+    use position::{BISHOP, KNIGHT, PAWN, QUEEN, ROOK};
+    [(PAWN, 1), (KNIGHT, 3), (BISHOP, 3), (ROOK, 5), (QUEEN, 9)]
+        .iter()
+        .map(|&(pt, v)| v * pos.pieces[pt].count_ones())
+        .sum()
+}
+
 fn cmd_tbstats(tb_path: &str, inputs: &[String]) -> Result<(), String> {
     let largest = tb::init(tb_path);
     if largest == 0 {
@@ -251,6 +394,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         description: String::new(),
         l1: 0,
         l1_shared: false,
+        l1_dual: false,
         perm: Vec::new(),
         l1_shift: 0,
         l2: 0,
@@ -265,6 +409,11 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         }
         if flag == "--l1-shared" {
             arch.l1_shared = true;
+            i += 1;
+            continue;
+        }
+        if flag == "--l1-dual" {
+            arch.l1_dual = true;
             i += 1;
             continue;
         }

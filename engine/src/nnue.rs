@@ -76,7 +76,8 @@ struct Hidden {
     // vectorises over the outputs), bm [bucket][n2]; the output layer is then
     // wo [bucket][n2] with bias b2.
     n2: usize,
-    wm: Vec<[[f32; L2_MAX]; L1_SIZE]>,
+    wm: Vec<[[f32; L2_MAX]; 2 * L1_SIZE]>, // [bucket][input][l2]; 2L inputs when dual
+    dual: bool, // the second hidden layer sees SCReLU and CReLU of the first (2L inputs)
     bm: Vec<[f32; L2_MAX]>,
     wo: Vec<[f32; L2_MAX]>,
 }
@@ -357,13 +358,17 @@ fn load_hidden(
     let nb1 = if shared { 1 } else { buckets };
     let n2 = mid.map_or(0, |m| m.1);
     if let Some(m) = mid {
-        if m != (ln, n2, ACT_SCRELU, TYPE_F32, TYPE_F32, 1) || n2 == 0 || n2 > L2_MAX {
+        if (m.0 != ln && m.0 != 2 * ln) || (m.1, m.2, m.3, m.4, m.5) != (n2, ACT_SCRELU, TYPE_F32, TYPE_F32, 1) || n2 == 0 || n2 > L2_MAX {
             return Err(format!("unsupported second hidden layer {:?} (need {} -> 1..{} SCReLU, f32, per bucket)", m, ln, L2_MAX));
         }
     }
-    if pw && !(ln == 16 && (n2 == 0 || n2 == 16)) {
-        return Err(format!("pairwise hidden nets support 16 or 16 -> 16 hidden layers, got {} -> {}", ln, n2));
+    if pw && ln != 16 {
+        return Err(format!("pairwise hidden nets need a 16-neuron first hidden layer, got {}", ln));
     }
+    // Dual activation: the second hidden layer takes SCReLU then CReLU of the
+    // first layer's outputs (2L inputs).
+    let dual = mid.is_some_and(|m| m.0 == 2 * ln);
+    let in2 = if dual { 2 * ln } else { ln };
     let last_in = if n2 > 0 { n2 } else { ln };
     if l2 != (last_in, 1, ACT_NONE, TYPE_F32, TYPE_F32, 1) {
         return Err(format!("unsupported final layer {:?} (need {} -> 1, f32, per bucket)", l2, last_in));
@@ -375,7 +380,7 @@ fn load_hidden(
         return Err(format!("hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs", shift, w_scale));
     }
     let n_ftw = nkb * 768 * h;
-    let expect = 2 * (n_ftw + h) + nb1 * ln * inl + 4 * (nb1 * ln + buckets * n2 * (ln + 1) + buckets * (last_in + 1));
+    let expect = 2 * (n_ftw + h) + nb1 * ln * inl + 4 * (nb1 * ln + buckets * n2 * (in2 + 1) + buckets * (last_in + 1));
     if d.len() - header != expect {
         return Err(format!("weights are {} bytes, but the header describes {}", d.len() - header, expect));
     }
@@ -417,15 +422,15 @@ fn load_hidden(
     let (mut wm, mut bm, mut wo) = (Vec::new(), Vec::new(), Vec::new());
     let w2;
     if n2 > 0 {
-        let wmf = f32s(buckets * n2 * ln);
+        let wmf = f32s(buckets * n2 * in2);
         let bmf = f32s(buckets * n2);
         let wof = f32s(buckets * n2);
         for b in 0..buckets {
-            let mut m = [[0f32; L2_MAX]; L1_SIZE];
+            let mut m = [[0f32; L2_MAX]; 2 * L1_SIZE];
             let (mut mb, mut ow) = ([0f32; L2_MAX], [0f32; L2_MAX]);
             for j in 0..n2 {
-                for i in 0..ln {
-                    m[i][j] = wmf[(b * n2 + j) * ln + i];
+                for i in 0..in2 {
+                    m[i][j] = wmf[(b * n2 + j) * in2 + i];
                 }
                 mb[j] = bmf[b * n2 + j];
                 ow[j] = wof[b * n2 + j];
@@ -467,6 +472,7 @@ fn load_hidden(
             b2,
             n2,
             wm,
+            dual,
             bm,
             wo,
         }),
@@ -718,8 +724,13 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
     let n = net();
     match &n.l1 {
         None => with_h!(n.h, eval_n(n, acc, pos)),
+        Some(l1) if l1.pw && l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32d(n, l1, acc, pos)),
+        Some(l1) if l1.pw && l1.dual => with_h!(n.h, eval_hidden_pw16x16d(n, l1, acc, pos)),
+        Some(l1) if l1.pw && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32(n, l1, acc, pos)),
         Some(l1) if l1.pw && l1.n2 == 16 => with_h!(n.h, eval_hidden_pw16x16(n, l1, acc, pos)),
         Some(l1) if l1.pw => with_h!(n.h, eval_hidden_pw16(n, l1, acc, pos)),
+        Some(l1) if l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden16x32d(n, l1, acc, pos)),
+        Some(l1) if l1.dual => with_h!(n.h, eval_hidden16x16d(n, l1, acc, pos)),
         Some(l1) if l1.n2 == 32 => with_h!(n.h, eval_hidden16x32(n, l1, acc, pos)),
         Some(l1) if l1.n2 == 16 => with_h!(n.h, eval_hidden16x16(n, l1, acc, pos)),
         Some(l1) if l1.n == 8 => with_h!(n.h, eval_hidden8(n, l1, acc, pos)),
@@ -732,36 +743,61 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
 /// and the float output layer.
 #[inline(never)]
 fn eval_hidden16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 0, false>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 0, false, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden8<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 8, 0, false>(n, l1, acc, pos)
+    eval_hidden::<H, 8, 0, false, false>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 16, false, true>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 32, false, true>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden_pw16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 0, true>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 0, true, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden_pw16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, true>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 16, true, false>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden_pw16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 32, true, false>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden_pw16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 16, true, true>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden_pw16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 32, true, true>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, false>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 16, false, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, false>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 32, false, false>(n, l1, acc, pos)
 }
 
 #[inline(always)]
-fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, const DUAL: bool>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
     let h = hidden::<H>(n);
     // Hidden-layer inputs: h per perspective (SCReLU) or h/2 (pairwise).
     let inl = if PW { h } else { 2 * h };
@@ -800,7 +836,7 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool>(
     // The float layers, 8 lanes at a time with AVX2 (every build has it; the
     // x86-64-v3 baseline). Separate multiply and add (no FMA) and a fixed
     // reduction order: every ISA gives the same result.
-    let out = unsafe { hidden_float::<L, L2>(l1, &z, k, b1i, bucket) };
+    let out = unsafe { hidden_float::<L, L2, DUAL>(l1, &z, k, b1i, bucket) };
     (out * n.scale as f32) as i32
 }
 
@@ -809,7 +845,7 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool>(
 /// SCReLU) and the output layer. Returns the output before scaling.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn hidden_float<const L: usize, const L2: usize>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
+unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
     use std::arch::x86_64::*;
     let (zero, one, kv) = (_mm256_setzero_ps(), _mm256_set1_ps(1.0), _mm256_set1_ps(k));
     let screlu = |v: __m256| {
@@ -819,10 +855,14 @@ unsafe fn hidden_float<const L: usize, const L2: usize>(l1: &Hidden, z: &[i32; L
     // First hidden layer activations, 8 at a time.
     let b1 = &l1.b1[b1i];
     let mut v1 = [zero; L1_SIZE / 8];
+    let mut c1 = [zero; L1_SIZE / 8]; // CReLU of the same pre-activations (dual)
     for c in 0..L / 8 {
         let zi = _mm256_loadu_si256(z.as_ptr().add(8 * c) as *const __m256i);
         let pre = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(zi), kv), _mm256_loadu_ps(b1.as_ptr().add(8 * c)));
         v1[c] = screlu(pre);
+        if DUAL {
+            c1[c] = _mm256_min_ps(_mm256_max_ps(pre, zero), one);
+        }
     }
     let mut acc = zero;
     if L2 == 0 {
@@ -832,15 +872,19 @@ unsafe fn hidden_float<const L: usize, const L2: usize>(l1: &Hidden, z: &[i32; L
         }
     } else {
         let (wm, bm, wo) = (&l1.wm[bucket], &l1.bm[bucket], &l1.wo[bucket]);
-        let mut a1 = [0f32; L1_SIZE];
+        // Second-layer inputs: SCReLU (L), then CReLU (L) when dual.
+        let mut a1 = [0f32; 2 * L1_SIZE];
         for c in 0..L / 8 {
             _mm256_storeu_ps(a1.as_mut_ptr().add(8 * c), v1[c]);
+            if DUAL {
+                _mm256_storeu_ps(a1.as_mut_ptr().add(L + 8 * c), c1[c]);
+            }
         }
         let mut u = [zero; L2_MAX / 8];
         for c in 0..L2 / 8 {
             u[c] = _mm256_loadu_ps(bm.as_ptr().add(8 * c));
         }
-        for i in 0..L {
+        for i in 0..if DUAL { 2 * L } else { L } {
             let x = _mm256_set1_ps(a1[i]);
             for c in 0..L2 / 8 {
                 u[c] = _mm256_add_ps(u[c], _mm256_mul_ps(x, _mm256_loadu_ps(wm[i].as_ptr().add(8 * c))));
@@ -860,15 +904,20 @@ unsafe fn hidden_float<const L: usize, const L2: usize>(l1: &Hidden, z: &[i32; L
 /// reduction), so it gives the same result as the AVX2 version.
 #[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
-unsafe fn hidden_float<const L: usize, const L2: usize>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
+unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
     let screlu = |v: f32| {
         let c = v.max(0.0).min(1.0);
         c * c
     };
     let b1 = &l1.b1[b1i];
-    let mut v1 = [0f32; L1_SIZE];
+    // Second-layer inputs: SCReLU (L), then CReLU (L) when dual.
+    let mut v1 = [0f32; 2 * L1_SIZE];
     for i in 0..L {
-        v1[i] = screlu(z[i] as f32 * k + b1[i]);
+        let pre = z[i] as f32 * k + b1[i];
+        v1[i] = screlu(pre);
+        if DUAL {
+            v1[L + i] = pre.max(0.0).min(1.0);
+        }
     }
     let mut acc = [0f32; 8];
     if L2 == 0 {
@@ -880,7 +929,7 @@ unsafe fn hidden_float<const L: usize, const L2: usize>(l1: &Hidden, z: &[i32; L
         let (wm, bm, wo) = (&l1.wm[bucket], &l1.bm[bucket], &l1.wo[bucket]);
         let mut u = [0f32; L2_MAX];
         u[..L2].copy_from_slice(&bm[..L2]);
-        for i in 0..L {
+        for i in 0..if DUAL { 2 * L } else { L } {
             let x = v1[i];
             for j in 0..L2 {
                 u[j] = u[j] + x * wm[i][j];
@@ -1261,20 +1310,37 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
 }
 
 /// AVX2: two registers of 8 outputs; per group of 4 inputs, maddubs + madd.
+/// acc + Σ (u8 x) · (i8 w) over each 4-byte group, per 32-bit lane: one
+/// vpdpbusd with AVX-VNNI (VEX, e.g. Alder Lake and later without AVX-512),
+/// else maddubs + madd + add. Same result either way: x <= 127 and |w| <= 127
+/// keep maddubs's i16 pair sums (at most 32258) from saturating.
+#[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
+#[inline(always)]
+unsafe fn dpbusd256(acc: std::arch::x86_64::__m256i, x: std::arch::x86_64::__m256i, w: std::arch::x86_64::__m256i) -> std::arch::x86_64::__m256i {
+    use std::arch::x86_64::*;
+    #[cfg(target_feature = "avxvnni")]
+    {
+        _mm256_dpbusd_avx_epi32(acc, x, w)
+    }
+    #[cfg(not(target_feature = "avxvnni"))]
+    {
+        _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(x, w), _mm256_set1_epi16(1)))
+    }
+}
+
 #[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
 #[inline(always)]
 unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
-    let ones = _mm256_set1_epi16(1);
     let mut a = [_mm256_setzero_si256(); 4];
     // Only the listed non-zero groups (see the AVX-512 version).
     let mut step = |k: usize, g: usize| {
         let xb = _mm256_set1_epi32(xp.add(g).read_unaligned());
         let w0 = _mm256_load_si256(wp.add(g * 64) as *const __m256i);
         let w1 = _mm256_load_si256(wp.add(g * 64 + 32) as *const __m256i);
-        a[2 * k] = _mm256_add_epi32(a[2 * k], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, w0), ones));
-        a[2 * k + 1] = _mm256_add_epi32(a[2 * k + 1], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, w1), ones));
+        a[2 * k] = dpbusd256(a[2 * k], xb, w0);
+        a[2 * k + 1] = dpbusd256(a[2 * k + 1], xb, w1);
     };
     let mut i = 0;
     while i + 1 < count {
@@ -1354,12 +1420,11 @@ unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_
 unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
-    let ones = _mm256_set1_epi16(1);
     let mut a = [_mm256_setzero_si256(); 4];
     let mut step = |k: usize, g: usize| {
         let xb = _mm256_set1_epi32(xp.add(g).read_unaligned());
         let wv = _mm256_load_si256(wp.add(g * 32) as *const __m256i);
-        a[k] = _mm256_add_epi32(a[k], _mm256_madd_epi16(_mm256_maddubs_epi16(xb, wv), ones));
+        a[k] = dpbusd256(a[k], xb, wv);
     };
     let mut i = 0;
     while i + 3 < count {
