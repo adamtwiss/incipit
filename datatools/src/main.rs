@@ -52,6 +52,7 @@ usage:
                            QB is the hidden layer's int8 weight scale
       --l1 N               one hidden layer of N neurons after the FT (bullet only)
       --l1-shared          the hidden layer is shared by all output buckets
+      --l1-dual            the second hidden layer takes SCReLU and CReLU of the first (needs --l2)
       --description TEXT   training run, data and settings
       --permute FILE       FT neuron order (hidden-layer nets; from the engine's l1perm)
   datatools net-info <file.nnue> ...          show a network's header
@@ -393,6 +394,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         description: String::new(),
         l1: 0,
         l1_shared: false,
+        l1_dual: false,
         perm: Vec::new(),
         l1_shift: 0,
         l2: 0,
@@ -407,6 +409,11 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         }
         if flag == "--l1-shared" {
             arch.l1_shared = true;
+            i += 1;
+            continue;
+        }
+        if flag == "--l1-dual" {
+            arch.l1_dual = true;
             i += 1;
             continue;
         }

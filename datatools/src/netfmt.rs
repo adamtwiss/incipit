@@ -45,6 +45,8 @@ pub struct Arch {
     /// The hidden layer is shared by all output buckets (only the final
     /// layer is per bucket).
     pub l1_shared: bool,
+    /// The second hidden layer takes SCReLU then CReLU of the first (2 * l1 inputs).
+    pub l1_dual: bool,
     /// FT neuron order for a net with a hidden layer: new neuron k is old
     /// neuron perm[k] (empty = unchanged). Reordering the FT columns and the
     /// matching hidden-layer inputs together leaves every eval unchanged; the
@@ -125,7 +127,8 @@ pub fn write_hidden(
     let mut p1 = ((2 * h) as u32).to_le_bytes().to_vec();
     p1.extend_from_slice(&(l1 as u32).to_le_bytes());
     p1.extend_from_slice(&[ACT_SCRELU, TYPE_I8, TYPE_F32, !arch.l1_shared as u8]);
-    let mut pm = (l1 as u32).to_le_bytes().to_vec();
+    let in2 = if arch.l1_dual { 2 * l1 } else { l1 };
+    let mut pm = (in2 as u32).to_le_bytes().to_vec();
     pm.extend_from_slice(&(l2 as u32).to_le_bytes());
     pm.extend_from_slice(&[ACT_SCRELU, TYPE_F32, TYPE_F32, 1]);
     let mut p2 = (last as u32).to_le_bytes().to_vec();
@@ -271,7 +274,8 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let n_ftw = nkb * 768 * h;
     let l2 = arch.l2;
     let last = if l2 > 0 { l2 } else { l1 };
-    let expect = 2 * (n_ftw + h) + nb1 * l1 * 2 * h + 4 * (nb1 * l1 + nb * l2 * (l1 + 1) + nb * last + nb);
+    let in2 = if arch.l1_dual { 2 * l1 } else { l1 };
+    let expect = 2 * (n_ftw + h) + nb1 * l1 * 2 * h + 4 * (nb1 * l1 + nb * l2 * (in2 + 1) + nb * last + nb);
     let ok = data.len() == expect.div_ceil(64) * 64
         && (data[expect..].iter().all(|&b| b == 0) || data[expect..].iter().zip(b"bullet".iter().cycle()).all(|(a, b)| a == b));
     if !ok {
@@ -291,7 +295,7 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let w1: Vec<i8> = take(nb1 * l1 * 2 * h).iter().map(|&b| b as i8).collect();
     let f32s = |b: &[u8]| -> Vec<f32> { b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect() };
     let b1 = f32s(take(4 * nb1 * l1));
-    let wm = f32s(take(4 * nb * l2 * l1));
+    let wm = f32s(take(4 * nb * l2 * in2));
     let bm = f32s(take(4 * nb * l2));
     let w2 = f32s(take(4 * nb * last));
     let b2 = f32s(take(4 * nb));
