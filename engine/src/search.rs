@@ -169,42 +169,49 @@ pub struct Limits {
     pub nodes: Option<u64>,
 }
 
+/// Field order is fixed (repr(C)): the fields touched at every node come first,
+/// at small offsets (short instruction encodings), and fields added later go at
+/// the end, so they can't shift the hot ones (layout changes cost 0.5-2% nps).
+#[repr(C)]
 pub struct Searcher {
-    pub tt: TT,
+    // Every node.
+    pub nodes: u64,
+    stopped: bool,
+    pub silent: bool,
+    root_best: Move,
+    root_depth: i32,
+    seldepth: usize,
     /// Raw static evals by position: hash bits 16..64 check the entry, bits
     /// 0..16 hold the eval (i16). Direct-mapped, indexed by the low hash bits.
     eval_cache: Box<[u64]>,
     eval_mask: usize,
-    pub nodes: u64,
-    tb_hits: u64,
-    pub stop_flag: Arc<AtomicBool>,
-    stopped: bool,
-    start: Instant,
-    hard_ms: Option<u64>,
-    node_limit: Option<u64>,
+    pub tt: TT,
     hist: Box<[[[i16; 64]; 64]; 2]>,
     cont: Box<[[i16; 768]; 768]>,
     capt: Box<[[[i16; 7]; 64]; 12]>,
-    killers: Align64<[[Move; 2]; MAX_PLY + 4]>,
     counter: Box<[[Move; 64]; 12]>,
-    stack: Align64<[Frame; MAX_PLY + 8]>,
     pv: Box<[[Move; MAX_PLY + 2]; MAX_PLY + 2]>,
-    pv_len: Align64<[usize; MAX_PLY + 2]>,
-    pub hash_hist: Vec<u64>,
-    seldepth: usize,
-    root_depth: i32,
-    root_best: Move,
     lmr: Box<[[i32; 64]; 64]>,
-    pub silent: bool,
     root_node_counts: Box<[[u64; 64]; 64]>,
+    corr: Box<[[i32; CORR_SIZE]; 2]>,
+    corr_np: Box<[[[i32; CORR_SIZE]; 2]; 2]>,
     acc: Vec<Acc>,
+    pub hash_hist: Vec<u64>,
+    tb_hits: u64,
+    // Per ply.
+    killers: Align64<[[Move; 2]; MAX_PLY + 4]>,
+    stack: Align64<[Frame; MAX_PLY + 8]>,
+    pv_len: Align64<[usize; MAX_PLY + 2]>,
+    pub stats: Stats,
+    // Per search / time checks.
+    pub stop_flag: Arc<AtomicBool>,
+    start: Instant,
+    hard_ms: Option<u64>,
+    node_limit: Option<u64>,
     // Root of the current search, for printing moves (Chess960 castling needs
     // the castling rooks' squares, which are fixed for the game).
     root_pos: Position,
     refresh_cache: nnue::RefreshCache,
-    corr: Box<[[i32; CORR_SIZE]; 2]>,
-    corr_np: Box<[[[i32; CORR_SIZE]; 2]; 2]>,
-    pub stats: Stats,
 }
 
 #[inline(always)]
