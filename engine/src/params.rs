@@ -56,6 +56,9 @@ params! {
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
     TmFailLow = "TmFailLow", 30, 0, 100, 8;
+    TmEasyStab = "TmEasyStab", 6, 2, 10, 1;
+    TmEasyFrac = "TmEasyFrac", 90, 50, 99, 3;
+    TmEasyPct = "TmEasyPct", 60, 30, 100, 5;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
@@ -100,6 +103,12 @@ params! {
     // 1: the fail-low and score-drop extensions count once (the larger of the
     // two) instead of multiplying: they mostly fire on the same moves.
     UseTmExtMax = "UseTmExtMax", 0, 0, 1, 0;
+    // Easy move: best move unchanged for TmEasyStab depths and owning at least
+    // TmEasyFrac% of the nodes. Don't start a depth past TmEasyPct% of the
+    // target, and stop mid-depth at the target.
+    UseTmEasy = "UseTmEasy", 0, 0, 1, 0;
+    // Only one legal move: stop after depth 1.
+    UseTmSingle = "UseTmSingle", 0, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
     UseCounterMove = "UseCounterMove", 1, 0, 1, 0;
 }

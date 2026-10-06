@@ -476,11 +476,17 @@ impl Searcher {
         let mut list = MoveList::new();
         root.gen_moves(&mut list, false);
         let mut fallback = 0;
+        let mut legal_moves = 0;
         for i in 0..list.len {
             let mut c = *root;
             if c.make_move(list.moves[i]) {
-                fallback = list.moves[i];
-                break;
+                if fallback == 0 {
+                    fallback = list.moves[i];
+                }
+                legal_moves += 1;
+                if legal_moves > 1 {
+                    break;
+                }
             }
         }
         if fallback == 0 {
@@ -557,6 +563,8 @@ impl Searcher {
                     "stop"
                 } else if lim.nodes.is_some_and(|n| self.nodes >= n) {
                     "nodes"
+                } else if self.hard_ms != lim.hard_ms {
+                    "easymid"
                 } else {
                     "hard"
                 };
@@ -622,6 +630,20 @@ impl Searcher {
                 if el >= target {
                     tm_stop = "soft";
                     break;
+                }
+                if on(P::UseTmSingle) && legal_moves == 1 {
+                    tm_stop = "single";
+                    break;
+                }
+                // Easy move: settle early, and let the next depth run only to
+                // the target (the hard limit stands in for it mid-depth).
+                self.hard_ms = lim.hard_ms;
+                if on(P::UseTmEasy) && stability >= tp(P::TmEasyStab) as usize && frac * 100.0 >= tp(P::TmEasyFrac) as f64 {
+                    if el >= target * tp(P::TmEasyPct) as f64 / 100.0 {
+                        tm_stop = "easy";
+                        break;
+                    }
+                    self.hard_ms = Some(self.hard_ms.map_or(target as u64, |h| h.min(target as u64)).max(1));
                 }
                 // The next depth costs about this one times the branching factor;
                 // elapsed so far approximates this depth plus all earlier ones.
