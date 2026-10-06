@@ -96,7 +96,7 @@ params! {
     // last depth (up to 3): the best line just got worse, so look harder.
     UseTmFailLow = "UseTmFailLow", 1, 0, 1, 0;
     // Extend the soft target when the score drops between depths.
-    UseTmScore = "UseTmScore", 1, 0, 1, 0;
+    UseTmScore = "UseTmScore", 0, 0, 1, 0;
     // 1: the fail-low and score-drop extensions count once (the larger of the
     // two) instead of multiplying: they mostly fire on the same moves.
     UseTmExtMax = "UseTmExtMax", 0, 0, 1, 0;
