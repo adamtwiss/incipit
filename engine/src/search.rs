@@ -141,6 +141,27 @@ impl Stats {
     }
 }
 
+/// Starts its contents on a cache line: the per-ply arrays inline in Searcher
+/// stay put relative to cache lines when other fields are added (field
+/// layout changes moved them and cost 0.5-2% nps).
+#[repr(C, align(64))]
+struct Align64<T>(T);
+
+impl<T> std::ops::Deref for Align64<T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for Align64<T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
 pub struct Limits {
     pub soft_ms: Option<u64>,
     pub hard_ms: Option<u64>,
@@ -164,11 +185,11 @@ pub struct Searcher {
     hist: Box<[[[i16; 64]; 64]; 2]>,
     cont: Box<[[i16; 768]; 768]>,
     capt: Box<[[[i16; 7]; 64]; 12]>,
-    killers: [[Move; 2]; MAX_PLY + 4],
+    killers: Align64<[[Move; 2]; MAX_PLY + 4]>,
     counter: Box<[[Move; 64]; 12]>,
-    stack: [Frame; MAX_PLY + 8],
+    stack: Align64<[Frame; MAX_PLY + 8]>,
     pv: Box<[[Move; MAX_PLY + 2]; MAX_PLY + 2]>,
-    pv_len: [usize; MAX_PLY + 2],
+    pv_len: Align64<[usize; MAX_PLY + 2]>,
     pub hash_hist: Vec<u64>,
     seldepth: usize,
     root_depth: i32,
@@ -284,11 +305,11 @@ impl Searcher {
             hist: Box::new([[[0; 64]; 64]; 2]),
             cont: vec![[0i16; 768]; 768].into_boxed_slice().try_into().unwrap(),
             capt: Box::new([[[0; 7]; 64]; 12]),
-            killers: [[0; 2]; MAX_PLY + 4],
+            killers: Align64([[0; 2]; MAX_PLY + 4]),
             counter: Box::new([[0; 64]; 12]),
-            stack: [Frame::default(); MAX_PLY + 8],
+            stack: Align64([Frame::default(); MAX_PLY + 8]),
             pv: Box::new([[0; MAX_PLY + 2]; MAX_PLY + 2]),
-            pv_len: [0; MAX_PLY + 2],
+            pv_len: Align64([0; MAX_PLY + 2]),
             hash_hist: Vec::with_capacity(1024),
             seldepth: 0,
             tb_hits: 0,
