@@ -615,7 +615,8 @@ impl Searcher {
                 let score_scale = if on(P::UseTmScore) { score_scale } else { 1.0 };
                 let fl_scale = if on(P::UseTmFailLow) { 1.0 + fail_lows.min(3) as f64 * tp(P::TmFailLow) as f64 / 100.0 } else { 1.0 };
                 let (node_scale, stab_scale) = if on(P::UseTm) { (node_scale, stab_scale) } else { (1.0, 1.0) };
-                let target = soft as f64 * node_scale * stab_scale * score_scale * fl_scale;
+                let ext = if on(P::UseTmExtMax) { score_scale.max(fl_scale) } else { score_scale * fl_scale };
+                let target = soft as f64 * node_scale * stab_scale * ext;
                 (tm_target, tm_frac, tm_done) = (target, frac, d);
                 let el = self.elapsed_ms() as f64;
                 if el >= target {
