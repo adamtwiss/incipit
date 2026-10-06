@@ -27,7 +27,6 @@ pub const EVAL_CACHE_KB: usize = 256;
 /// that treats |score| >= MATE_BOUND as decisive handles them like mates.
 pub const TB_WIN: i32 = MATE - 2 * MAX_PLY as i32;
 const CORR_SIZE: usize = 16384;
-const USE_SCORE_TM: bool = false;
 const CORR_GRAIN: i32 = 256;
 
 #[derive(Clone, Copy, Default)]
@@ -606,6 +605,7 @@ impl Searcher {
             let mut fh_move: Move = 0;
             let mut fh_score = 0;
             self.pt.root_fail_low = false;
+            let mut fail_lows = 0;
             let mut s;
             loop {
                 self.seldepth = 0;
@@ -616,6 +616,7 @@ impl Searcher {
                 if s <= a {
                     self.stats.asp_fail_low += 1;
                     self.pt.root_fail_low = true;
+                    fail_lows += 1;
                     b = (a + b) / 2;
                     a = (s - delta).max(-INF);
                 } else if s >= b {
@@ -668,6 +669,7 @@ impl Searcher {
                 break;
             }
             let iter_nodes = self.nodes - nodes_at_start;
+            let last_ebf = if prev_iter_nodes > 0 { iter_nodes as f64 / prev_iter_nodes as f64 } else { 0.0 };
             if d >= 5 && prev_iter_nodes > 0 {
                 self.stats.ebf_log_sum += (iter_nodes as f64 / prev_iter_nodes as f64).ln();
                 self.stats.ebf_count += 1;
@@ -699,14 +701,29 @@ impl Searcher {
                 let stab_scale = [2.2, 1.6, 1.3, 1.1, 1.0, 0.95, 0.9, 0.85, 0.8, 0.78, 0.75][stability];
                 let drop = (prev_score - score).clamp(-50, 150) as f64;
                 let score_scale = if d >= 6 { 1.0 + drop / 200.0 } else { 1.0 };
-                let score_scale = if USE_SCORE_TM { score_scale } else { 1.0 };
+                let score_scale = if on(P::UseTmScore) { score_scale } else { 1.0 };
+                let fl_scale = if on(P::UseTmFailLow) { 1.0 + fail_lows.min(3) as f64 * tp(P::TmFailLow) as f64 / 100.0 } else { 1.0 };
                 let (node_scale, stab_scale) = if on(P::UseTm) { (node_scale, stab_scale) } else { (1.0, 1.0) };
-                let target = soft as f64 * node_scale * stab_scale * score_scale;
+                let ext = if on(P::UseTmExtMax) { score_scale.max(fl_scale) } else { score_scale * fl_scale };
+                let target = soft as f64 * node_scale * stab_scale * ext;
                 self.pt.target_ms = target;
                 (tm_target, tm_frac, tm_done) = (target, frac, d);
+                let el = self.elapsed_ms() as f64;
                 if self.tm_elapsed(target).is_some_and(|el| el >= target) {
                     tm_stop = "soft";
                     break;
+                }
+                // The next depth costs about this one times the branching factor;
+                // elapsed so far approximates this depth plus all earlier ones.
+                if on(P::UseTmFinish) && d >= 6 && last_ebf > 0.0 {
+                    if let Some(h) = self.hard_ms {
+                        let ebf = last_ebf.clamp(1.2, 4.0);
+                        let iter_ms = el * iter_nodes as f64 / self.nodes.max(1) as f64;
+                        if el + iter_ms * ebf > h as f64 * tp(P::TmFinishPct) as f64 / 100.0 {
+                            tm_stop = "finish";
+                            break;
+                        }
+                    }
                 }
             }
             if let Some(n) = lim.nodes {
@@ -997,7 +1014,8 @@ impl Searcher {
         } else {
             0
         };
-        let killers = self.killers[ply];
+        let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
+        let counter_move = if on(P::UseCounterMove) { counter_move } else { 0 };
         let mut generated = false;
         if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
             list.push(tt_move);

@@ -62,6 +62,8 @@ params! {
     // Least thinking after a hit, % of the soft limit (0: none; the
     // PonderHitPct rule already prevents instant replies to short ponders).
     PonderMinPct = "PonderMinPct", 0, 0, 100, 5;
+    TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
+    TmFailLow = "TmFailLow", 30, 0, 100, 8;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
@@ -95,6 +97,19 @@ params! {
     UseAsp = "UseAsp", 1, 0, 1, 0;
     // Soft time limit scaled by best-move node share and stability (0: plain soft limit).
     UseTm = "UseTm", 1, 0, 1, 0;
+    // Don't start a depth predicted (elapsed x last branching factor) to end past
+    // TmFinishPct% of the hard limit: it would be cut off anyway.
+    UseTmFinish = "UseTmFinish", 0, 0, 1, 0;
+    // Extend the soft target by TmFailLow% per root aspiration fail-low in the
+    // last depth (up to 3): the best line just got worse, so look harder.
+    UseTmFailLow = "UseTmFailLow", 1, 0, 1, 0;
+    // Extend the soft target when the score drops between depths.
+    UseTmScore = "UseTmScore", 0, 0, 1, 0;
+    // 1: the fail-low and score-drop extensions count once (the larger of the
+    // two) instead of multiplying: they mostly fire on the same moves.
+    UseTmExtMax = "UseTmExtMax", 0, 0, 1, 0;
+    UseKillers = "UseKillers", 1, 0, 1, 0;
+    UseCounterMove = "UseCounterMove", 1, 0, 1, 0;
 }
 
 #[inline(always)]
