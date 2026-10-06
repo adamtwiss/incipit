@@ -923,7 +923,8 @@ impl Searcher {
         } else {
             0
         };
-        let killers = self.killers[ply];
+        let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
+        let counter_move = if on(P::UseCounterMove) { counter_move } else { 0 };
         let mut generated = false;
         if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
             list.push(tt_move);

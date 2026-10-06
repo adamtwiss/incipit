@@ -94,9 +94,11 @@ params! {
     UseTmFinish = "UseTmFinish", 0, 0, 1, 0;
     // Extend the soft target by TmFailLow% per root aspiration fail-low in the
     // last depth (up to 3): the best line just got worse, so look harder.
-    UseTmFailLow = "UseTmFailLow", 0, 0, 1, 0;
+    UseTmFailLow = "UseTmFailLow", 1, 0, 1, 0;
     // Extend the soft target when the score drops between depths.
-    UseTmScore = "UseTmScore", 0, 0, 1, 0;
+    UseTmScore = "UseTmScore", 1, 0, 1, 0;
+    UseKillers = "UseKillers", 1, 0, 1, 0;
+    UseCounterMove = "UseCounterMove", 1, 0, 1, 0;
 }
 
 #[inline(always)]
