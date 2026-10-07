@@ -54,6 +54,14 @@ params! {
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
+    // On a ponder hit, move at once if we pondered at least PonderHitPct% of
+    // the time we'd want for this move; otherwise keep thinking until pondering
+    // + thinking reaches it (PonderCredit% of the pondering time counts).
+    PonderHitPct = "PonderHitPct", 80, 30, 1000, 8;
+    PonderCredit = "PonderCredit", 100, 30, 100, 10;
+    // Least thinking after a hit, % of the soft limit (0: none; the
+    // PonderHitPct rule already prevents instant replies to short ponders).
+    PonderMinPct = "PonderMinPct", 0, 0, 100, 5;
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
     TmFailLow = "TmFailLow", 30, 0, 100, 8;
     // Depth gates (formerly constants).

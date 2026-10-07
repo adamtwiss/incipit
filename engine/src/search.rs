@@ -3,7 +3,7 @@ use crate::nnue::{self, Acc};
 use crate::params::{on, tp, P};
 use crate::position::*;
 use crate::tt::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -141,6 +141,12 @@ impl Stats {
     }
 }
 
+/// Milliseconds since the process's first call, for timestamps shared between threads.
+pub fn now_ms() -> u64 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
 /// Starts its contents on a cache line: the per-ply arrays inline in Searcher
 /// stay put relative to cache lines when other fields are added (field
 /// layout changes moved them and cost 0.5-2% nps).
@@ -167,6 +173,22 @@ pub struct Limits {
     pub hard_ms: Option<u64>,
     pub depth: i32,
     pub nodes: Option<u64>,
+}
+
+pub struct PonderTm {
+    /// Set by the UCI thread on ponderhit: now_ms() + 1 (0 = no hit yet).
+    pub hit: Arc<AtomicU64>,
+    /// This search is a ponder search (go ponder).
+    pub pondering: bool,
+    start_ms: u64,
+    soft_ms: f64,
+    /// Latest soft target (ms), for stopping mid-depth after a ponder hit.
+    target_ms: f64,
+    /// The current depth failed low at the root and hasn't resolved yet.
+    root_fail_low: bool,
+    /// Best move and reply of the last completed depth (the root PV is reset
+    /// when a new depth starts, so an aborted depth has none).
+    last_pv2: (Move, Move),
 }
 
 /// Field order is fixed (repr(C)): the fields touched at every node come first,
@@ -212,6 +234,8 @@ pub struct Searcher {
     // the castling rooks' squares, which are fixed for the game).
     root_pos: Position,
     refresh_cache: nnue::RefreshCache,
+    /// Pondering and time-decision state.
+    pub pt: Box<PonderTm>,
 }
 
 #[inline(always)]
@@ -305,6 +329,15 @@ impl Searcher {
             eval_mask: eval_cache_entries(EVAL_CACHE_KB) - 1,
             nodes: 0,
             stop_flag,
+            pt: Box::new(PonderTm {
+                hit: Arc::new(AtomicU64::new(0)),
+                pondering: false,
+                start_ms: 0,
+                soft_ms: 0.0,
+                target_ms: f64::INFINITY,
+                root_fail_low: false,
+                last_pv2: (0, 0),
+            }),
             stopped: false,
             start: Instant::now(),
             hard_ms: None,
@@ -389,6 +422,37 @@ impl Searcher {
         self.start.elapsed().as_millis() as u64
     }
 
+    /// After a ponder hit: (ms spent pondering, ms since the hit); None while
+    /// still pondering.
+    fn ponder_clock(&self) -> Option<(f64, u64)> {
+        let hit = self.pt.hit.load(Ordering::Relaxed);
+        if hit == 0 {
+            return None;
+        }
+        let hit = hit - 1;
+        Some((hit.saturating_sub(self.pt.start_ms) as f64, now_ms().saturating_sub(hit)))
+    }
+
+    /// Ponder hit: is the time we wanted for this move (`target`) used up? Move
+    /// at once if we pondered most of it (and give the opponent our time
+    /// back); else think on until pondering + thinking reaches it. A short
+    /// ponder (an instant reply from the opponent) never gets an instant
+    /// answer, so two pondering engines can't trade instant moves.
+    fn ponder_done(&self, pondered: f64, since: u64, target: f64) -> bool {
+        (since as f64) >= self.pt.soft_ms * tp(P::PonderMinPct) as f64 / 100.0
+            && (pondered >= target * tp(P::PonderHitPct) as f64 / 100.0
+                || pondered * tp(P::PonderCredit) as f64 / 100.0 + since as f64 >= target)
+    }
+
+    /// Soft-limit decision time: None means don't stop (still pondering).
+    fn tm_elapsed(&self, target: f64) -> Option<f64> {
+        if !self.pt.pondering {
+            return Some(self.elapsed_ms() as f64);
+        }
+        let (pondered, since) = self.ponder_clock()?;
+        self.ponder_done(pondered, since, target).then_some(f64::INFINITY)
+    }
+
     #[inline(always)]
     fn check_time(&mut self) {
         if self.root_depth <= 1 {
@@ -399,7 +463,16 @@ impl Searcher {
             return;
         }
         if let Some(h) = self.hard_ms {
-            if self.elapsed_ms() >= h {
+            if self.pt.pondering {
+                // Our clock runs only from the ponder hit.
+                if let Some((pondered, since)) = self.ponder_clock() {
+                    // A mid-depth stop keeps only finished work (aborted subtrees store
+                    // nothing), but not while the previous best move has just failed low.
+                    if since >= h || (!self.pt.root_fail_low && self.ponder_done(pondered, since, self.pt.target_ms)) {
+                        self.stopped = true;
+                    }
+                }
+            } else if self.elapsed_ms() >= h {
                 self.stopped = true;
             }
         }
@@ -484,9 +557,17 @@ impl Searcher {
         false
     }
 
+    /// The move to ponder on after `best`: the reply in the last PV, if any.
+    pub fn ponder_move(&self, best: Move) -> Move {
+        if self.pt.last_pv2.0 == best { self.pt.last_pv2.1 } else { 0 }
+    }
+
     /// Returns (best move, score).
     pub fn search(&mut self, root: &Position, lim: &Limits) -> (Move, i32) {
         self.start = Instant::now();
+        self.pt.start_ms = now_ms();
+        self.pt.target_ms = lim.soft_ms.map_or(f64::INFINITY, |s| s as f64);
+        self.pt.soft_ms = lim.soft_ms.unwrap_or(0) as f64;
         self.tt.new_search();
         self.nodes = 0;
         self.tb_hits = 0;
@@ -494,6 +575,7 @@ impl Searcher {
         self.hard_ms = lim.hard_ms;
         self.node_limit = lim.nodes;
         self.root_best = 0;
+        self.pt.last_pv2 = (0, 0);
         self.seldepth = 0;
         self.acc[0].refresh(root);
         self.root_pos = *root;
@@ -550,6 +632,7 @@ impl Searcher {
             let (mut a, mut b) = if d >= 4 && on(P::UseAsp) { (score - delta, score + delta) } else { (-INF, INF) };
             let mut fh_move: Move = 0;
             let mut fh_score = 0;
+            self.pt.root_fail_low = false;
             let mut fail_lows = 0;
             let mut s;
             loop {
@@ -560,6 +643,7 @@ impl Searcher {
                 }
                 if s <= a {
                     self.stats.asp_fail_low += 1;
+                    self.pt.root_fail_low = true;
                     fail_lows += 1;
                     b = (a + b) / 2;
                     a = (s - delta).max(-INF);
@@ -585,6 +669,8 @@ impl Searcher {
                     "stop"
                 } else if lim.nodes.is_some_and(|n| self.nodes >= n) {
                     "nodes"
+                } else if self.pt.pondering {
+                    "ponder"
                 } else {
                     "hard"
                 };
@@ -617,6 +703,9 @@ impl Searcher {
                 self.stats.ebf_count += 1;
             }
             prev_iter_nodes = iter_nodes;
+            if self.pv_len[0] >= 2 {
+                self.pt.last_pv2 = (self.pv[0][0], self.pv[0][1]);
+            }
             let prev_score = if d > 1 { score } else { s };
             score = s;
             best = self.pv[0][0];
@@ -645,9 +734,10 @@ impl Searcher {
                 let (node_scale, stab_scale) = if on(P::UseTm) { (node_scale, stab_scale) } else { (1.0, 1.0) };
                 let ext = if on(P::UseTmExtMax) { score_scale.max(fl_scale) } else { score_scale * fl_scale };
                 let target = soft as f64 * node_scale * stab_scale * ext;
+                self.pt.target_ms = target;
                 (tm_target, tm_frac, tm_done) = (target, frac, d);
                 let el = self.elapsed_ms() as f64;
-                if el >= target {
+                if self.tm_elapsed(target).is_some_and(|el| el >= target) {
                     tm_stop = "soft";
                     break;
                 }

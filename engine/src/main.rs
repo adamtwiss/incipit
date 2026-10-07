@@ -10,7 +10,7 @@ mod tt;
 use position::*;
 use search::*;
 use std::io::BufRead;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -180,6 +180,7 @@ impl Uci {
         let mut movetime = None;
         let mut depth = MAX_PLY as i32;
         let mut nodes = None;
+        let mut ponder = false;
         let mut i = 1;
         while i < toks.len() {
             let v = toks.get(i + 1).and_then(|s| s.parse::<i64>().ok());
@@ -192,6 +193,11 @@ impl Uci {
                 "movetime" => movetime = v,
                 "depth" => depth = v.unwrap_or(depth as i64).clamp(1, MAX_PLY as i64 - 4) as i32,
                 "nodes" => nodes = v.map(|x| x.max(1) as u64),
+                "ponder" => {
+                    ponder = true;
+                    i += 1;
+                    continue;
+                }
                 _ => {
                     i += 1;
                     continue;
@@ -217,8 +223,21 @@ impl Uci {
         }
         self.searcher.hash_hist.clear();
         self.searcher.hash_hist.extend_from_slice(&self.hist);
+        self.searcher.pt.pondering = ponder;
         let (m, _) = self.searcher.search(&self.pos, &lim);
-        println!("bestmove {}", self.pos.move_uci(m));
+        // UCI: no bestmove while pondering, until ponderhit or stop.
+        while ponder && self.searcher.pt.hit.load(Ordering::SeqCst) == 0 && !self.searcher.stop_flag.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        self.searcher.pt.pondering = false;
+        let pm = self.searcher.ponder_move(m);
+        let mut after = self.pos;
+        let ok = pm != 0 && after.make_move(m) && after.is_pseudo_legal(pm) && { let mut q = after; q.make_move(pm) };
+        if ok {
+            println!("bestmove {} ponder {}", self.pos.move_uci(m), after.move_uci(pm));
+        } else {
+            println!("bestmove {}", self.pos.move_uci(m));
+        }
     }
 }
 
@@ -317,9 +336,11 @@ fn main() {
 
     let stop = Arc::new(AtomicBool::new(false));
     let searching = Arc::new(AtomicBool::new(false));
+    let ponder_hit = Arc::new(AtomicU64::new(0));
     let (tx, rx) = mpsc::channel::<String>();
     {
         let stop = stop.clone();
+        let ponder_hit = ponder_hit.clone();
         let searching = searching.clone();
         std::thread::spawn(move || {
             let stdin = std::io::stdin();
@@ -346,10 +367,11 @@ fn main() {
                     "isready" if searching.load(Ordering::SeqCst) => println!("readyok"),
                     "go" => {
                         stop.store(false, Ordering::SeqCst);
+                        ponder_hit.store(0, Ordering::SeqCst);
                         searching.store(true, Ordering::SeqCst);
                         let _ = tx.send(cmd);
                     }
-                    "ponderhit" => {}
+                    "ponderhit" => ponder_hit.store(search::now_ms() + 1, Ordering::SeqCst),
                     _ => {
                         let _ = tx.send(cmd);
                     }
@@ -364,6 +386,7 @@ fn main() {
         searcher: Searcher::new(16, stop.clone()),
         overhead: 20,
     };
+    uci.searcher.pt.hit = ponder_hit;
     let mut hash_mb = 16usize;
     while let Ok(cmd) = rx.recv() {
         let toks: Vec<&str> = cmd.split_whitespace().collect();
@@ -378,6 +401,7 @@ fn main() {
                 println!("option name EvalCacheKB type spin default {} min 16 max 1048576", search::EVAL_CACHE_KB);
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
+                println!("option name Ponder type check default false");
                 println!("option name UCI_Chess960 type check default false");
                 println!("option name UCI_ShowWDL type check default false");
                 println!("option name TmLog type check default false");
