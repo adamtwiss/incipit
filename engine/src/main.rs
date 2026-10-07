@@ -228,6 +228,7 @@ impl Uci {
         self.searcher.hash_hist.clear();
         self.searcher.hash_hist.extend_from_slice(&self.hist);
         self.searcher.pt.pondering = ponder;
+        self.searcher.pt.ponder_seen |= ponder;
         let (m, _) = self.searcher.search(&self.pos, &lim);
         // UCI: no bestmove while pondering, until ponderhit or stop.
         while ponder && self.searcher.pt.hit.load(Ordering::SeqCst) == 0 && !self.searcher.stop_flag.load(Ordering::SeqCst) {

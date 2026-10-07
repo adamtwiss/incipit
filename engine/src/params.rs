@@ -111,7 +111,8 @@ params! {
     UseTmExtMax = "UseTmExtMax", 0, 0, 1, 0;
     // Budget feedback: scale the soft limit by 1 / (running average of our own
     // clock spend / base soft limit), between 1 and TmFeedMax/100. Spends the
-    // time ponder hits (and large increments) would otherwise leave unused.
+    // time ponder hits would otherwise leave unused. Only in games where the
+    // GUI ponders (without pondering spend already meets the budget).
     UseTmFeed = "UseTmFeed", 1, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
 }

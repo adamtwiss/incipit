@@ -192,12 +192,15 @@ pub struct PonderTm {
     /// Running average of our own clock spend / base soft limit this game
     /// (budget feedback; 1.0 at the start of a game).
     pub spend_avg: f64,
+    /// The GUI has pondered this game: only then does the budget feedback
+    /// apply (instant ponder hits are what leave the budget unspent).
+    pub ponder_seen: bool,
 }
 
 impl PonderTm {
     /// Soft-limit multiplier from the budget feedback (1 = no change).
     pub fn feed_scale(&self) -> f64 {
-        if !on(P::UseTmFeed) {
+        if !on(P::UseTmFeed) || !self.ponder_seen {
             return 1.0;
         }
         (1.0 / self.spend_avg.max(0.01)).clamp(1.0, tp(P::TmFeedMax) as f64 / 100.0)
@@ -358,6 +361,7 @@ impl Searcher {
                 root_fail_low: false,
                 last_pv2: (0, 0),
                 spend_avg: 1.0,
+                ponder_seen: false,
             }),
             stopped: false,
             start: Instant::now(),
@@ -420,6 +424,7 @@ impl Searcher {
 
     pub fn clear(&mut self) {
         self.pt.spend_avg = 1.0;
+        self.pt.ponder_seen = false;
         self.tt.clear();
         self.eval_cache.fill(0);
         *self.hist = [[[0; 64]; 64]; 2];
