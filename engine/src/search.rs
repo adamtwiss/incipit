@@ -189,6 +189,27 @@ pub struct PonderTm {
     /// Best move and reply of the last completed depth (the root PV is reset
     /// when a new depth starts, so an aborted depth has none).
     last_pv2: (Move, Move),
+    /// Running average of our own clock spend / base soft limit this game
+    /// (budget feedback; 1.0 at the start of a game).
+    pub spend_avg: f64,
+}
+
+impl PonderTm {
+    /// Soft-limit multiplier from the budget feedback (1 = no change).
+    pub fn feed_scale(&self) -> f64 {
+        if !on(P::UseTmFeed) {
+            return 1.0;
+        }
+        (1.0 / self.spend_avg.max(0.01)).clamp(1.0, tp(P::TmFeedMax) as f64 / 100.0)
+    }
+
+    /// Records one move: our own clock time and the unscaled soft limit.
+    pub fn record_spend(&mut self, own_ms: u64, base_soft_ms: u64) {
+        if base_soft_ms > 0 {
+            let r = (own_ms as f64 / base_soft_ms as f64).min(5.0);
+            self.spend_avg = 0.9 * self.spend_avg + 0.1 * r;
+        }
+    }
 }
 
 /// Field order is fixed (repr(C)): the fields touched at every node come first,
@@ -336,6 +357,7 @@ impl Searcher {
                 target_ms: f64::INFINITY,
                 root_fail_low: false,
                 last_pv2: (0, 0),
+                spend_avg: 1.0,
             }),
             stopped: false,
             start: Instant::now(),
@@ -397,6 +419,7 @@ impl Searcher {
     }
 
     pub fn clear(&mut self) {
+        self.pt.spend_avg = 1.0;
         self.tt.clear();
         self.eval_cache.fill(0);
         *self.hist = [[[0; 64]; 64]; 2];

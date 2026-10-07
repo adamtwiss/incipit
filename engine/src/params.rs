@@ -64,6 +64,7 @@ params! {
     PonderMinPct = "PonderMinPct", 0, 0, 100, 5;
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
     TmFailLow = "TmFailLow", 30, 0, 100, 8;
+    TmFeedMax = "TmFeedMax", 250, 100, 400, 20;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
@@ -108,6 +109,10 @@ params! {
     // 1: the fail-low and score-drop extensions count once (the larger of the
     // two) instead of multiplying: they mostly fire on the same moves.
     UseTmExtMax = "UseTmExtMax", 0, 0, 1, 0;
+    // Budget feedback: scale the soft limit by 1 / (running average of our own
+    // clock spend / base soft limit), between 1 and TmFeedMax/100. Spends the
+    // time ponder hits (and large increments) would otherwise leave unused.
+    UseTmFeed = "UseTmFeed", 1, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
 }
 
