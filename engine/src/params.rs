@@ -70,6 +70,9 @@ params! {
     TmForcedDepth = "TmForcedDepth", 8, 4, 16, 1;
     TmForcedMargin = "TmForcedMargin", 150, 50, 400, 20;
     TmForcedScale = "TmForcedScale", 50, 20, 100, 5;
+    TmFailHigh = "TmFailHigh", 15, 0, 60, 4;
+    TmTrendDiv = "TmTrendDiv", 200, 80, 600, 30;
+    TmNodeDepth = "TmNodeDepth", 8, 4, 14, 1;
     // Soft-target factors (x100). Node share f of the best move: (TmNodeBase/100 - f) x TmNodeMul/100.
     TmNodeBase = "TmNodeBase", 150, 110, 200, 5;
     TmNodeMul = "TmNodeMul", 135, 80, 200, 8;
@@ -134,6 +137,14 @@ params! {
     // depth with the best move excluded, null window at score - TmForcedMargin;
     // if every alternative fails low, x TmForcedScale% (move sooner).
     UseTmForced = "UseTmForced", 0, 0, 1, 0;
+    // Fail-high: x (1 + TmFailHigh% per root aspiration fail-high in the last
+    // depth, up to 3) - something new and better turned up.
+    UseTmFailHigh = "UseTmFailHigh", 0, 0, 1, 0;
+    // Score trend: x (1 + fall / TmTrendDiv), fall = score three depths ago
+    // minus now, clamped to -50..150 cp, from depth 6.
+    UseTmTrend = "UseTmTrend", 0, 0, 1, 0;
+    // Node share counts only from depth TmNodeDepth (earlier shares are noisy).
+    UseTmNodeGate = "UseTmNodeGate", 0, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
 }
 

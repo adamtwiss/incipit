@@ -630,6 +630,8 @@ impl Searcher {
         let mut reported: Move = 0;
         let max_depth = lim.depth.min(MAX_PLY as i32 - 4);
         let mut prev_iter_nodes = 0u64;
+        // Scores of completed depths (TM score trend).
+        let mut score_hist: Vec<i32> = Vec::with_capacity(64);
         // TmLog: final soft target, its factors, the last completed depth and why we stopped.
         let mut tm_stop = "depth";
         let (mut tm_target, mut tm_frac, mut tm_done) = (0.0f64, 0.0f64, 0);
@@ -642,6 +644,7 @@ impl Searcher {
             let mut fh_score = 0;
             self.pt.root_fail_low = false;
             let mut fail_lows = 0;
+            let mut fail_highs = 0;
             let mut s;
             loop {
                 self.seldepth = 0;
@@ -657,6 +660,7 @@ impl Searcher {
                     a = (s - delta).max(-INF);
                 } else if s >= b {
                     self.stats.asp_fail_high += 1;
+                    fail_highs += 1;
                     b = (s + delta).min(INF);
                     if self.root_best != 0 {
                         best = self.root_best;
@@ -715,6 +719,7 @@ impl Searcher {
                 self.pt.last_pv2 = (self.pv[0][0], self.pv[0][1]);
             }
             let prev_score = if d > 1 { score } else { s };
+            score_hist.push(s);
             score = s;
             best = self.pv[0][0];
             if best == 0 {
@@ -734,6 +739,7 @@ impl Searcher {
                 let total = self.nodes.max(1) as f64;
                 let frac = self.root_node_counts[mfrom(best)][mto(best)] as f64 / total;
                 let node_scale = (tp(P::TmNodeBase) as f64 / 100.0 - frac) * tp(P::TmNodeMul) as f64 / 100.0;
+                let node_scale = if on(P::UseTmNodeGate) && d < tp(P::TmNodeDepth) { 1.0 } else { node_scale };
                 let stab_scale = match stability {
                     0 => tp(P::TmStab0),
                     1 => tp(P::TmStab1),
@@ -771,7 +777,14 @@ impl Searcher {
                         forced_scale = tp(P::TmForcedScale) as f64 / 100.0;
                     }
                 }
-                let target = soft as f64 * node_scale * stab_scale * ext * bmc_scale * cplx_scale * forced_scale;
+                let fh_scale = if on(P::UseTmFailHigh) { 1.0 + fail_highs.min(3) as f64 * tp(P::TmFailHigh) as f64 / 100.0 } else { 1.0 };
+                let trend_scale = if on(P::UseTmTrend) && d >= 6 && score_hist.len() >= 4 && score.abs() < MATE_BOUND {
+                    let fall = (score_hist[score_hist.len() - 4] - score).clamp(-50, 150) as f64;
+                    1.0 + fall / tp(P::TmTrendDiv) as f64
+                } else {
+                    1.0
+                };
+                let target = soft as f64 * node_scale * stab_scale * ext * bmc_scale * cplx_scale * forced_scale * fh_scale * trend_scale;
                 self.pt.target_ms = target;
                 (tm_target, tm_frac, tm_done) = (target, frac, d);
                 let el = self.elapsed_ms() as f64;
