@@ -797,3 +797,76 @@ pub fn perft(pos: &Position, depth: u32) -> u64 {
     }
     n
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Positions from random games out of the perft suite (incl. Chess960).
+    fn random_positions(per_start: usize, plies: usize) -> Vec<Position> {
+        let text = include_str!("../tests/perft.epd");
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let fen = line.split(';').next().unwrap().trim();
+            let Some(start) = Position::from_fen(fen) else { continue };
+            for _ in 0..per_start {
+                let mut pos = start;
+                for _ in 0..plies {
+                    out.push(pos);
+                    let mut list = MoveList::new();
+                    pos.gen_moves(&mut list, false);
+                    let legal: Vec<Move> = (0..list.len)
+                        .map(|i| list.moves[i])
+                        .filter(|&m| {
+                            let mut c = pos;
+                            c.make_move(m)
+                        })
+                        .collect();
+                    if legal.is_empty() || pos.halfmove >= 100 {
+                        break;
+                    }
+                    let m = legal[(rnd() % legal.len() as u64) as usize];
+                    pos.make_move(m);
+                }
+            }
+        }
+        out
+    }
+
+    /// is_pseudo_legal (used on TT and other stored moves) must accept exactly
+    /// the moves the generator produces, for every 16-bit encoding.
+    #[test]
+    fn pseudo_legal_matches_generator_exhaustively() {
+        crate::attacks::init();
+        let positions = random_positions(4, 75);
+        assert!(positions.len() > 1000);
+        for pos in &positions {
+            let mut list = MoveList::new();
+            pos.gen_moves(&mut list, false);
+            let mut generated = vec![false; 1 << 16];
+            for i in 0..list.len {
+                generated[list.moves[i] as usize] = true;
+            }
+            let mut noisy = MoveList::new();
+            pos.gen_moves(&mut noisy, true);
+            for i in 0..noisy.len {
+                assert!(generated[noisy.moves[i] as usize], "noisy move not in full list");
+            }
+            for m in 0..=u16::MAX {
+                assert_eq!(
+                    pos.is_pseudo_legal(m),
+                    generated[m as usize],
+                    "is_pseudo_legal({:#06x}) disagrees with the generator",
+                    m
+                );
+            }
+        }
+    }
+}
