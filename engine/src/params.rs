@@ -64,6 +64,9 @@ params! {
     PonderMinPct = "PonderMinPct", 0, 0, 100, 5;
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
     TmFailLow = "TmFailLow", 30, 0, 100, 8;
+    TmBmc = "TmBmc", 20, 0, 80, 5;
+    TmBmcDecay = "TmBmcDecay", 50, 0, 90, 8;
+    TmCplx = "TmCplx", 10, 0, 50, 3;
     // Soft-target factors (x100). Node share f of the best move: (TmNodeBase/100 - f) x TmNodeMul/100.
     TmNodeBase = "TmNodeBase", 150, 110, 200, 5;
     TmNodeMul = "TmNodeMul", 135, 80, 200, 8;
@@ -118,6 +121,12 @@ params! {
     // 1: the fail-low and score-drop extensions count once (the larger of the
     // two) instead of multiplying: they mostly fire on the same moves.
     UseTmExtMax = "UseTmExtMax", 0, 0, 1, 0;
+    // Instability: x (1 + TmBmc% x decayed count of root best-move changes,
+    // including mid-depth ones; TmBmcDecay% kept per depth).
+    UseTmBmc = "UseTmBmc", 0, 0, 1, 0;
+    // Complexity: x (1 + TmCplx% per 100 cp between the root's static eval and
+    // the search score, up to 400 cp).
+    UseTmCplx = "UseTmCplx", 0, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
 }
 

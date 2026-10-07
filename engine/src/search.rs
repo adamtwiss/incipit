@@ -189,6 +189,11 @@ pub struct PonderTm {
     /// Best move and reply of the last completed depth (the root PV is reset
     /// when a new depth starts, so an aborted depth has none).
     last_pv2: (Move, Move),
+    /// Root best-move changes this depth, and their decayed total (TM).
+    bm_changes: u32,
+    bmc_avg: f64,
+    /// Static eval of the root (TM complexity signal).
+    root_static: i32,
 }
 
 /// Field order is fixed (repr(C)): the fields touched at every node come first,
@@ -336,6 +341,9 @@ impl Searcher {
                 target_ms: f64::INFINITY,
                 root_fail_low: false,
                 last_pv2: (0, 0),
+                bm_changes: 0,
+                bmc_avg: 0.0,
+                root_static: 0,
             }),
             stopped: false,
             start: Instant::now(),
@@ -575,6 +583,9 @@ impl Searcher {
         self.pt.last_pv2 = (0, 0);
         self.seldepth = 0;
         self.acc[0].refresh(root);
+        self.pt.bm_changes = 0;
+        self.pt.bmc_avg = 0.0;
+        self.pt.root_static = if on(P::UseTmCplx) { self.evaluate(root, 0) } else { 0 };
         self.root_pos = *root;
         for r in self.root_node_counts.iter_mut() {
             *r = [0; 64];
@@ -736,7 +747,12 @@ impl Searcher {
                 let fl_scale = if on(P::UseTmFailLow) { 1.0 + fail_lows.min(3) as f64 * tp(P::TmFailLow) as f64 / 100.0 } else { 1.0 };
                 let (node_scale, stab_scale) = if on(P::UseTm) { (node_scale, stab_scale) } else { (1.0, 1.0) };
                 let ext = if on(P::UseTmExtMax) { score_scale.max(fl_scale) } else { score_scale * fl_scale };
-                let target = soft as f64 * node_scale * stab_scale * ext;
+                self.pt.bmc_avg = self.pt.bmc_avg * tp(P::TmBmcDecay) as f64 / 100.0 + self.pt.bm_changes as f64;
+                self.pt.bm_changes = 0;
+                let bmc_scale = if on(P::UseTmBmc) { 1.0 + tp(P::TmBmc) as f64 / 100.0 * self.pt.bmc_avg.min(4.0) } else { 1.0 };
+                let cplx = ((score - self.pt.root_static).abs().min(400)) as f64;
+                let cplx_scale = if on(P::UseTmCplx) && score.abs() < MATE_BOUND { 1.0 + tp(P::TmCplx) as f64 / 100.0 * cplx / 100.0 } else { 1.0 };
+                let target = soft as f64 * node_scale * stab_scale * ext * bmc_scale * cplx_scale;
                 self.pt.target_ms = target;
                 (tm_target, tm_frac, tm_done) = (target, frac, d);
                 let el = self.elapsed_ms() as f64;
@@ -1255,6 +1271,9 @@ impl Searcher {
                     }
                     self.pv_len[ply] = cl + 1;
                     if root {
+                        if self.root_best != 0 && self.root_best != m {
+                            self.pt.bm_changes += 1;
+                        }
                         self.root_best = m;
                     }
                     if alpha >= beta {
