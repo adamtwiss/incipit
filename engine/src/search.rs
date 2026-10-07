@@ -722,8 +722,14 @@ impl Searcher {
             if let Some(soft) = lim.soft_ms {
                 let total = self.nodes.max(1) as f64;
                 let frac = self.root_node_counts[mfrom(best)][mto(best)] as f64 / total;
-                let node_scale = (1.5 - frac) * 1.35;
-                let stab_scale = [2.2, 1.6, 1.3, 1.1, 1.0, 0.95, 0.9, 0.85, 0.8, 0.78, 0.75][stability];
+                let node_scale = (tp(P::TmNodeBase) as f64 / 100.0 - frac) * tp(P::TmNodeMul) as f64 / 100.0;
+                let stab_scale = match stability {
+                    0 => tp(P::TmStab0),
+                    1 => tp(P::TmStab1),
+                    2 => tp(P::TmStab2),
+                    3 => tp(P::TmStab3),
+                    k => 100 + (tp(P::TmStabMin) - 100) * (k.min(10) as i32 - 4) / 6,
+                } as f64 / 100.0;
                 let drop = (prev_score - score).clamp(-50, 150) as f64;
                 let score_scale = if d >= 6 { 1.0 + drop / 200.0 } else { 1.0 };
                 let score_scale = if on(P::UseTmScore) { score_scale } else { 1.0 };

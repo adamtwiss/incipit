@@ -64,6 +64,16 @@ params! {
     PonderMinPct = "PonderMinPct", 0, 0, 100, 5;
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
     TmFailLow = "TmFailLow", 30, 0, 100, 8;
+    // Soft-target factors (x100). Node share f of the best move: (TmNodeBase/100 - f) x TmNodeMul/100.
+    TmNodeBase = "TmNodeBase", 150, 110, 200, 5;
+    TmNodeMul = "TmNodeMul", 135, 80, 200, 8;
+    // Stability (depths with the same best move): 0..3 from TmStab0..3, then a
+    // straight line from 100 at 4 to TmStabMin at 10 and beyond.
+    TmStab0 = "TmStab0", 220, 120, 350, 15;
+    TmStab1 = "TmStab1", 160, 100, 250, 10;
+    TmStab2 = "TmStab2", 130, 90, 200, 8;
+    TmStab3 = "TmStab3", 110, 80, 160, 6;
+    TmStabMin = "TmStabMin", 75, 40, 100, 5;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
