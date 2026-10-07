@@ -189,6 +189,33 @@ pub struct PonderTm {
     /// Best move and reply of the last completed depth (the root PV is reset
     /// when a new depth starts, so an aborted depth has none).
     last_pv2: (Move, Move),
+    /// Last printed info line: depth, seldepth, score, PV (repeated before
+    /// bestmove after a ponder hit, so GUIs record this move's search).
+    last_info: (i32, usize, i32, String),
+    /// Running average of our own clock spend / base soft limit this game
+    /// (budget feedback; 1.0 at the start of a game).
+    pub spend_avg: f64,
+    /// The GUI has pondered this game: only then does the budget feedback
+    /// apply (instant ponder hits are what leave the budget unspent).
+    pub ponder_seen: bool,
+}
+
+impl PonderTm {
+    /// Soft-limit multiplier from the budget feedback (1 = no change).
+    pub fn feed_scale(&self) -> f64 {
+        if !on(P::UseTmFeed) || !self.ponder_seen {
+            return 1.0;
+        }
+        (1.0 / self.spend_avg.max(0.01)).clamp(1.0, tp(P::TmFeedMax) as f64 / 100.0)
+    }
+
+    /// Records one move: our own clock time and the unscaled soft limit.
+    pub fn record_spend(&mut self, own_ms: u64, base_soft_ms: u64) {
+        if base_soft_ms > 0 {
+            let r = (own_ms as f64 / base_soft_ms as f64).min(5.0);
+            self.spend_avg = 0.9 * self.spend_avg + 0.1 * r;
+        }
+    }
 }
 
 /// Field order is fixed (repr(C)): the fields touched at every node come first,
@@ -336,6 +363,9 @@ impl Searcher {
                 target_ms: f64::INFINITY,
                 root_fail_low: false,
                 last_pv2: (0, 0),
+                last_info: (0, 0, 0, String::new()),
+                spend_avg: 1.0,
+                ponder_seen: false,
             }),
             stopped: false,
             start: Instant::now(),
@@ -397,6 +427,8 @@ impl Searcher {
     }
 
     pub fn clear(&mut self) {
+        self.pt.spend_avg = 1.0;
+        self.pt.ponder_seen = false;
         self.tt.clear();
         self.eval_cache.fill(0);
         *self.hist = [[[0; 64]; 64]; 2];
@@ -575,6 +607,7 @@ impl Searcher {
         self.pt.last_pv2 = (0, 0);
         self.seldepth = 0;
         self.acc[0].refresh(root);
+        self.pt.last_info.0 = 0;
         self.root_pos = *root;
         for r in self.root_node_counts.iter_mut() {
             *r = [0; 64];
@@ -758,7 +791,12 @@ impl Searcher {
                 }
             }
         }
-        if TM_LOG.load(Ordering::Relaxed) && !self.silent {
+        // After a ponder hit the last info line went out while pondering; GUIs
+        // attribute this move only to output after the hit, so repeat it.
+        if self.pt.pondering && self.pt.hit.load(Ordering::Relaxed) != 0 && !self.silent && self.pt.last_info.0 > 0 {
+            self.print_last_info();
+        }
+                if TM_LOG.load(Ordering::Relaxed) && !self.silent {
             println!(
                 "info string pgncomment tm el={} soft={} hard={} tgt={:.0} stab={} frac={:.2} d={} stop={}",
                 self.elapsed_ms(),
@@ -774,18 +812,25 @@ impl Searcher {
         (best, score)
     }
 
-    fn print_info(&self, d: i32, score: i32) {
-        let el = self.elapsed_ms();
-        let nps = self.nodes * 1000 / el.max(1);
+    fn print_info(&mut self, d: i32, score: i32) {
         let mut pv = String::new();
         for i in 0..self.pv_len[0] {
             pv.push(' ');
             pv.push_str(&self.root_pos.move_uci(self.pv[0][i]));
         }
+        self.pt.last_info = (d, self.seldepth, score, pv);
+        self.print_last_info();
+    }
+
+    /// Prints the last completed depth's info line (current nodes and time).
+    fn print_last_info(&self) {
+        let (d, seldepth, score, ref pv) = self.pt.last_info;
+        let el = self.elapsed_ms();
+        let nps = self.nodes * 1000 / el.max(1);
         println!(
             "info depth {} seldepth {} score {}{} nodes {} nps {} hashfull {} tbhits {} time {} pv{}",
             d,
-            self.seldepth,
+            seldepth,
             score_str(score),
             wdl_str(score, &self.root_pos),
             self.nodes,
