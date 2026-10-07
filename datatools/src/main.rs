@@ -68,6 +68,7 @@ fn main() {
         Some("stats") if args.len() >= 3 => cmd_stats(&args[2..]),
         Some("tbstats") if args.len() >= 4 => cmd_tbstats(&args[2], &args[3..]),
         Some("wdlstats") if args.len() >= 4 => cmd_wdlstats(&args[2], &args[3..]),
+        Some("piecestats") if args.len() >= 3 => cmd_piecestats(&args[2..]),
         Some("wdlfit") if args.len() >= 3 => cmd_wdlfit(&args[2]),
         Some("net") if args.len() >= 5 => cmd_net(&args[2], &args[3], &args[4], &args[5..]),
         Some("net-info") if args.len() >= 3 => cmd_net_info(&args[2..]),
@@ -193,6 +194,30 @@ fn cmd_stats(inputs: &[String]) -> Result<(), String> {
 /// 1/3/3/5/9 for P/N/B/R/Q over both sides (the definition viriformat's WDL
 /// filter uses); evals are bucketed to 5 cp and limited to +-2000; positions
 /// before ply 16, in check or unscored are skipped, as in training.
+/// Histogram of piece counts (all pieces, kings included) over the positions
+/// training uses (scored, not in check, ply >= 16), for piece-count filtering.
+fn cmd_piecestats(inputs: &[String]) -> Result<(), String> {
+    let mut counts = [0u64; 33];
+    for input in inputs {
+        let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
+        viri::for_each_position(&data, |pos, _, score, _| {
+            let ply = 2 * (pos.fullmove as i32 - 1) + (pos.stm != position::WHITE) as i32;
+            if score == viri::NO_SCORE || pos.checkers != 0 || ply < 16 {
+                return;
+            }
+            counts[(pos.occ().count_ones() as usize).min(32)] += 1;
+        })?;
+    }
+    let total: u64 = counts.iter().sum();
+    println!("pieces,positions,share");
+    for (n, &c) in counts.iter().enumerate() {
+        if c > 0 {
+            println!("{},{},{:.4}", n, c, c as f64 / total as f64);
+        }
+    }
+    Ok(())
+}
+
 fn cmd_wdlstats(out: &str, inputs: &[String]) -> Result<(), String> {
     const EVAL_MAX: i32 = 2000;
     const STEP: i32 = 5;

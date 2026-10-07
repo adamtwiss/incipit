@@ -312,19 +312,20 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     if arch.perm.is_empty() {
         return Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2));
     }
-    if pw {
-        return Err("--permute isn't supported for pairwise nets yet".into());
-    }
+    // The order covers the hidden layer's inputs per perspective: h neurons, or
+    // for pairwise nets h/2 pairs (neurons j and j + h/2 move together).
     let p = &arch.perm;
-    let mut seen = vec![false; h];
-    if p.len() != h || !p.iter().all(|&i| i < h && !std::mem::replace(&mut seen[i], true)) {
-        return Err(format!("--permute: need a permutation of 0..{}", h));
+    let u = if pw { h / 2 } else { h };
+    let mut seen = vec![false; u];
+    if p.len() != u || !p.iter().all(|&i| i < u && !std::mem::replace(&mut seen[i], true)) {
+        return Err(format!("--permute: need a permutation of 0..{}", u));
     }
-    let ftw: Vec<i16> = ftw.chunks_exact(h).flat_map(|row| p.iter().map(move |&i| row[i])).collect();
-    let ftb: Vec<i16> = p.iter().map(|&i| ftb[i]).collect();
+    let full: Vec<usize> = if pw { p.iter().copied().chain(p.iter().map(|&i| i + u)).collect() } else { p.clone() };
+    let ftw: Vec<i16> = ftw.chunks_exact(h).flat_map(|row| full.iter().map(move |&i| row[i])).collect();
+    let ftb: Vec<i16> = full.iter().map(|&i| ftb[i]).collect();
     let w1: Vec<i8> = w1
-        .chunks_exact(2 * h)
-        .flat_map(|row| p.iter().map(move |&i| row[i]).chain(p.iter().map(move |&i| row[h + i])))
+        .chunks_exact(2 * u)
+        .flat_map(|row| p.iter().map(move |&i| row[i]).chain(p.iter().map(move |&i| row[u + i])))
         .collect();
     Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2))
 }

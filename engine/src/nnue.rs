@@ -1691,10 +1691,9 @@ pub fn l1perm(path: &str, fens: &str, out: &str) -> Result<(), String> {
     unsafe { NET = Box::into_raw(Box::new(n)) };
     let n = net();
     let l1 = n.l1.as_ref().ok_or("network has no hidden layer")?;
-    if l1.pw {
-        return Err("not supported for pairwise nets yet".into());
-    }
-    let h = n.h;
+    // Hidden-layer inputs per perspective: h neurons (SCReLU) or h/2 products
+    // of neuron pairs j, j + h/2 (pairwise; the order then moves whole pairs).
+    let h = if l1.pw { n.h / 2 } else { n.h };
     let text = std::fs::read_to_string(fens).map_err(|e| format!("{}: {}", fens, e))?;
     let mut inputs: Vec<Vec<u8>> = Vec::new();
     let mut acc = Acc::new();
@@ -1703,8 +1702,13 @@ pub fn l1perm(path: &str, fens: &str, out: &str) -> Result<(), String> {
         let Some(pos) = crate::position::Position::from_fen(fen) else { continue };
         acc.refresh(&pos);
         let mut x = vec![0u8; 2 * h];
-        to_u8_scalar(acc.side(pos.stm, h), &mut x[..h], n.qa, l1.shift);
-        to_u8_scalar(acc.side(pos.stm ^ 1, h), &mut x[h..], n.qa, l1.shift);
+        if l1.pw {
+            to_u8_pw_scalar(acc.side(pos.stm, n.h), &mut x[..h], n.qa, l1.shift);
+            to_u8_pw_scalar(acc.side(pos.stm ^ 1, n.h), &mut x[h..], n.qa, l1.shift);
+        } else {
+            to_u8_scalar(acc.side(pos.stm, h), &mut x[..h], n.qa, l1.shift);
+            to_u8_scalar(acc.side(pos.stm ^ 1, h), &mut x[h..], n.qa, l1.shift);
+        }
         inputs.push(x);
     }
     if inputs.len() < 2 {
