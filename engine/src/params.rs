@@ -67,6 +67,9 @@ params! {
     TmBmc = "TmBmc", 20, 0, 80, 5;
     TmBmcDecay = "TmBmcDecay", 50, 0, 90, 8;
     TmCplx = "TmCplx", 10, 0, 50, 3;
+    TmForcedDepth = "TmForcedDepth", 8, 4, 16, 1;
+    TmForcedMargin = "TmForcedMargin", 150, 50, 400, 20;
+    TmForcedScale = "TmForcedScale", 50, 20, 100, 5;
     // Soft-target factors (x100). Node share f of the best move: (TmNodeBase/100 - f) x TmNodeMul/100.
     TmNodeBase = "TmNodeBase", 150, 110, 200, 5;
     TmNodeMul = "TmNodeMul", 135, 80, 200, 8;
@@ -127,6 +130,10 @@ params! {
     // Complexity: x (1 + TmCplx% per 100 cp between the root's static eval and
     // the search score, up to 400 cp).
     UseTmCplx = "UseTmCplx", 0, 0, 1, 0;
+    // Forced move: after a depth >= TmForcedDepth, search the root at half
+    // depth with the best move excluded, null window at score - TmForcedMargin;
+    // if every alternative fails low, x TmForcedScale% (move sooner).
+    UseTmForced = "UseTmForced", 0, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
 }
 

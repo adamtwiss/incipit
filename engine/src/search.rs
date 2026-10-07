@@ -752,7 +752,26 @@ impl Searcher {
                 let bmc_scale = if on(P::UseTmBmc) { 1.0 + tp(P::TmBmc) as f64 / 100.0 * self.pt.bmc_avg.min(4.0) } else { 1.0 };
                 let cplx = ((score - self.pt.root_static).abs().min(400)) as f64;
                 let cplx_scale = if on(P::UseTmCplx) && score.abs() < MATE_BOUND { 1.0 + tp(P::TmCplx) as f64 / 100.0 * cplx / 100.0 } else { 1.0 };
-                let target = soft as f64 * node_scale * stab_scale * ext * bmc_scale * cplx_scale;
+                // Forced move: do all alternatives fail low well below the best?
+                let mut forced_scale = 1.0;
+                if on(P::UseTmForced) && d >= tp(P::TmForcedDepth) && score.abs() < MATE_BOUND && best != 0 {
+                    let sb = score - tp(P::TmForcedMargin);
+                    // An exclusion search at the root rewrites the root's PV, best move,
+                    // node counts and change counter: keep them.
+                    let (rb, pv0, pvl, rnc, bmc) = (self.root_best, self.pv[0], self.pv_len[0], *self.root_node_counts, self.pt.bm_changes);
+                    self.stack[0].excluded = best;
+                    let v = self.negamax(root, sb - 1, sb, d / 2, 0, false);
+                    self.stack[0].excluded = 0;
+                    (self.root_best, self.pv[0], self.pv_len[0], *self.root_node_counts, self.pt.bm_changes) = (rb, pv0, pvl, rnc, bmc);
+                    if self.stopped {
+                        tm_stop = "hard";
+                        break;
+                    }
+                    if v < sb {
+                        forced_scale = tp(P::TmForcedScale) as f64 / 100.0;
+                    }
+                }
+                let target = soft as f64 * node_scale * stab_scale * ext * bmc_scale * cplx_scale * forced_scale;
                 self.pt.target_ms = target;
                 (tm_target, tm_frac, tm_done) = (target, frac, d);
                 let el = self.elapsed_ms() as f64;
