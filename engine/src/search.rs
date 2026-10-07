@@ -211,7 +211,6 @@ pub struct Searcher {
     hist: Box<[[[i16; 64]; 64]; 2]>,
     cont: Box<[[i16; 768]; 768]>,
     capt: Box<[[[i16; 7]; 64]; 12]>,
-    counter: Box<[[Move; 64]; 12]>,
     pv: Box<[[Move; MAX_PLY + 2]; MAX_PLY + 2]>,
     lmr: Box<[[i32; 64]; 64]>,
     root_node_counts: Box<[[u64; 64]; 64]>,
@@ -346,7 +345,6 @@ impl Searcher {
             cont: vec![[0i16; 768]; 768].into_boxed_slice().try_into().unwrap(),
             capt: Box::new([[[0; 7]; 64]; 12]),
             killers: Align64([[0; 2]; MAX_PLY + 4]),
-            counter: Box::new([[0; 64]; 12]),
             stack: Align64([Frame::default(); MAX_PLY + 8]),
             pv: Box::new([[0; MAX_PLY + 2]; MAX_PLY + 2]),
             pv_len: Align64([0; MAX_PLY + 2]),
@@ -406,7 +404,6 @@ impl Searcher {
             *r = [0; 768];
         }
         *self.capt = [[[0; 7]; 64]; 12];
-        *self.counter = [[0; 64]; 12];
         for c in self.corr.iter_mut() {
             c.iter_mut().for_each(|x| *x = 0);
         }
@@ -1036,14 +1033,7 @@ impl Searcher {
         let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
         let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
         let prev4 = if ply >= 4 { self.stack[ply - 4].cont_idx } else { 0 };
-        let counter_move = if ply >= 1 && self.stack[ply - 1].mv != 0 {
-            let pm = self.stack[ply - 1].mv;
-            self.counter[pos.board[mto(pm)] as usize][mto(pm)]
-        } else {
-            0
-        };
         let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
-        let counter_move = if on(P::UseCounterMove) { counter_move } else { 0 };
         let mut generated = false;
         if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
             list.push(tt_move);
@@ -1051,7 +1041,7 @@ impl Searcher {
         } else {
             generated = true;
             pos.gen_moves(&mut list, false);
-            self.score_moves(pos, &list.moves[..list.len], &mut scores[..list.len], 0, killers, counter_move, prev1, prev2, prev4);
+            self.score_moves(pos, &list.moves[..list.len], &mut scores[..list.len], 0, killers, prev1, prev2, prev4);
         }
         let mut best_score = -INF;
         let mut best_move = 0;
@@ -1082,7 +1072,7 @@ impl Searcher {
                     }
                 }
                 n = list.len;
-                self.score_moves(pos, &list.moves[i..n], &mut scores[i..n], tt_move, killers, counter_move, prev1, prev2, prev4);
+                self.score_moves(pos, &list.moves[i..n], &mut scores[i..n], tt_move, killers, prev1, prev2, prev4);
                 compacted = false;
                 if i >= n {
                     break;
@@ -1303,10 +1293,6 @@ impl Searcher {
                     self.killers[ply][1] = self.killers[ply][0];
                     self.killers[ply][0] = m;
                 }
-                if ply >= 1 && self.stack[ply - 1].mv != 0 {
-                    let pm = self.stack[ply - 1].mv;
-                    self.counter[pos.board[mto(pm)] as usize][mto(pm)] = m;
-                }
                 self.update_quiet(pos, m, bonus, prev1, prev2, prev4);
                 for k in 0..nq {
                     self.update_quiet(pos, quiets[k], -bonus, prev1, prev2, prev4);
@@ -1368,7 +1354,7 @@ impl Searcher {
 
     #[inline]
     #[allow(clippy::too_many_arguments)]
-    fn score_moves(&self, pos: &Position, moves: &[Move], scores: &mut [i32], tt_move: Move, killers: [Move; 2], counter_move: Move, prev1: usize, prev2: usize, prev4: usize) {
+    fn score_moves(&self, pos: &Position, moves: &[Move], scores: &mut [i32], tt_move: Move, killers: [Move; 2], prev1: usize, prev2: usize, prev4: usize) {
         let us = pos.stm;
         for i in 0..moves.len() {
             let m = moves[i];
@@ -1389,8 +1375,6 @@ impl Searcher {
                 (1 << 27) + 2
             } else if m == killers[1] {
                 (1 << 27) + 1
-            } else if m == counter_move {
-                1 << 27
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ci = pc * 64 + mto(m);

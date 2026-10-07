@@ -109,7 +109,6 @@ params! {
     // two) instead of multiplying: they mostly fire on the same moves.
     UseTmExtMax = "UseTmExtMax", 0, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
-    UseCounterMove = "UseCounterMove", 1, 0, 1, 0;
 }
 
 #[inline(always)]
