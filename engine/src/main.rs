@@ -7,6 +7,7 @@ mod position;
 mod search;
 mod tb;
 mod tt;
+mod uci;
 use position::*;
 use search::*;
 use std::io::BufRead;
@@ -437,10 +438,12 @@ fn main() {
                             }
                         }
                         "syzygypath" => {
-                            // The path keeps its case and may contain spaces.
-                            let path = toks[vi + 1..].join(" ");
-                            let n = tb::init(&path);
-                            println!("info string syzygy: {}-man tables loaded", n);
+                            // The value verbatim (case, spaces; GUI quotes removed), then a
+                            // PATH-style list (':' on Unix, ';' on Windows) of directories.
+                            let raw = uci::option_value(&cmd).unwrap_or_default();
+                            let dirs = uci::split_paths(if raw == "<empty>" { "" } else { &raw });
+                            let n = tb::init(&dirs.join(if cfg!(windows) { ";" } else { ":" }));
+                            println!("info string syzygy: {} director{}, {}-man tables loaded", dirs.len(), if dirs.len() == 1 { "y" } else { "ies" }, n);
                         }
                         "uci_showwdl" => {
                             search::SHOW_WDL.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed);
