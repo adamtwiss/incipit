@@ -756,7 +756,7 @@ impl Searcher {
                 self.pt.bmc_avg = self.pt.bmc_avg * tp(P::TmBmcDecay) as f64 / 100.0 + self.pt.bm_changes as f64;
                 self.pt.bm_changes = 0;
                 let bmc_scale = if on(P::UseTmBmc) { 1.0 + tp(P::TmBmc) as f64 / 100.0 * self.pt.bmc_avg.min(4.0) } else { 1.0 };
-                let cplx = ((score - self.pt.root_static).abs().min(400)) as f64;
+                let cplx = ((score - self.pt.root_static).abs() - tp(P::TmCplxBase)).clamp(0, 400) as f64;
                 let cplx_scale = if on(P::UseTmCplx) && score.abs() < MATE_BOUND { 1.0 + tp(P::TmCplx) as f64 / 100.0 * cplx / 100.0 } else { 1.0 };
                 // Forced move: do all alternatives fail low well below the best?
                 let mut forced_scale = 1.0;

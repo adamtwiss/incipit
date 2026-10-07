@@ -67,6 +67,7 @@ params! {
     TmBmc = "TmBmc", 20, 0, 80, 5;
     TmBmcDecay = "TmBmcDecay", 50, 0, 90, 8;
     TmCplx = "TmCplx", 10, 0, 50, 3;
+    TmCplxBase = "TmCplxBase", 100, 0, 300, 15;
     TmForcedDepth = "TmForcedDepth", 8, 4, 16, 1;
     TmForcedMargin = "TmForcedMargin", 150, 50, 400, 20;
     TmForcedScale = "TmForcedScale", 50, 20, 100, 5;
@@ -130,8 +131,8 @@ params! {
     // Instability: x (1 + TmBmc% x decayed count of root best-move changes,
     // including mid-depth ones; TmBmcDecay% kept per depth).
     UseTmBmc = "UseTmBmc", 0, 0, 1, 0;
-    // Complexity: x (1 + TmCplx% per 100 cp between the root's static eval and
-    // the search score, up to 400 cp).
+    // Complexity: x (1 + TmCplx% per 100 cp of the gap between the root's
+    // static eval and the search score beyond TmCplxBase cp, up to 400 cp).
     UseTmCplx = "UseTmCplx", 0, 0, 1, 0;
     // Forced move: after a depth >= TmForcedDepth, search the root at half
     // depth with the best move excluded, null window at score - TmForcedMargin;
