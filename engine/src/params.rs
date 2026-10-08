@@ -53,7 +53,7 @@ params! {
     CapLmrDiv = "CapLmrDiv", 3260, 2000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
-    TmHardMul = "TmHardMul", 5, 2, 8, 1;
+    TmHardMul = "TmHardMul", 7, 2, 8, 1;
     // On a ponder hit, move at once if we pondered at least PonderHitPct% of
     // the time we'd want for this move; otherwise keep thinking until pondering
     // + thinking reaches it (PonderCredit% of the pondering time counts).
@@ -63,7 +63,7 @@ params! {
     // PonderHitPct rule already prevents instant replies to short ponders).
     PonderMinPct = "PonderMinPct", 0, 0, 100, 5;
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
-    TmFailLow = "TmFailLow", 30, 0, 100, 8;
+    TmFailLow = "TmFailLow", 34, 0, 100, 8;
     TmBmc = "TmBmc", 20, 0, 80, 5;
     TmBmcDecay = "TmBmcDecay", 50, 0, 90, 8;
     TmCplx = "TmCplx", 10, 0, 50, 3;
@@ -75,15 +75,15 @@ params! {
     TmTrendDiv = "TmTrendDiv", 200, 80, 600, 30;
     TmNodeDepth = "TmNodeDepth", 8, 4, 14, 1;
     // Soft-target factors (x100). Node share f of the best move: (TmNodeBase/100 - f) x TmNodeMul/100.
-    TmNodeBase = "TmNodeBase", 150, 110, 200, 5;
-    TmNodeMul = "TmNodeMul", 135, 80, 200, 8;
+    TmNodeBase = "TmNodeBase", 140, 110, 200, 5;
+    TmNodeMul = "TmNodeMul", 119, 80, 200, 8;
     // Stability (depths with the same best move): 0..3 from TmStab0..3, then a
     // straight line from 100 at 4 to TmStabMin at 10 and beyond.
     TmStab0 = "TmStab0", 220, 120, 350, 15;
     TmStab1 = "TmStab1", 160, 100, 250, 10;
     TmStab2 = "TmStab2", 130, 90, 200, 8;
-    TmStab3 = "TmStab3", 110, 80, 160, 6;
-    TmStabMin = "TmStabMin", 75, 40, 100, 5;
+    TmStab3 = "TmStab3", 100, 80, 160, 6;
+    TmStabMin = "TmStabMin", 71, 40, 100, 5;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
