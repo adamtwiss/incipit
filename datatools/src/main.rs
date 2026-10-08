@@ -38,6 +38,8 @@ usage:
   datatools wdlstats <out.csv> <in.vf> ...    win/draw/loss counts by (material, eval), side to move,
                                               for fitting a WDL model (from ply 16, not in check, scored)
   datatools wdlfit <stats.csv>                 fit the WDL model to wdlstats output (maximum likelihood)
+  datatools matstats <out.csv> <in.vf> ...    stored score and result by material lead, side to move,
+                                              to check labels in decided positions (quiet moves only)
   datatools net <source> <in> <out_dir> [options]
                                               convert a network to Incipit's format,
                                               writing <out_dir>/net-XXXXXXXX.nnue
@@ -69,6 +71,7 @@ fn main() {
         Some("tbstats") if args.len() >= 4 => cmd_tbstats(&args[2], &args[3..]),
         Some("wdlstats") if args.len() >= 4 => cmd_wdlstats(&args[2], &args[3..]),
         Some("piecestats") if args.len() >= 3 => cmd_piecestats(&args[2..]),
+        Some("matstats") if args.len() >= 4 => cmd_matstats(&args[2], &args[3..]),
         Some("wdlfit") if args.len() >= 3 => cmd_wdlfit(&args[2]),
         Some("net") if args.len() >= 5 => cmd_net(&args[2], &args[3], &args[4], &args[5..]),
         Some("net-info") if args.len() >= 3 => cmd_net_info(&args[2..]),
@@ -215,6 +218,51 @@ fn cmd_piecestats(inputs: &[String]) -> Result<(), String> {
             println!("{},{},{:.4}", n, c, c as f64 / total as f64);
         }
     }
+    Ok(())
+}
+
+/// Score labels against material: counts of (piece lead, pawn lead, stored
+/// score in 50 cp bins clamped to +-5000, result), side to move, over the
+/// positions training uses (scored, not in check, ply >= 16, quiet move).
+/// Piece lead counts minor pieces 3, rooks 5, queens 9. Shows whether labels
+/// keep rising with the lead in decided positions, and how far they reach.
+fn cmd_matstats(out: &str, inputs: &[String]) -> Result<(), String> {
+    use position::{BISHOP, KNIGHT, PAWN, QUEEN, ROOK};
+    use std::collections::BTreeMap;
+    const STEP: i32 = 50;
+    const SCORE_MAX: i32 = 5000;
+    let mut counts: BTreeMap<(i32, i32, i32, u8), u64> = BTreeMap::new();
+    let mut used = 0u64;
+    for input in inputs {
+        let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
+        viri::for_each_position(&data, |pos, m, score, wdl| {
+            let ply = 2 * (pos.fullmove as i32 - 1) + (pos.stm != position::WHITE) as i32;
+            if score == viri::NO_SCORE || pos.checkers != 0 || ply < 16 || position::is_noisy(m) {
+                return;
+            }
+            let white = pos.stm == position::WHITE;
+            let s = if white { score as i32 } else { -(score as i32) };
+            // viri WDL codes are white-relative: 0 black win, 1 draw, 2 white win.
+            let r = if white { wdl } else { 2 - wdl };
+            let side = |c: usize| -> (i32, i32) {
+                let pieces = [(KNIGHT, 3), (BISHOP, 3), (ROOK, 5), (QUEEN, 9)]
+                    .iter()
+                    .map(|&(pt, v)| v * (pos.pieces[pt] & pos.colors[c]).count_ones() as i32)
+                    .sum();
+                (pieces, (pos.pieces[PAWN] & pos.colors[c]).count_ones() as i32)
+            };
+            let (us, them) = (side(pos.stm), side(pos.stm ^ 1));
+            let b = (s.clamp(-SCORE_MAX, SCORE_MAX) as f64 / STEP as f64).round() as i32 * STEP;
+            *counts.entry((us.0 - them.0, us.1 - them.1, b, r)).or_default() += 1;
+            used += 1;
+        })?;
+    }
+    let mut w = String::from("piece_lead,pawn_lead,score,result,count\n");
+    for ((a, p, b, r), n) in counts {
+        w.push_str(&format!("{},{},{},{},{}\n", a, p, b, r, n));
+    }
+    std::fs::write(out, w).map_err(|e| format!("{}: {}", out, e))?;
+    println!("{} positions counted -> {}", used, out);
     Ok(())
 }
 
