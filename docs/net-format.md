@@ -100,6 +100,22 @@ entry per LAYER, in order:
 | 4 | Input shift (u32): for an integer layer fed by the SCReLU feature transformer, its inputs are `clamp(a, 0, QA)² >> shift`, as u8 (must fit 0..127) |
 | 4 | Weight scale (i32): integer weights are real weights times this; `0` for float layers |
 
+**`0x0008` SKIP** (optional feature, but a required field: a reader that
+doesn't support it must reject the net). A linear layer from the first hidden
+layer's inputs straight to the output, added to the network output.
+
+| Size | Field |
+|---|---|
+| 4 | Inputs (u32): the same as the first hidden layer's |
+| 1 | Weight type (`2`, i16) |
+| 1 | Bias type (`4`, f32) |
+| 1 | Flags: bit 0 = per output bucket |
+| 1 | Reserved, 0 |
+| 4 | Weight scale (i32): the i16 weights are real weights times this |
+
+Nets without this field have no skip, so adding it changed nothing for
+existing nets (the format version stays 1).
+
 **`0x8001` DESCRIPTION** (optional). UTF-8 text: the training run, data and
 settings that produced the network.
 
@@ -117,6 +133,8 @@ Directly after the header, with no padding between blocks:
 2. Feature transformer biases: `[hidden]`.
 3. For each LAYER: weights `[output bucket][output][input]` (or `[output][input]`
    if not bucketed), then biases `[output bucket][output]` (or `[output]`).
+4. With SKIP: weights `[output bucket][input]` (i16), then biases
+   `[output bucket]` (f32).
 
 The file must end exactly after the last block.
 
@@ -157,3 +175,10 @@ then `N -> 1`, f32; both per output bucket; the engine supports N = 16):
 Weights for these layers are stored `[bucket][output][input]` as in the
 general rule: i8 for the hidden layer, then its f32 biases, the final layer's
 f32 weights `[bucket][N]` and its f32 biases `[bucket]`.
+
+With a skip, the network output before `· scale` also gets
+`Σ x · ws[bucket] / (S · Ws) + bs[bucket]`, with `x` the same u8 inputs as the
+first hidden layer (side to move first), `S` as above and `Ws` the skip's
+weight scale. The sum is an integer: the converter picks a power-of-two `Ws`
+(at most 2^14) so that it can't overflow i32. The engine supports a skip on
+pairwise nets with a second hidden layer of 16 or 32 neurons.

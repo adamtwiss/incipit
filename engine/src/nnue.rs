@@ -2,7 +2,8 @@
 // docs/net-format.md): (768 x king buckets -> H) x 2 perspectives, with
 // optional horizontal mirroring, a SCReLU or CReLU activation, and a
 // material-count output-bucketed output layer, or one hidden layer of
-// L1_SIZE neurons (int8) before it.
+// L1_SIZE neurons (int8) before it, optionally with a linear skip from the
+// hidden layer's inputs to the output.
 use crate::attacks::Bits;
 use crate::position::*;
 
@@ -17,6 +18,7 @@ const TAG_OUTPUT_BUCKETS: u16 = 0x0004;
 const TAG_LAYER: u16 = 0x0005;
 const TAG_QUANT: u16 = 0x0006;
 const TAG_LAYER_QUANT: u16 = 0x0007;
+const TAG_SKIP: u16 = 0x0008;
 const OPTIONAL: u16 = 0x8000;
 const INPUT_PSQ768: u16 = 1;
 const ACT_NONE: u8 = 0;
@@ -80,6 +82,12 @@ struct Hidden {
     dual: bool, // the second hidden layer sees SCReLU and CReLU of the first (2L inputs)
     bm: Vec<[f32; L2_MAX]>,
     wo: Vec<[f32; L2_MAX]>,
+    // Optional linear skip (pairwise nets): the u8 inputs times i16 weights
+    // [bucket][input], scaled by skip_k, plus a float bias, added to the
+    // output. Empty when the net has none.
+    ws: Aligned,
+    bs: Vec<f32>,
+    skip_k: f32, // 1 / (in_scale * the skip's weight scale)
 }
 
 /// A 64-byte-aligned i8 buffer.
@@ -196,6 +204,7 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     let mut layers = Vec::new();
     let mut quant = None;
     let mut layer_quant: Vec<(u32, i32)> = Vec::new();
+    let mut skip = None;
     let mut o = 16;
     while o + 8 <= header {
         let (tag, len) = (u16_at(o), u32_at(o + 4) as usize);
@@ -238,6 +247,10 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
             TAG_LAYER_QUANT => {
                 layer_quant = (0..len / 8).map(|i| (p32(8 * i), p32(8 * i + 4) as i32)).collect();
             }
+            TAG_SKIP => {
+                need(12)?;
+                skip = Some((p32(0) as usize, p[4], p[5], p[6], p32(8) as i32));
+            }
             t if t & OPTIONAL != 0 => {}
             t => return Err(format!("unknown required field 0x{:04x}", t)),
         }
@@ -273,7 +286,10 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         return Err("a pairwise feature transformer needs a hidden layer".into());
     }
     if layers.len() == 2 || layers.len() == 3 {
-        return load_hidden(d, header, h, nkb, mirror, king_bucket, act, buckets, qa, qb, scale, &layers, &layer_quant);
+        return load_hidden(d, header, h, nkb, mirror, king_bucket, act, buckets, qa, qb, scale, &layers, &layer_quant, skip);
+    }
+    if skip.is_some() {
+        return Err("a skip needs a hidden layer".into());
     }
     let &[(lin, lout, lact, lwt, lbt, lflags)] = layers.as_slice() else {
         return Err(format!("{} layers after the feature transformer; one to three are supported", layers.len()));
@@ -337,6 +353,7 @@ fn load_hidden(
     scale: i32,
     layers: &[(usize, usize, u8, u8, u8, u8)],
     layer_quant: &[(u32, i32)],
+    skip: Option<(usize, u8, u8, u8, i32)>,
 ) -> Result<Network, String> {
     let (l1, l2) = (layers[0], layers[layers.len() - 1]);
     // A middle layer: the second hidden layer.
@@ -379,8 +396,18 @@ fn load_hidden(
     if shift > 30 || w_scale <= 0 || ((qa as i64 * qa as i64) >> shift) > 127 {
         return Err(format!("hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs", shift, w_scale));
     }
+    if let Some(sk) = skip {
+        // Only the evaluators with a skip arm (see evaluate) accept one.
+        if sk.0 != inl || (sk.1, sk.2, sk.3 & 1) != (TYPE_I16, TYPE_F32, 1) || sk.4 <= 0 {
+            return Err(format!("unsupported skip {:?} (need {} -> 1, i16 weights, f32 biases, per bucket)", sk, inl));
+        }
+        if !pw || dual || !(n2 == 16 || n2 == 32) {
+            return Err("a skip is only supported on pairwise nets with a 16- or 32-neuron second hidden layer".into());
+        }
+    }
+    let n_skip = if skip.is_some() { buckets * (2 * inl + 4) } else { 0 };
     let n_ftw = nkb * 768 * h;
-    let expect = 2 * (n_ftw + h) + nb1 * ln * inl + 4 * (nb1 * ln + buckets * n2 * (in2 + 1) + buckets * (last_in + 1));
+    let expect = 2 * (n_ftw + h) + nb1 * ln * inl + 4 * (nb1 * ln + buckets * n2 * (in2 + 1) + buckets * (last_in + 1)) + n_skip;
     if d.len() - header != expect {
         return Err(format!("weights are {} bytes, but the header describes {}", d.len() - header, expect));
     }
@@ -444,6 +471,15 @@ fn load_hidden(
         w2 = rows(f32s(buckets * ln));
     }
     let b2 = f32s(buckets);
+    let (ws, bs, skip_k) = if let Some(sk) = skip {
+        // The skip block ends the file: i16 weights, then f32 biases.
+        let (so, n) = (d.len() - n_skip, buckets * inl);
+        let ws = Aligned::from(d[so..so + 2 * n].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])));
+        let bs = d[so + 2 * n..].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        (ws, bs, 1.0 / ((qa as f32 * qa as f32) / (1u64 << shift) as f32 * sk.4 as f32))
+    } else {
+        (Aligned::from(std::iter::empty()), Vec::new(), 0.0)
+    };
     Ok(Network {
         h,
         mirror,
@@ -475,6 +511,9 @@ fn load_hidden(
             dual,
             bm,
             wo,
+            ws,
+            bs,
+            skip_k,
         }),
     })
 }
@@ -724,6 +763,8 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
     let n = net();
     match &n.l1 {
         None => with_h!(n.h, eval_n(n, acc, pos)),
+        Some(l1) if !l1.bs.is_empty() && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32s(n, l1, acc, pos)),
+        Some(l1) if !l1.bs.is_empty() => with_h!(n.h, eval_hidden_pw16x16s(n, l1, acc, pos)),
         Some(l1) if l1.pw && l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32d(n, l1, acc, pos)),
         Some(l1) if l1.pw && l1.dual => with_h!(n.h, eval_hidden_pw16x16d(n, l1, acc, pos)),
         Some(l1) if l1.pw && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32(n, l1, acc, pos)),
@@ -743,61 +784,72 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
 /// and the float output layer.
 #[inline(never)]
 fn eval_hidden16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 0, false, false>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 0, false, false, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden8<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 8, 0, false, false>(n, l1, acc, pos)
+    eval_hidden::<H, 8, 0, false, false, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, false, true>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 16, false, true, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, false, true>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 32, false, true, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden_pw16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 0, true, false>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 0, true, false, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden_pw16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, true, false>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 16, true, false, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden_pw16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, true, false>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 32, true, false, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden_pw16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, true, true>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 16, true, true, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden_pw16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, true, true>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 32, true, true, false>(n, l1, acc, pos)
+}
+
+/// Pairwise nets with a linear skip (second hidden layer of 16 or 32).
+#[inline(never)]
+fn eval_hidden_pw16x16s<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 16, true, false, true>(n, l1, acc, pos)
+}
+
+#[inline(never)]
+fn eval_hidden_pw16x32s<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+    eval_hidden::<H, 16, 32, true, false, true>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, false, false>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 16, false, false, false>(n, l1, acc, pos)
 }
 
 #[inline(never)]
 fn eval_hidden16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, false, false>(n, l1, acc, pos)
+    eval_hidden::<H, 16, 32, false, false, false>(n, l1, acc, pos)
 }
 
 #[inline(always)]
-fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, const DUAL: bool>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, const DUAL: bool, const SKIP: bool>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
     let h = hidden::<H>(n);
     // Hidden-layer inputs: h per perspective (SCReLU) or h/2 (pairwise).
     let inl = if PW { h } else { 2 * h };
@@ -836,7 +888,12 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, 
     // The float layers, 8 lanes at a time with AVX2 (every build has it; the
     // x86-64-v3 baseline). Separate multiply and add (no FMA) and a fixed
     // reduction order: every ISA gives the same result.
-    let out = unsafe { hidden_float::<L, L2, DUAL>(l1, &z, k, b1i, bucket) };
+    let mut out = unsafe { hidden_float::<L, L2, DUAL>(l1, &z, k, b1i, bucket) };
+    if SKIP {
+        // Integer dot product, so every ISA gives the same value.
+        let s = unsafe { skip_dot(&x.0[..inl], &l1.ws[bucket * inl..(bucket + 1) * inl]) };
+        out += s as f32 * l1.skip_k + l1.bs[bucket];
+    }
     (out * n.scale as f32) as i32
 }
 
@@ -1548,6 +1605,50 @@ unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
     hsum(_mm256_add_epi32(s0, s1))
 }
 
+/// The skip's dot product: u8 inputs (at most 127) times i16 weights, summed
+/// in i32 (the converter picks the weight scale so the sum can't overflow).
+pub fn skip_dot_scalar(x: &[u8], w: &[i16]) -> i32 {
+    x.iter().zip(w).fold(0i32, |s, (&a, &b)| s.wrapping_add(a as i32 * b as i32))
+}
+
+/// AVX-512: 32 inputs widened to i16 per step, madd into 16 i32 lanes.
+#[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
+#[inline(always)]
+unsafe fn skip_dot(x: &[u8], w: &[i16]) -> i32 {
+    use std::arch::x86_64::*;
+    let mut s = _mm512_setzero_si512();
+    for i in (0..x.len()).step_by(32) {
+        let a = _mm512_cvtepu8_epi16(_mm256_loadu_si256(x.as_ptr().add(i) as *const __m256i));
+        let b = _mm512_loadu_si512(w.as_ptr().add(i) as *const __m512i);
+        s = _mm512_add_epi32(s, _mm512_madd_epi16(a, b));
+    }
+    _mm512_reduce_add_epi32(s)
+}
+
+/// AVX2: 16 inputs widened to i16 per step, madd into 8 i32 lanes.
+#[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
+#[inline(always)]
+unsafe fn skip_dot(x: &[u8], w: &[i16]) -> i32 {
+    use std::arch::x86_64::*;
+    let mut s0 = _mm256_setzero_si256();
+    let mut s1 = _mm256_setzero_si256();
+    for i in (0..x.len()).step_by(32) {
+        let a0 = _mm256_cvtepu8_epi16(_mm_loadu_si128(x.as_ptr().add(i) as *const __m128i));
+        let a1 = _mm256_cvtepu8_epi16(_mm_loadu_si128(x.as_ptr().add(i + 16) as *const __m128i));
+        let b0 = _mm256_loadu_si256(w.as_ptr().add(i) as *const __m256i);
+        let b1 = _mm256_loadu_si256(w.as_ptr().add(i + 16) as *const __m256i);
+        s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(a0, b0));
+        s1 = _mm256_add_epi32(s1, _mm256_madd_epi16(a1, b1));
+    }
+    hsum(_mm256_add_epi32(s0, s1))
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn skip_dot(x: &[u8], w: &[i16]) -> i32 {
+    skip_dot_scalar(x, w)
+}
+
 /// Checks the SIMD hidden-layer kernels against the scalar versions on random
 /// accumulators and weights. Returns the number of mismatches.
 pub fn l1check(trials: usize) -> usize {
@@ -1603,6 +1704,13 @@ pub fn l1check(trials: usize) -> usize {
                 bad += 1;
             }
             if l1_matmul::<8>(&x1, &w[..8 * 2 * h]) != l1_matmul_scalar(&x1, &w[..8 * 2 * h], 8) {
+                bad += 1;
+            }
+            // Skip dot product: u8 inputs up to 127, full-range i16 weights
+            // (the sums wrap the same way in both).
+            let sx: Vec<u8> = (0..2 * h).map(|_| (rnd() % 128) as u8).collect();
+            let sw: Vec<i16> = (0..2 * h).map(|_| rnd() as i16).collect();
+            if unsafe { skip_dot(&sx, &sw) } != skip_dot_scalar(&sx, &sw) {
                 bad += 1;
             }
         }
@@ -1841,7 +1949,7 @@ mod tests {
     /// The SIMD `dot` matches the scalar reference, including where the
     /// 16-bit products and 32-bit sums wrap.
     /// The hidden-layer kernels (u8 conversion, fused conversion + non-zero
-    /// scan, pairwise conversion, sparse int8 products) against their scalar
+    /// scan, pairwise conversion, sparse int8 products, skip dot) against their scalar
     /// versions on random inputs.
     #[test]
     fn hidden_kernels_match_scalar() {

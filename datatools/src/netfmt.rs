@@ -17,6 +17,7 @@ pub const TAG_OUTPUT_BUCKETS: u16 = 0x0004;
 pub const TAG_LAYER: u16 = 0x0005;
 pub const TAG_QUANT: u16 = 0x0006;
 pub const TAG_LAYER_QUANT: u16 = 0x0007;
+pub const TAG_SKIP: u16 = 0x0008;
 pub const TAG_DESCRIPTION: u16 = 0x8001;
 
 pub const INPUT_PSQ768: u16 = 1;
@@ -60,6 +61,9 @@ pub struct Arch {
     pub l1_shift: u32,
     /// Neurons in a second hidden layer (f32, SCReLU, per bucket; 0 = none).
     pub l2: usize,
+    /// A linear skip from the hidden layer's inputs straight to the output
+    /// (f32 in the source, after the final layer; i16 in the file).
+    pub skip: bool,
 }
 
 impl Arch {
@@ -91,7 +95,7 @@ pub fn write(arch: &Arch, ftw: &[i16], ftb: &[i16], ow: &[i16], ob: &[i32]) -> V
     for v in ob {
         weights.extend_from_slice(&v.to_le_bytes());
     }
-    assemble(arch, ftw, ftb, &[p], None, &weights)
+    assemble(arch, ftw, ftb, &[p], None, None, &weights)
 }
 
 /// Input shift for the hidden layer's u8 inputs: the smallest s with
@@ -107,6 +111,8 @@ pub fn hidden_shift(qa: i32) -> u32 {
 /// (or [out]); `w2` is [bucket][out]; `b2` is [bucket].
 /// With a second hidden layer (`arch.l2` > 0), `mid` holds its weights
 /// [bucket][l2][l1] and biases [bucket][l2], and `w2` is [bucket][l2].
+/// With a skip (`arch.skip`), `skip` holds its real weights [bucket][inputs]
+/// and biases [bucket]; the weights are stored as i16 at skip_scale's scale.
 #[allow(clippy::too_many_arguments)]
 pub fn write_hidden(
     arch: &Arch,
@@ -117,7 +123,8 @@ pub fn write_hidden(
     mid: Option<(&[f32], &[f32])>,
     w2: &[f32],
     b2: &[f32],
-) -> Vec<u8> {
+    skip: Option<(&[f32], &[f32])>,
+) -> Result<Vec<u8>, String> {
     let (h, nb, l1, l2) = (arch.hidden, arch.output_buckets, arch.l1, arch.l2);
     let nb1 = if arch.l1_shared { 1 } else { nb };
     let last = if l2 > 0 { l2 } else { l1 };
@@ -128,6 +135,7 @@ pub fn write_hidden(
     assert_eq!(w2.len(), nb * last);
     assert_eq!(b2.len(), nb);
     assert_eq!(mid.is_some(), l2 > 0);
+    assert_eq!(skip.is_some(), arch.skip);
     let mut p1 = (inl as u32).to_le_bytes().to_vec();
     p1.extend_from_slice(&(l1 as u32).to_le_bytes());
     p1.extend_from_slice(&[ACT_SCRELU, TYPE_I8, TYPE_F32, !arch.l1_shared as u8]);
@@ -148,18 +156,47 @@ pub fn write_hidden(
     for v in b1.iter().chain(wm).chain(bm).chain(w2).chain(b2) {
         weights.extend_from_slice(&v.to_le_bytes());
     }
-    if l2 > 0 {
+    let mut ps = Vec::new();
+    if let Some((ws, bs)) = skip {
+        assert_eq!(ws.len(), nb * inl);
+        assert_eq!(bs.len(), nb);
+        let sc = skip_scale(ws, inl)?;
+        ps = (inl as u32).to_le_bytes().to_vec();
+        ps.extend_from_slice(&[TYPE_I16, TYPE_F32, 1, 0]);
+        ps.extend_from_slice(&sc.to_le_bytes());
+        for &v in ws {
+            weights.extend_from_slice(&((v * sc as f32).round() as i16).to_le_bytes());
+        }
+        for v in bs {
+            weights.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    let skip_field = arch.skip.then_some(&ps[..]);
+    Ok(if l2 > 0 {
         for v in [0i32, 0] {
             lq.extend_from_slice(&v.to_le_bytes());
         }
-        assemble(arch, ftw, ftb, &[p1, pm, p2], Some(&lq), &weights)
+        assemble(arch, ftw, ftb, &[p1, pm, p2], Some(&lq), skip_field, &weights)
     } else {
-        assemble(arch, ftw, ftb, &[p1, p2], Some(&lq), &weights)
-    }
+        assemble(arch, ftw, ftb, &[p1, p2], Some(&lq), skip_field, &weights)
+    })
+}
+
+/// Scale for the skip's i16 weights: the largest power of two up to 2^14 at
+/// which every weight fits i16 and no bucket's dot product with u8 inputs
+/// (at most 127) can overflow i32.
+fn skip_scale(ws: &[f32], inl: usize) -> Result<i32, String> {
+    let max = ws.iter().fold(0f32, |m, v| m.max(v.abs())) as f64;
+    let sum = ws.chunks_exact(inl).map(|r| r.iter().map(|v| v.abs() as f64).sum::<f64>()).fold(0.0, f64::max);
+    (0..=14)
+        .rev()
+        .map(|e| 1i32 << e)
+        .find(|&s| max * s as f64 <= 32767.0 && sum * s as f64 * 127.0 < i32::MAX as f64)
+        .ok_or_else(|| format!("skip weights too large to quantise (max |w| {:.1})", max))
 }
 
 /// Header plus FT weights, then the given layer records and their weights.
-fn assemble(arch: &Arch, ftw: &[i16], ftb: &[i16], layers: &[Vec<u8>], layer_quant: Option<&[u8]>, weights: &[u8]) -> Vec<u8> {
+fn assemble(arch: &Arch, ftw: &[i16], ftb: &[i16], layers: &[Vec<u8>], layer_quant: Option<&[u8]>, skip: Option<&[u8]>, weights: &[u8]) -> Vec<u8> {
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
     assert_eq!(ftw.len(), nkb * 768 * h);
     assert_eq!(ftb.len(), h);
@@ -187,6 +224,9 @@ fn assemble(arch: &Arch, ftw: &[i16], ftb: &[i16], layers: &[Vec<u8>], layer_qua
     }
     if let Some(lq) = layer_quant {
         field(&mut fields, TAG_LAYER_QUANT, lq);
+    }
+    if let Some(ps) = skip {
+        field(&mut fields, TAG_SKIP, ps);
     }
 
     let mut p = Vec::new();
@@ -268,7 +308,9 @@ pub fn convert(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, String
 
 /// Bullet's quantised.bin for a net with one hidden layer: [l0w i16][l0b i16]
 /// [l1w i8, [bucket * l1][2h]][l1b f32][l2w f32, [bucket][l1]][l2b f32], padded
-/// to 64 bytes.
+/// to 64 bytes (with a second hidden layer, its weights and biases come before
+/// the final layer; with a skip, [lskipw f32, [bucket][inputs]][lskipb f32]
+/// come last).
 fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, String> {
     if source != "bullet" {
         return Err("--l1 needs a bullet source".into());
@@ -284,7 +326,8 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     }
     let inl = if pw { h } else { 2 * h };
     let in2 = if arch.l1_dual { 2 * l1 } else { l1 };
-    let expect = 2 * (n_ftw + h) + nb1 * l1 * inl + 4 * (nb1 * l1 + nb * l2 * (in2 + 1) + nb * last + nb);
+    let n_skip = if arch.skip { nb * (inl + 1) } else { 0 };
+    let expect = 2 * (n_ftw + h) + nb1 * l1 * inl + 4 * (nb1 * l1 + nb * l2 * (in2 + 1) + nb * last + nb + n_skip);
     let ok = data.len() == expect.div_ceil(64) * 64
         && (data[expect..].iter().all(|&b| b == 0) || data[expect..].iter().zip(b"bullet".iter().cycle()).all(|(a, b)| a == b));
     if !ok {
@@ -308,9 +351,11 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let bm = f32s(take(4 * nb * l2));
     let w2 = f32s(take(4 * nb * last));
     let b2 = f32s(take(4 * nb));
+    let ws = f32s(take(4 * nb * inl * arch.skip as usize));
+    let bs = f32s(take(4 * nb * arch.skip as usize));
     let mid = (l2 > 0).then_some((&wm[..], &bm[..]));
     if arch.perm.is_empty() {
-        return Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2));
+        return write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2, arch.skip.then_some((&ws[..], &bs[..])));
     }
     // The order covers the hidden layer's inputs per perspective: h neurons, or
     // for pairwise nets h/2 pairs (neurons j and j + h/2 move together).
@@ -327,7 +372,12 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
         .chunks_exact(2 * u)
         .flat_map(|row| p.iter().map(move |&i| row[i]).chain(p.iter().map(move |&i| row[u + i])))
         .collect();
-    Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2))
+    // The skip reads the same inputs, so its rows move the same way.
+    let ws: Vec<f32> = ws
+        .chunks_exact(2 * u)
+        .flat_map(|row| p.iter().map(move |&i| row[i]).chain(p.iter().map(move |&i| row[u + i])))
+        .collect();
+    write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2, arch.skip.then_some((&ws[..], &bs[..])))
 }
 
 /// Describes a network file's header (and checks its size), for `net-info`.
@@ -369,6 +419,9 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
             TAG_LAYER_QUANT => {
                 let per: Vec<String> = (0..len / 8).map(|i| format!("(input shift {}, weight scale {})", p32(8 * i), p32(8 * i + 4) as i32)).collect();
                 let _ = writeln!(s, "layer quantisation: {}", per.join(", "));
+            }
+            TAG_SKIP => {
+                let _ = writeln!(s, "skip: {} -> 1, weight type {}, bias type {}, flags {}, weight scale {}", p32(0), p[4], p[5], p[6], p32(8) as i32);
             }
             TAG_DESCRIPTION => {
                 let _ = writeln!(s, "description: {}", String::from_utf8_lossy(p));
