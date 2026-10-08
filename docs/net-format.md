@@ -100,6 +100,16 @@ entry per LAYER, in order:
 | 4 | Input shift (u32): for an integer layer fed by the SCReLU feature transformer, its inputs are `clamp(a, 0, QA)² >> shift`, as u8 (must fit 0..127) |
 | 4 | Weight scale (i32): integer weights are real weights times this; `0` for float layers |
 
+**`0x0009` LINEAR_PSQ** (present only on nets that have the path; a required
+tag, so an engine that doesn't know it rejects the net). A linear path from the input features straight to the output, per output bucket (at
+most 8 buckets).
+
+| Size | Field |
+|---|---|
+| 1 | Weight type (`2` = i16) |
+| 3 | Reserved, 0 |
+| 4 | Weight scale (i32): stored weights are real weights times this |
+
 **`0x8001` DESCRIPTION** (optional). UTF-8 text: the training run, data and
 settings that produced the network.
 
@@ -117,6 +127,9 @@ Directly after the header, with no padding between blocks:
 2. Feature transformer biases: `[hidden]`.
 3. For each LAYER: weights `[output bucket][output][input]` (or `[output][input]`
    if not bucketed), then biases `[output bucket][output]` (or `[output]`).
+
+4. With LINEAR_PSQ: its weights `[king bucket][input feature][output bucket]`
+   (the same feature index as the feature transformer's rows).
 
 The file must end exactly after the last block.
 
@@ -157,3 +170,10 @@ then `N -> 1`, f32; both per output bucket; the engine supports N = 16):
 Weights for these layers are stored `[bucket][output][input]` as in the
 general rule: i8 for the hidden layer, then its f32 biases, the final layer's
 f32 weights `[bucket][N]` and its f32 biases `[bucket]`.
+
+With LINEAR_PSQ, each perspective also sums its features' linear weights,
+`psq[p][b] = Σ wlin[feature][b]` (integer, no bias), and the eval adds
+`(psq[stm][bucket] − psq[ntm][bucket]) / weight scale` to the network output
+before it is multiplied by the eval scale. Being linear in the inputs, it gives
+the eval a material and piece-square term that the hidden layers can't
+saturate away, and an engine can update it incrementally with the accumulator.

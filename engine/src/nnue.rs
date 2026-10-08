@@ -17,6 +17,7 @@ const TAG_OUTPUT_BUCKETS: u16 = 0x0004;
 const TAG_LAYER: u16 = 0x0005;
 const TAG_QUANT: u16 = 0x0006;
 const TAG_LAYER_QUANT: u16 = 0x0007;
+const TAG_LINEAR_PSQ: u16 = 0x0009;
 const OPTIONAL: u16 = 0x8000;
 const INPUT_PSQ768: u16 = 1;
 const ACT_NONE: u8 = 0;
@@ -35,6 +36,8 @@ pub const L1_SIZE: usize = 16;
 /// Most neurons in the optional second hidden layer.
 pub const L2_MAX: usize = 32;
 const OUTPUT_MATERIAL: u8 = 1;
+/// Output buckets the linear piece-square path supports (one ymm of i32).
+pub const PSQ_B: usize = 8;
 
 // Path chosen by build.rs (EVALFILE, or the net named in net.txt).
 static NET_BYTES: &[u8] = include_bytes!(env!("INCIPIT_NET"));
@@ -55,6 +58,11 @@ pub struct Network {
     ow: Aligned,  // [output bucket][2h], side to move first
     ob: Vec<i32>,  // [output bucket]
     l1: Option<Hidden>,
+    // Linear piece-square path (empty = none): per FT feature, one weight per
+    // output bucket, summed per perspective in Acc::p; the eval adds
+    // (p[stm] - p[ntm])[bucket] * psq_k to the output before scaling.
+    psq: Vec<[i32; PSQ_B]>, // [king bucket * 768 + feature]
+    psq_k: f32,             // 1 / weight scale (0 without the path)
 }
 
 /// One hidden layer between the feature transformer and the output: the FT
@@ -159,6 +167,9 @@ impl Drop for Aligned {
 #[derive(Clone, Copy)]
 #[repr(C, align(64))]
 pub struct Acc {
+    /// Linear piece-square sums per perspective (zero without the path).
+    /// First, so the cache line sits next to the used part of v.
+    pub p: [[i32; PSQ_B]; 2],
     pub v: [i16; 2 * MAX_H],
 }
 
@@ -196,6 +207,7 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     let mut layers = Vec::new();
     let mut quant = None;
     let mut layer_quant: Vec<(u32, i32)> = Vec::new();
+    let mut lpsq = None;
     let mut o = 16;
     while o + 8 <= header {
         let (tag, len) = (u16_at(o), u32_at(o + 4) as usize);
@@ -238,6 +250,10 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
             TAG_LAYER_QUANT => {
                 layer_quant = (0..len / 8).map(|i| (p32(8 * i), p32(8 * i + 4) as i32)).collect();
             }
+            TAG_LINEAR_PSQ => {
+                need(8)?;
+                lpsq = Some((p[0], p32(4) as i32));
+            }
             t if t & OPTIONAL != 0 => {}
             t => return Err(format!("unknown required field 0x{:04x}", t)),
         }
@@ -273,7 +289,29 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         return Err("a pairwise feature transformer needs a hidden layer".into());
     }
     if layers.len() == 2 || layers.len() == 3 {
-        return load_hidden(d, header, h, nkb, mirror, king_bucket, act, buckets, qa, qb, scale, &layers, &layer_quant);
+        let Some((pt, ps)) = lpsq else {
+            return load_hidden(d, header, h, nkb, mirror, king_bucket, act, buckets, qa, qb, scale, &layers, &layer_quant);
+        };
+        // The linear piece-square weights are the last block: i16
+        // [king bucket][feature][output bucket], real weight times ps.
+        if pt != TYPE_I16 || ps <= 0 || buckets > PSQ_B {
+            return Err(format!("unsupported linear piece-square path (type {}, scale {}, {} buckets; need i16, scale > 0, at most {} buckets)", pt, ps, buckets, PSQ_B));
+        }
+        let n = nkb * 768 * buckets;
+        if d.len() < header + 2 * n {
+            return Err("weights are too short for the linear piece-square path".into());
+        }
+        let end = d.len() - 2 * n;
+        let mut net = load_hidden(&d[..end], header, h, nkb, mirror, king_bucket, act, buckets, qa, qb, scale, &layers, &layer_quant)?;
+        net.psq = d[end..]
+            .chunks_exact(2 * buckets)
+            .map(|c| std::array::from_fn(|b| if b < buckets { i32::from(i16::from_le_bytes([c[2 * b], c[2 * b + 1]])) } else { 0 }))
+            .collect();
+        net.psq_k = 1.0 / ps as f32;
+        return Ok(net);
+    }
+    if lpsq.is_some() {
+        return Err("the linear piece-square path needs a hidden layer".into());
     }
     let &[(lin, lout, lact, lwt, lbt, lflags)] = layers.as_slice() else {
         return Err(format!("{} layers after the feature transformer; one to three are supported", layers.len()));
@@ -317,6 +355,8 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         ow,
         ob,
         l1: None,
+        psq: Vec::new(),
+        psq_k: 0.0,
     })
 }
 
@@ -476,6 +516,8 @@ fn load_hidden(
             bm,
             wo,
         }),
+        psq: Vec::new(),
+        psq_k: 0.0,
     })
 }
 
@@ -508,6 +550,19 @@ fn feat(persp: usize, ki: (usize, usize), pc: u8, sq: usize) -> usize {
 /// (row and accumulator offsets, loop lengths) then compiles to constants and
 /// fully unrolled loops; the size is matched once per call.
 macro_rules! with_h {
+    // Extra const arguments after H: `with_h!(h, f::<A, B>(args))`.
+    ($h:expr, $f:ident::<$($g:tt),*>($($arg:expr),*)) => {
+        match $h {
+            128 => $f::<128, $($g),*>($($arg),*),
+            256 => $f::<256, $($g),*>($($arg),*),
+            512 => $f::<512, $($g),*>($($arg),*),
+            768 => $f::<768, $($g),*>($($arg),*),
+            1024 => $f::<1024, $($g),*>($($arg),*),
+            1536 => $f::<1536, $($g),*>($($arg),*),
+            2048 => $f::<2048, $($g),*>($($arg),*),
+            _ => $f::<0, $($g),*>($($arg),*),
+        }
+    };
     ($h:expr, $f:ident($($arg:expr),*)) => {
         match $h {
             128 => $f::<128>($($arg),*),
@@ -527,6 +582,18 @@ fn hidden<const H: usize>(n: &Network) -> usize {
     if H > 0 { H } else { n.h }
 }
 
+/// Linear piece-square weights of feature `f`, added to (`ADD`) or
+/// subtracted from `s`.
+#[inline(always)]
+fn psq_apply<const ADD: bool>(s: &mut [i32; PSQ_B], n: &Network, f: usize) {
+    // Safe: load() checks psq holds king buckets * 768 rows when non-empty,
+    // and callers only come here when it is.
+    let r = unsafe { n.psq.get_unchecked(f) };
+    for (x, &w) in s.iter_mut().zip(r) {
+        *x = if ADD { x.wrapping_add(w) } else { x.wrapping_sub(w) };
+    }
+}
+
 /// Feature-transformer row `f` (length h).
 #[inline(always)]
 fn row(n: &Network, f: usize, h: usize) -> &[i16] {
@@ -537,7 +604,7 @@ fn row(n: &Network, f: usize, h: usize) -> &[i16] {
 
 impl Acc {
     pub fn new() -> Self {
-        Acc { v: [0; 2 * MAX_H] }
+        Acc { p: [[0; PSQ_B]; 2], v: [0; 2 * MAX_H] }
     }
 
     // Safe: p < 2 and load() checks h <= MAX_H.
@@ -556,6 +623,7 @@ impl Acc {
     pub fn copy_from(&mut self, other: &Acc) {
         let h2 = 2 * net().h;
         self.v[..h2].copy_from_slice(&other.v[..h2]);
+        self.p = other.p;
     }
 
     pub fn refresh(&mut self, pos: &Position) {
@@ -571,7 +639,13 @@ impl Acc {
     #[inline]
     pub fn update_from(&mut self, parent: &Acc, pos: &Position, child: &Position, m: Move, cache: &mut RefreshCache) {
         let n = net();
-        with_h!(n.h, update(self, n, parent, pos, child, m, cache));
+        // The linear piece-square path is a separate instantiation, so nets
+        // without it run exactly the code they ran before it existed.
+        if n.psq.is_empty() {
+            with_h!(n.h, update::<false>(self, n, parent, pos, child, m, cache));
+        } else {
+            with_h!(n.h, update::<true>(self, n, parent, pos, child, m, cache));
+        }
     }
 }
 
@@ -586,6 +660,7 @@ pub struct RefreshCache {
 #[repr(C, align(64))]
 struct CacheEntry {
     acc: [i16; MAX_H],
+    psq: [i32; PSQ_B],
     bb: [u64; 12], // by piece code
 }
 
@@ -595,7 +670,7 @@ impl RefreshCache {
         let n = net();
         let entries = (0..2 * n.nkb * 2)
             .map(|_| {
-                let mut e = CacheEntry { acc: [0; MAX_H], bb: [0; 12] };
+                let mut e = CacheEntry { acc: [0; MAX_H], psq: [0; PSQ_B], bb: [0; 12] };
                 e.acc[..n.h].copy_from_slice(&n.ftb);
                 e
             })
@@ -616,12 +691,19 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
             *x = x.wrapping_add(w);
         }
     }
+    if !n.psq.is_empty() {
+        let mut s = [0; PSQ_B];
+        for sq in Bits(pos.occ()) {
+            psq_apply::<true>(&mut s, n, feat(p, ki, pos.board[sq], sq));
+        }
+        acc.p[p] = s;
+    }
 }
 
 /// Rebuilds perspective p of `acc` for `pos` through the cache entry for p's
 /// king bucket and mirror state.
 #[inline(never)]
-fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Position, cache: &mut RefreshCache) {
+fn refresh_cached<const H: usize, const LP: bool>(acc: &mut Acc, n: &Network, p: usize, pos: &Position, cache: &mut RefreshCache) {
     let h = hidden::<H>(n);
     let ki = kinfo(n, p, pos.king_sq(p));
     let idx = (p * n.nkb + ki.0 / 768) * 2 + (ki.1 != 0) as usize;
@@ -633,23 +715,34 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
             let cur = pos.pieces[pt] & pos.colors[c];
             let old = e.bb[pc as usize];
             for sq in Bits(cur & !old) {
-                for (x, &w) in v.iter_mut().zip(row(n, feat(p, ki, pc, sq), h)) {
+                let f = feat(p, ki, pc, sq);
+                for (x, &w) in v.iter_mut().zip(row(n, f, h)) {
                     *x = x.wrapping_add(w);
+                }
+                if LP {
+                    psq_apply::<true>(&mut e.psq, n, f);
                 }
             }
             for sq in Bits(old & !cur) {
-                for (x, &w) in v.iter_mut().zip(row(n, feat(p, ki, pc, sq), h)) {
+                let f = feat(p, ki, pc, sq);
+                for (x, &w) in v.iter_mut().zip(row(n, f, h)) {
                     *x = x.wrapping_sub(w);
+                }
+                if LP {
+                    psq_apply::<false>(&mut e.psq, n, f);
                 }
             }
             e.bb[pc as usize] = cur;
         }
     }
     acc.side_mut(p, h).copy_from_slice(v);
+    if LP {
+        acc.p[p] = e.psq;
+    }
 }
 
 #[inline(never)]
-fn update<const H: usize>(acc: &mut Acc, n: &Network, parent: &Acc, pos: &Position, child: &Position, m: Move, cache: &mut RefreshCache) {
+fn update<const H: usize, const LP: bool>(acc: &mut Acc, n: &Network, parent: &Acc, pos: &Position, child: &Position, m: Move, cache: &mut RefreshCache) {
     let h = hidden::<H>(n);
     let from = mfrom(m);
     let to = mto(m);
@@ -678,24 +771,48 @@ fn update<const H: usize>(acc: &mut Acc, n: &Network, parent: &Acc, pos: &Positi
     for p in 0..2 {
         let ki = kinfo(n, p, pos.king_sq(p));
         if n.refresh_on_king_move && p == us && pc_type(pc) == KING && kinfo(n, p, to) != ki {
-            refresh_cached::<H>(acc, n, p, child, cache);
+            refresh_cached::<H, LP>(acc, n, p, child, cache);
             continue;
         }
-        let a0 = row(n, feat(p, ki, adds[0].0, adds[0].1), h);
-        let s0 = row(n, feat(p, ki, subs[0].0, subs[0].1), h);
+        let fa0 = feat(p, ki, adds[0].0, adds[0].1);
+        let fs0 = feat(p, ki, subs[0].0, subs[0].1);
+        let (a0, s0) = (row(n, fa0, h), row(n, fs0, h));
         let src = parent.side(p, h);
         let dst = acc.side_mut(p, h);
         if ns == 1 {
             add_sub(dst, src, [a0], [s0]);
+            if LP {
+                acc.p[p] = psq_delta(&parent.p[p], n, [fa0], [fs0]);
+            }
         } else if na == 1 {
-            let s1 = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
-            add_sub(dst, src, [a0], [s0, s1]);
+            let fs1 = feat(p, ki, subs[1].0, subs[1].1);
+            add_sub(dst, src, [a0], [s0, row(n, fs1, h)]);
+            if LP {
+                acc.p[p] = psq_delta(&parent.p[p], n, [fa0], [fs0, fs1]);
+            }
         } else {
-            let s1 = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
-            let a1 = row(n, feat(p, ki, adds[1].0, adds[1].1), h);
-            add_sub(dst, src, [a0, a1], [s0, s1]);
+            let fs1 = feat(p, ki, subs[1].0, subs[1].1);
+            let fa1 = feat(p, ki, adds[1].0, adds[1].1);
+            add_sub(dst, src, [a0, row(n, fa1, h)], [s0, row(n, fs1, h)]);
+            if LP {
+                acc.p[p] = psq_delta(&parent.p[p], n, [fa0, fa1], [fs0, fs1]);
+            }
         }
     }
+}
+
+/// The parent's linear piece-square sums plus the added features' weights
+/// minus the removed ones'.
+#[inline(always)]
+fn psq_delta<const NA: usize, const NS: usize>(src: &[i32; PSQ_B], n: &Network, adds: [usize; NA], subs: [usize; NS]) -> [i32; PSQ_B] {
+    let mut s = *src;
+    for f in adds {
+        psq_apply::<true>(&mut s, n, f);
+    }
+    for f in subs {
+        psq_apply::<false>(&mut s, n, f);
+    }
+    s
 }
 
 /// dst = src + Σ adds − Σ subs. Plain Rust over equal-length slices, so the
@@ -837,6 +954,8 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, 
     // x86-64-v3 baseline). Separate multiply and add (no FMA) and a fixed
     // reduction order: every ISA gives the same result.
     let out = unsafe { hidden_float::<L, L2, DUAL>(l1, &z, k, b1i, bucket) };
+    // Linear piece-square path (load() checks bucket < PSQ_B when present).
+    let out = if n.psq.is_empty() { out } else { out + (acc.p[pos.stm][bucket] - acc.p[pos.stm ^ 1][bucket]) as f32 * n.psq_k };
     (out * n.scale as f32) as i32
 }
 

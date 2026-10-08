@@ -17,6 +17,7 @@ pub const TAG_OUTPUT_BUCKETS: u16 = 0x0004;
 pub const TAG_LAYER: u16 = 0x0005;
 pub const TAG_QUANT: u16 = 0x0006;
 pub const TAG_LAYER_QUANT: u16 = 0x0007;
+pub const TAG_LINEAR_PSQ: u16 = 0x0009;
 pub const TAG_DESCRIPTION: u16 = 0x8001;
 
 pub const INPUT_PSQ768: u16 = 1;
@@ -60,6 +61,10 @@ pub struct Arch {
     pub l1_shift: u32,
     /// Neurons in a second hidden layer (f32, SCReLU, per bucket; 0 = none).
     pub l2: usize,
+    /// A linear piece-square path from the input features to the output (per
+    /// output bucket; the trainer's lpsq=1): f32 [king bucket][feature][bucket]
+    /// after the other layers in quantised.bin, written as i16.
+    pub lpsq: bool,
 }
 
 impl Arch {
@@ -91,7 +96,7 @@ pub fn write(arch: &Arch, ftw: &[i16], ftb: &[i16], ow: &[i16], ob: &[i32]) -> V
     for v in ob {
         weights.extend_from_slice(&v.to_le_bytes());
     }
-    assemble(arch, ftw, ftb, &[p], None, &weights)
+    assemble(arch, ftw, ftb, &[p], None, &[], &weights)
 }
 
 /// Input shift for the hidden layer's u8 inputs: the smallest s with
@@ -117,7 +122,8 @@ pub fn write_hidden(
     mid: Option<(&[f32], &[f32])>,
     w2: &[f32],
     b2: &[f32],
-) -> Vec<u8> {
+    lpsq: &[f32],
+) -> Result<Vec<u8>, String> {
     let (h, nb, l1, l2) = (arch.hidden, arch.output_buckets, arch.l1, arch.l2);
     let nb1 = if arch.l1_shared { 1 } else { nb };
     let last = if l2 > 0 { l2 } else { l1 };
@@ -148,18 +154,46 @@ pub fn write_hidden(
     for v in b1.iter().chain(wm).chain(bm).chain(w2).chain(b2) {
         weights.extend_from_slice(&v.to_le_bytes());
     }
+    let mut extra = Vec::new();
+    if arch.lpsq {
+        assert_eq!(lpsq.len(), arch.num_king_buckets() * 768 * nb);
+        let s = lpsq_scale(lpsq)?;
+        let mut p = vec![TYPE_I16, 0, 0, 0];
+        p.extend_from_slice(&s.to_le_bytes());
+        extra.push((TAG_LINEAR_PSQ, p));
+        for &v in lpsq {
+            weights.extend_from_slice(&((v * s as f32).round() as i16).to_le_bytes());
+        }
+    }
     if l2 > 0 {
         for v in [0i32, 0] {
             lq.extend_from_slice(&v.to_le_bytes());
         }
-        assemble(arch, ftw, ftb, &[p1, pm, p2], Some(&lq), &weights)
+        Ok(assemble(arch, ftw, ftb, &[p1, pm, p2], Some(&lq), &extra, &weights))
     } else {
-        assemble(arch, ftw, ftb, &[p1, p2], Some(&lq), &weights)
+        Ok(assemble(arch, ftw, ftb, &[p1, p2], Some(&lq), &extra, &weights))
     }
 }
 
+/// Scale for the linear piece-square weights (i16): the largest power of two
+/// that keeps every weight within +-32767.
+pub fn lpsq_scale(ws: &[f32]) -> Result<i32, String> {
+    let max = ws.iter().fold(0f32, |m, v| m.max(v.abs()));
+    if !max.is_finite() {
+        return Err("linear piece-square weights are not finite".into());
+    }
+    let mut s = 1i32 << 20;
+    while s > 1 && max * s as f32 > 32767.0 {
+        s >>= 1;
+    }
+    if max * s as f32 > 32767.0 {
+        return Err(format!("linear piece-square weights too large for i16 (max |w| {})", max));
+    }
+    Ok(s)
+}
+
 /// Header plus FT weights, then the given layer records and their weights.
-fn assemble(arch: &Arch, ftw: &[i16], ftb: &[i16], layers: &[Vec<u8>], layer_quant: Option<&[u8]>, weights: &[u8]) -> Vec<u8> {
+fn assemble(arch: &Arch, ftw: &[i16], ftb: &[i16], layers: &[Vec<u8>], layer_quant: Option<&[u8]>, extra: &[(u16, Vec<u8>)], weights: &[u8]) -> Vec<u8> {
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
     assert_eq!(ftw.len(), nkb * 768 * h);
     assert_eq!(ftb.len(), h);
@@ -187,6 +221,9 @@ fn assemble(arch: &Arch, ftw: &[i16], ftb: &[i16], layers: &[Vec<u8>], layer_qua
     }
     if let Some(lq) = layer_quant {
         field(&mut fields, TAG_LAYER_QUANT, lq);
+    }
+    for (tag, p) in extra {
+        field(&mut fields, *tag, p);
     }
 
     let mut p = Vec::new();
@@ -284,7 +321,8 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     }
     let inl = if pw { h } else { 2 * h };
     let in2 = if arch.l1_dual { 2 * l1 } else { l1 };
-    let expect = 2 * (n_ftw + h) + nb1 * l1 * inl + 4 * (nb1 * l1 + nb * l2 * (in2 + 1) + nb * last + nb);
+    let n_lpsq = if arch.lpsq { nkb * 768 * nb } else { 0 };
+    let expect = 2 * (n_ftw + h) + nb1 * l1 * inl + 4 * (nb1 * l1 + nb * l2 * (in2 + 1) + nb * last + nb + n_lpsq);
     let ok = data.len() == expect.div_ceil(64) * 64
         && (data[expect..].iter().all(|&b| b == 0) || data[expect..].iter().zip(b"bullet".iter().cycle()).all(|(a, b)| a == b));
     if !ok {
@@ -308,9 +346,10 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let bm = f32s(take(4 * nb * l2));
     let w2 = f32s(take(4 * nb * last));
     let b2 = f32s(take(4 * nb));
+    let lpsq = f32s(take(4 * n_lpsq));
     let mid = (l2 > 0).then_some((&wm[..], &bm[..]));
     if arch.perm.is_empty() {
-        return Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2));
+        return write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2, &lpsq);
     }
     // The order covers the hidden layer's inputs per perspective: h neurons, or
     // for pairwise nets h/2 pairs (neurons j and j + h/2 move together).
@@ -327,7 +366,7 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
         .chunks_exact(2 * u)
         .flat_map(|row| p.iter().map(move |&i| row[i]).chain(p.iter().map(move |&i| row[u + i])))
         .collect();
-    Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2))
+    write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2, &lpsq)
 }
 
 /// Describes a network file's header (and checks its size), for `net-info`.
@@ -369,6 +408,9 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
             TAG_LAYER_QUANT => {
                 let per: Vec<String> = (0..len / 8).map(|i| format!("(input shift {}, weight scale {})", p32(8 * i), p32(8 * i + 4) as i32)).collect();
                 let _ = writeln!(s, "layer quantisation: {}", per.join(", "));
+            }
+            TAG_LINEAR_PSQ => {
+                let _ = writeln!(s, "linear piece-square path: weight type {}, scale {}", p[0], p32(4) as i32);
             }
             TAG_DESCRIPTION => {
                 let _ = writeln!(s, "description: {}", String::from_utf8_lossy(p));

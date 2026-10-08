@@ -316,8 +316,9 @@ fn main() {
                         a2.update_from(&acc, &pos, &child, m, &mut cache);
                         let mut a3 = nnue::Acc::new();
                         a3.refresh(&child);
-                        if a2.v != a3.v { bad += 1; println!("mismatch {} {}", pos.to_fen(), move_str(m)); }
-                        pos = child; acc = a3;
+                        if a2.v != a3.v || a2.p != a3.p { bad += 1; println!("mismatch {} {}", pos.to_fen(), move_str(m)); }
+                        // Continue from the incremental one, so errors would accumulate.
+                        pos = child; acc = a2;
                     }
                 }
                 println!("bad {}", bad);
