@@ -6,7 +6,7 @@
 #   make EXE=incipit-v2   Build with custom output name
 #   make EVALFILE=x.nnue  Embed a different net
 #   make openbench        OpenBench-compatible build target
-#   make pgo              PGO-optimized build (experimental)
+#   make pgo              PGO-optimized build (profiled with bench)
 #   make net              Download the production NNUE net and verify its checksum
 #   make clean            Remove build artifacts
 #
@@ -47,16 +47,33 @@ rule: check-rust net
 # advertised (required for OpenBench SPSA to setoption them). Normal `make` keeps
 # them hidden. Point OpenBench's Incipit build command at `make openbench`.
 openbench: TUNE := 1
-openbench: rule
+openbench: pgo
 
-# PGO build (profile-guided optimization), profiled with `bench`.
-# Requires: cargo install cargo-pgo; rustup component add llvm-tools-preview
-TARGET_TUPLE := $(shell rustc -vV 2>/dev/null | sed -n 's/^host: //p')
+# PGO build (profile-guided optimization): build instrumented, profile with
+# `bench`, rebuild with the profile. Uses rustc's own PGO flags and the
+# toolchain's llvm-profdata (`rustup component add llvm-tools`; a system
+# llvm-profdata must match rustc's LLVM major version). Without llvm-profdata
+# it falls back to the normal build. Separate target dirs keep the normal
+# build's cache intact.
+PROFDATA := $(firstword $(wildcard $(shell rustc --print sysroot 2>/dev/null)/lib/rustlib/*/bin/llvm-profdata) $(shell command -v llvm-profdata 2>/dev/null))
+PGO_DIR := $(abspath target/pgo-data)
 pgo: check-rust net
-	EVALFILE=$(abspath $(EVALFILE)) cargo pgo instrument build
-	LLVM_PROFILE_FILE=target/pgo-profiles/incipit_%m_%p.profraw ./target/$(TARGET_TUPLE)/release/incipit bench
-	EVALFILE=$(abspath $(EVALFILE)) cargo pgo optimize build
-	cp target/$(TARGET_TUPLE)/release/incipit $(NAME)
+ifeq ($(PROFDATA),)
+	@echo "Warning: llvm-profdata not found (rustup component add llvm-tools); building without PGO"
+	$(MAKE) rule
+else
+	rm -rf $(PGO_DIR)
+	EVALFILE=$(abspath $(EVALFILE)) RUSTFLAGS="$(RUSTFLAGS) -Cprofile-generate=$(PGO_DIR)" cargo rustc --release --target-dir target/pgo-gen$(if $(TUNE), --features tune) -- --emit link=$(NAME)-pgo-gen
+	./$(NAME)-pgo-gen bench > /dev/null
+	$(PROFDATA) merge -o $(PGO_DIR)/merged.profdata $(PGO_DIR)
+	EVALFILE=$(abspath $(EVALFILE)) RUSTFLAGS="$(RUSTFLAGS) -Cprofile-use=$(PGO_DIR)/merged.profdata" cargo rustc --release --target-dir target/pgo-use$(if $(TUNE), --features tune) -- --emit link=$(NAME)
+	$(RM) $(NAME)-pgo-gen
+endif
+
+# OpenBench build with PGO (on the pgo branch, `openbench` itself is PGO so
+# the fleet builds it with the server's usual `make openbench` command).
+openbench-pgo: TUNE := 1
+openbench-pgo: pgo
 
 # Download the production NNUE net (uses the filename from net.txt) and check
 # that its SHA-256 matches the checksum in its name.
@@ -117,4 +134,4 @@ clean:
 	cargo clean
 	$(RM) $(NAME)
 
-.PHONY: rule openbench pgo net check-rust clean
+.PHONY: rule openbench openbench-pgo pgo net check-rust clean
