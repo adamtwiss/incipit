@@ -84,6 +84,7 @@ params! {
     TmStab2 = "TmStab2", 130, 90, 200, 8;
     TmStab3 = "TmStab3", 100, 80, 160, 6;
     TmStabMin = "TmStabMin", 71, 40, 100, 5;
+    TmFeedMax = "TmFeedMax", 250, 100, 400, 20;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
@@ -146,6 +147,11 @@ params! {
     UseTmTrend = "UseTmTrend", 0, 0, 1, 0;
     // Node share counts only from depth TmNodeDepth (earlier shares are noisy).
     UseTmNodeGate = "UseTmNodeGate", 0, 0, 1, 0;
+    // Budget feedback: scale the soft limit by 1 / (running average of our own
+    // clock spend / base soft limit), between 1 and TmFeedMax/100. Spends the
+    // time ponder hits would otherwise leave unused. Only in games where the
+    // GUI ponders (without pondering spend already meets the budget).
+    UseTmFeed = "UseTmFeed", 1, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
 }
 

@@ -208,6 +208,8 @@ impl Uci {
         }
         let (time, inc) = if self.pos.stm == WHITE { (wtime, winc) } else { (btime, binc) };
         let mut lim = Limits { soft_ms: None, hard_ms: None, depth, nodes };
+        let mut base_soft = 0u64;
+        let t0 = search::now_ms();
         if let Some(mt) = movetime {
             lim.hard_ms = Some((mt - self.overhead).max(1) as u64);
         } else if let Some(t) = time {
@@ -217,6 +219,8 @@ impl Uci {
             } else {
                 left / params::tp(params::P::TmSoftDiv) as i64 + inc * params::tp(params::P::TmIncPct) as i64 / 100
             };
+            base_soft = soft.max(1) as u64;
+            let soft = (soft as f64 * self.searcher.pt.feed_scale()) as i64;
             let hard = (left * 2 / 5).min(soft * params::tp(params::P::TmHardMul) as i64).max(1);
             let soft = soft.min(hard);
             lim.soft_ms = Some(soft as u64);
@@ -225,12 +229,20 @@ impl Uci {
         self.searcher.hash_hist.clear();
         self.searcher.hash_hist.extend_from_slice(&self.hist);
         self.searcher.pt.pondering = ponder;
+        self.searcher.pt.ponder_seen |= ponder;
         let (m, _) = self.searcher.search(&self.pos, &lim);
         // UCI: no bestmove while pondering, until ponderhit or stop.
         while ponder && self.searcher.pt.hit.load(Ordering::SeqCst) == 0 && !self.searcher.stop_flag.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         self.searcher.pt.pondering = false;
+        // Budget feedback: our own clock time for this move (from the hit when
+        // pondering; a ponder miss isn't counted).
+        let hit = self.searcher.pt.hit.load(Ordering::SeqCst);
+        let own = if !ponder { Some(search::now_ms() - t0) } else if hit > 0 { Some(search::now_ms().saturating_sub(hit - 1)) } else { None };
+        if let Some(own) = own {
+            self.searcher.pt.record_spend(own, base_soft);
+        }
         let pm = self.searcher.ponder_move(m);
         let mut after = self.pos;
         let ok = pm != 0 && after.make_move(m) && after.is_pseudo_legal(pm) && { let mut q = after; q.make_move(pm) };
@@ -488,7 +500,7 @@ fn main() {
             "eval" => {
                 let mut acc = nnue::Acc::new();
                 acc.refresh(&uci.pos);
-                println!("eval {}", nnue::evaluate(&acc, &uci.pos));
+                println!("eval {} (side to move, cp)", nnue::evaluate(&acc, &uci.pos));
             }
             "genfens" => datagen::genfens(&toks),
             // Tablebase result of the current position: tbprobe [path]
