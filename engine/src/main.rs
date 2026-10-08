@@ -500,7 +500,7 @@ fn main() {
             "eval" => {
                 let mut acc = nnue::Acc::new();
                 acc.refresh(&uci.pos);
-                println!("eval {} (side to move, cp)", nnue::evaluate(&acc, &uci.pos));
+                println!("eval {} (side to move, cp)", search::mat_term(&uci.pos, nnue::evaluate(&acc, &uci.pos)));
             }
             "genfens" => datagen::genfens(&toks),
             // Tablebase result of the current position: tbprobe [path]

@@ -536,7 +536,7 @@ impl Searcher {
         let e = if cfg!(feature = "hce") {
             crate::eval::evaluate(pos)
         } else {
-            nnue::evaluate(&self.acc[ply], pos)
+            mat_term(pos, nnue::evaluate(&self.acc[ply], pos))
         };
         let e = e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
         *slot = (pos.hash & !0xffff) | (e as i16 as u16 as u64);
@@ -1579,4 +1579,31 @@ impl Searcher {
         self.tt.store(pos.hash, best_move, ss, raw_eval, 0, bound);
         best
     }
+}
+
+/// Material term for decided positions. The hidden-layer nets' eval flattens
+/// above ~1000 cp (their units saturate; experiments.md 2026-10-08), so
+/// winning more material barely raises it and it can drift the wrong way.
+/// Adds MatTermK cp per pawn of the side to move's non-pawn material lead
+/// (knight/bishop 3, rook 5, queen 9), ramped in linearly from |eval| =
+/// MatTermT to MatTermT + MatTermW. Equal trades leave it unchanged. Start
+/// values are round numbers: T just below the measured ~1000 cp knee, K about
+/// a third of the ~120 cp per piece the nets still give there.
+#[inline(always)]
+pub fn mat_term(pos: &Position, e: i32) -> i32 {
+    if !on(P::UseMatTerm) {
+        return e;
+    }
+    let ramp = (e.abs() - tp(P::MatTermT)).clamp(0, tp(P::MatTermW));
+    if ramp == 0 {
+        return e;
+    }
+    let side = |c: usize| {
+        let o = pos.colors[c];
+        3 * ((pos.pieces[KNIGHT] | pos.pieces[BISHOP]) & o).count_ones() as i32
+            + 5 * (pos.pieces[ROOK] & o).count_ones() as i32
+            + 9 * (pos.pieces[QUEEN] & o).count_ones() as i32
+    };
+    let lead = side(pos.stm) - side(pos.stm ^ 1);
+    e + lead * tp(P::MatTermK) * ramp / tp(P::MatTermW).max(1)
 }

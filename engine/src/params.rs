@@ -115,6 +115,12 @@ params! {
     // GUI ponders (without pondering spend already meets the budget).
     UseTmFeed = "UseTmFeed", 1, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
+    // Decided-position material term (search::mat_term): K cp per pawn of
+    // non-pawn material lead, ramped in over |eval| T..T+W.
+    UseMatTerm = "UseMatTerm", 1, 0, 1, 0;
+    MatTermK = "MatTermK", 40, 0, 120, 6;
+    MatTermT = "MatTermT", 800, 300, 1500, 60;
+    MatTermW = "MatTermW", 500, 100, 1000, 45;
 }
 
 #[inline(always)]
