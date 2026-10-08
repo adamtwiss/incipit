@@ -56,6 +56,7 @@ usage:
       --l1-shared          the hidden layer is shared by all output buckets
       --l1-dual            the second hidden layer takes SCReLU and CReLU of the first (needs --l2)
       --skip               a linear skip from the hidden layer's inputs to the output (trainer lskip=1)
+      --skip-i8            the same, with i8 skip weights (faster; coarser)
       --description TEXT   training run, data and settings
       --permute FILE       FT neuron order (hidden-layer nets; from the engine's l1perm)
   datatools net-info <file.nnue> ...          show a network's header
@@ -472,6 +473,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         l1_shift: 0,
         l2: 0,
         skip: false,
+        skip_i8: false,
     };
     let mut i = 0;
     while i < opts.len() {
@@ -493,6 +495,12 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         }
         if flag == "--skip" {
             arch.skip = true;
+            i += 1;
+            continue;
+        }
+        if flag == "--skip-i8" {
+            arch.skip = true;
+            arch.skip_i8 = true;
             i += 1;
             continue;
         }

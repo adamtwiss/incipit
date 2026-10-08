@@ -64,6 +64,8 @@ pub struct Arch {
     /// A linear skip from the hidden layer's inputs straight to the output
     /// (f32 in the source, after the final layer; i16 in the file).
     pub skip: bool,
+    /// Store the skip's weights as i8 (scale floor(127 / max |w|)), not i16.
+    pub skip_i8: bool,
 }
 
 impl Arch {
@@ -160,12 +162,16 @@ pub fn write_hidden(
     if let Some((ws, bs)) = skip {
         assert_eq!(ws.len(), nb * inl);
         assert_eq!(bs.len(), nb);
-        let sc = skip_scale(ws, inl)?;
+        let sc = if arch.skip_i8 { skip_scale_i8(ws)? } else { skip_scale(ws, inl)? };
         ps = (inl as u32).to_le_bytes().to_vec();
-        ps.extend_from_slice(&[TYPE_I16, TYPE_F32, 1, 0]);
+        ps.extend_from_slice(&[if arch.skip_i8 { TYPE_I8 } else { TYPE_I16 }, TYPE_F32, 1, 0]);
         ps.extend_from_slice(&sc.to_le_bytes());
         for &v in ws {
-            weights.extend_from_slice(&((v * sc as f32).round() as i16).to_le_bytes());
+            if arch.skip_i8 {
+                weights.push(((v * sc as f32).round() as i8).clamp(-127, 127) as u8);
+            } else {
+                weights.extend_from_slice(&((v * sc as f32).round() as i16).to_le_bytes());
+            }
         }
         for v in bs {
             weights.extend_from_slice(&v.to_le_bytes());
@@ -193,6 +199,20 @@ fn skip_scale(ws: &[f32], inl: usize) -> Result<i32, String> {
         .map(|e| 1i32 << e)
         .find(|&s| max * s as f64 <= 32767.0 && sum * s as f64 * 127.0 < i32::MAX as f64)
         .ok_or_else(|| format!("skip weights too large to quantise (max |w| {:.1})", max))
+}
+
+/// Scale for the skip's i8 weights: 128, the trainer's i8 grid (lskip=2), or
+/// for larger weights the largest integer at which every weight fits +-127
+/// (the engine's maddubs needs |w| <= 127; with u8 inputs at most 127, no dot
+/// product of 1024 or so inputs can overflow i32).
+fn skip_scale_i8(ws: &[f32]) -> Result<i32, String> {
+    let max = ws.iter().fold(0f32, |m, v| m.max(v.abs()));
+    let s = (127.0 / max).floor().min(128.0);
+    if s >= 1.0 && s < i32::MAX as f32 {
+        Ok(s as i32)
+    } else {
+        Err(format!("skip weights can't be quantised to i8 (max |w| {:.3})", max))
+    }
 }
 
 /// Header plus FT weights, then the given layer records and their weights.

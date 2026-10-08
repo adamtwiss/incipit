@@ -107,11 +107,11 @@ layer's inputs straight to the output, added to the network output.
 | Size | Field |
 |---|---|
 | 4 | Inputs (u32): the same as the first hidden layer's |
-| 1 | Weight type (`2`, i16) |
+| 1 | Weight type (`2`, i16, or `1`, i8 within ±127) |
 | 1 | Bias type (`4`, f32) |
 | 1 | Flags: bit 0 = per output bucket |
 | 1 | Reserved, 0 |
-| 4 | Weight scale (i32): the i16 weights are real weights times this |
+| 4 | Weight scale (i32): the stored weights are real weights times this |
 
 Nets without this field have no skip, so adding it changed nothing for
 existing nets (the format version stays 1).
@@ -133,7 +133,7 @@ Directly after the header, with no padding between blocks:
 2. Feature transformer biases: `[hidden]`.
 3. For each LAYER: weights `[output bucket][output][input]` (or `[output][input]`
    if not bucketed), then biases `[output bucket][output]` (or `[output]`).
-4. With SKIP: weights `[output bucket][input]` (i16), then biases
+4. With SKIP: weights `[output bucket][input]` (i16 or i8), then biases
    `[output bucket]` (f32).
 
 The file must end exactly after the last block.
@@ -179,6 +179,8 @@ f32 weights `[bucket][N]` and its f32 biases `[bucket]`.
 With a skip, the network output before `· scale` also gets
 `Σ x · ws[bucket] / (S · Ws) + bs[bucket]`, with `x` the same u8 inputs as the
 first hidden layer (side to move first), `S` as above and `Ws` the skip's
-weight scale. The sum is an integer: the converter picks a power-of-two `Ws`
-(at most 2^14) so that it can't overflow i32. The engine supports a skip on
+weight scale. The sum is an integer: for i16 weights the converter picks a
+power-of-two `Ws` (at most 2^14) so that it can't overflow i32; for i8 weights
+(`--skip-i8`, about twice as fast) `Ws` is 128, the trainer's i8 grid
+(`lskip=2`), or the largest integer that keeps every weight within ±127. The engine supports a skip on
 pairwise nets with a second hidden layer of 16 or 32 neurons.
