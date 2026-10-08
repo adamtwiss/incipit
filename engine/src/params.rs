@@ -53,7 +53,7 @@ params! {
     CapLmrDiv = "CapLmrDiv", 3260, 2000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
-    TmHardMul = "TmHardMul", 5, 2, 6, 1;
+    TmHardMul = "TmHardMul", 5, 2, 8, 1;
     // On a ponder hit, move at once if we pondered at least PonderHitPct% of
     // the time we'd want for this move; otherwise keep thinking until pondering
     // + thinking reaches it (PonderCredit% of the pondering time counts).
