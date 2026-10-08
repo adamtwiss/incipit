@@ -773,13 +773,16 @@ impl Searcher {
                 let frac = self.root_node_counts[mfrom(best)][mto(best)] as f64 / total;
                 let node_scale = (tp(P::TmNodeBase) as f64 / 100.0 - frac) * tp(P::TmNodeMul) as f64 / 100.0;
                 let node_scale = if on(P::UseTmNodeGate) && d < tp(P::TmNodeDepth) { 1.0 } else { node_scale };
+                // From 4 on: the fixed curve 100, 95, 90, 85, 80, 78, 75, with its
+                // drop below 100 scaled so the end (10+) is TmStabMin (75 = the curve).
+                const STAB_TAIL: [f64; 7] = [100.0, 95.0, 90.0, 85.0, 80.0, 78.0, 75.0];
                 let stab_scale = match stability {
-                    0 => tp(P::TmStab0),
-                    1 => tp(P::TmStab1),
-                    2 => tp(P::TmStab2),
-                    3 => tp(P::TmStab3),
-                    k => 100 + (tp(P::TmStabMin) - 100) * (k.min(10) as i32 - 4) / 6,
-                } as f64 / 100.0;
+                    0 => tp(P::TmStab0) as f64,
+                    1 => tp(P::TmStab1) as f64,
+                    2 => tp(P::TmStab2) as f64,
+                    3 => tp(P::TmStab3) as f64,
+                    k => 100.0 - (100.0 - STAB_TAIL[k.min(10) - 4]) * (100 - tp(P::TmStabMin)) as f64 / 25.0,
+                } / 100.0;
                 let drop = (prev_score - score).clamp(-50, 150) as f64;
                 let score_scale = if d >= 6 { 1.0 + drop / 200.0 } else { 1.0 };
                 let score_scale = if on(P::UseTmScore) { score_scale } else { 1.0 };

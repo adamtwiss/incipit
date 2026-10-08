@@ -77,8 +77,8 @@ params! {
     // Soft-target factors (x100). Node share f of the best move: (TmNodeBase/100 - f) x TmNodeMul/100.
     TmNodeBase = "TmNodeBase", 140, 110, 200, 5;
     TmNodeMul = "TmNodeMul", 119, 80, 200, 8;
-    // Stability (depths with the same best move): 0..3 from TmStab0..3, then a
-    // straight line from 100 at 4 to TmStabMin at 10 and beyond.
+    // Stability (depths with the same best move): 0..3 from TmStab0..3, then
+    // the fixed curve from 100 at 4 down to TmStabMin at 10 and beyond.
     TmStab0 = "TmStab0", 220, 120, 350, 15;
     TmStab1 = "TmStab1", 160, 100, 250, 10;
     TmStab2 = "TmStab2", 130, 90, 200, 8;
