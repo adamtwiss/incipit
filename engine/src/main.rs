@@ -334,6 +334,10 @@ fn main() {
                             eval_cache_kb = v.parse().unwrap_or(eval_cache_kb);
                             continue;
                         }
+                        if !cfg!(feature = "tune") {
+                            eprintln!("{a}: search parameters are constants in this build; build with --features tune (make TUNE=1)");
+                            std::process::exit(1);
+                        }
                         if !v.parse().is_ok_and(|v| params::set(k, v)) {
                             eprintln!("unknown parameter {a}");
                             std::process::exit(1);

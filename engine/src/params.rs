@@ -1,7 +1,9 @@
 use std::ptr::{addr_of, addr_of_mut};
 
 // Tunable search parameters. Built with `--features tune` (`make openbench`), they are
-// advertised as UCI options for SPSA; `tune-spec` prints them in OpenBench's SPSA format.
+// advertised as UCI options for SPSA and can be set (also as bench ablations);
+// `tune-spec` prints them in OpenBench's SPSA format. Other builds use the
+// defaults as compile-time constants.
 pub struct Param {
     pub name: &'static str,
     pub val: i32,
@@ -16,6 +18,22 @@ macro_rules! params {
         #[repr(usize)]
         pub enum P { $($id,)* COUNT }
         pub static mut PARAMS: [Param; P::COUNT as usize] = [$(Param { name: $name, val: $v, min: $lo, max: $hi, step: $step },)*];
+        #[cfg(not(feature = "tune"))]
+        const DEFAULTS: [i32; P::COUNT as usize] = [$($v,)*];
+
+        /// A parameter's value: from PARAMS (settable) with `tune`, else its
+        /// default as a constant, which folds into the code using it.
+        #[inline(always)]
+        pub fn tp(p: P) -> i32 {
+            #[cfg(feature = "tune")]
+            {
+                unsafe { PARAMS[p as usize].val }
+            }
+            #[cfg(not(feature = "tune"))]
+            {
+                DEFAULTS[p as usize]
+            }
+        }
     };
 }
 
@@ -117,18 +135,18 @@ params! {
     UseKillers = "UseKillers", 1, 0, 1, 0;
 }
 
-#[inline(always)]
-pub fn tp(p: P) -> i32 {
-    unsafe { PARAMS[p as usize].val }
-}
-
 /// A feature switch (a step-0 parameter) is on.
 #[inline(always)]
 pub fn on(p: P) -> bool {
     tp(p) != 0
 }
 
+/// Sets a parameter by UCI name; false if there is none or (without `tune`)
+/// parameters are constants.
 pub fn set(name: &str, v: i32) -> bool {
+    if !cfg!(feature = "tune") {
+        return false;
+    }
     unsafe {
         for p in (*addr_of_mut!(PARAMS)).iter_mut() {
             if p.name.eq_ignore_ascii_case(name) {
