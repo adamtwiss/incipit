@@ -85,8 +85,8 @@ params! {
     TmFeedMax = "TmFeedMax", 250, 100, 400, 20;
     // Clock surplus (ponder games with an increment): reserve in increments,
     // and the number of moves to spend the surplus over.
-    TmSurplusInc = "TmSurplusInc", 10, 2, 40, 2;
-    TmSurplusDiv = "TmSurplusDiv", 10, 3, 30, 2;
+    TmSurplusInc = "TmSurplusInc", 3, 1, 40, 1;
+    TmSurplusDiv = "TmSurplusDiv", 8, 3, 30, 1;
     // Sudden death: moves of overhead held back from the budget.
     TmReserveMoves = "TmReserveMoves", 20, 0, 60, 4;
     // Depth gates (formerly constants).
