@@ -474,7 +474,13 @@ fn main() {
                             }
                         }
                         other => {
-                            if let Ok(v) = val.parse::<i32>() {
+                            if !cfg!(feature = "tune") {
+                                // Not silently: a test setting a parameter would
+                                // otherwise measure the defaults.
+                                if let Some(name) = params::find(other) {
+                                    println!("info string {} ignored: search parameters are constants in this build (make TUNE=1)", name);
+                                }
+                            } else if let Ok(v) = val.parse::<i32>() {
                                 if params::set(other, v) {
                                     uci.searcher.init_lmr();
                                 }

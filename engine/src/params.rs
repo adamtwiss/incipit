@@ -141,6 +141,11 @@ pub fn on(p: P) -> bool {
     tp(p) != 0
 }
 
+/// The parameter's UCI name, if `name` (any case) is one.
+pub fn find(name: &str) -> Option<&'static str> {
+    unsafe { (*addr_of!(PARAMS)).iter().find(|p| p.name.eq_ignore_ascii_case(name)).map(|p| p.name) }
+}
+
 /// Sets a parameter by UCI name; false if there is none or (without `tune`)
 /// parameters are constants.
 pub fn set(name: &str, v: i32) -> bool {
