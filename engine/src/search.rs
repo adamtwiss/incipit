@@ -587,18 +587,20 @@ impl Searcher {
         if !on(P::UseCorrHist) {
             return Self::damp(pos, raw).clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
         }
-        let c = (2 * self.corr[pos.stm][(pos.pawn_key as usize) & m]
-            + self.corr_np[pos.stm][0][(pos.np_key[0] as usize) & m]
-            + self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m])
-            / (2 * CORR_GRAIN);
+        let c = (tp(P::CorrPawnWeight) * self.corr[pos.stm][(pos.pawn_key as usize) & m]
+            + tp(P::CorrNonPawnWeight)
+                * (self.corr_np[pos.stm][0][(pos.np_key[0] as usize) & m]
+                    + self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m]))
+            / (128 * CORR_GRAIN);
         Self::damp(pos, raw + c).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
     fn update_corr(&mut self, pos: &Position, depth: i32, diff: i32) {
-        let w = (depth + 1).min(16);
-        let target = diff.clamp(-400, 400) * CORR_GRAIN;
+        let w = (depth + 1).min(tp(P::CorrUpdateCap));
+        let target = diff.clamp(-tp(P::CorrDiffClamp), tp(P::CorrDiffClamp)) * CORR_GRAIN;
         let m = CORR_SIZE - 1;
-        let f = |e: &mut i32| *e = ((*e * (256 - w) + target * w) / 256).clamp(-CORR_GRAIN * 64, CORR_GRAIN * 64);
+        let lim = CORR_GRAIN * tp(P::CorrLimit);
+        let f = |e: &mut i32| *e = ((*e * (256 - w) + target * w) / 256).clamp(-lim, lim);
         f(&mut self.corr[pos.stm][(pos.pawn_key as usize) & m]);
         f(&mut self.corr_np[pos.stm][0][(pos.np_key[0] as usize) & m]);
         f(&mut self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m]);
