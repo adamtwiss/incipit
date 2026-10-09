@@ -92,6 +92,10 @@ params! {
     HistPruneDepth = "HistPruneDepth", 4, 2, 8, 1;
     SeeNoisyDepth = "SeeNoisyDepth", 7, 3, 10, 1;
     SeDepth = "SeDepth", 6, 4, 10, 1;
+    // QS, not in check: once this many moves have been searched, skip the rest
+    // (move ordering puts the likely ones first). Starting value: 3, as the
+    // in-check quiet-evasion limit.
+    QsMoveLimit = "QsMoveLimit", 3, 1, 8, 1;
     // Correction history. The eval correction is (CorrPawnWeight * pawn entry +
     // CorrNonPawnWeight * (white + black non-pawn entries)) / 128; the defaults are the
     // original 2:1:1 weighting, as separate weights so SPSA can move each one.

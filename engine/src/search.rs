@@ -1619,6 +1619,9 @@ impl Searcher {
             pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
             let m = list[i];
             if !in_check {
+                if legal >= tp(P::QsMoveLimit) {
+                    break;
+                }
                 if on(P::UseQsSee) && !pos.see_ge(m, 0) {
                     continue;
                 }
