@@ -82,13 +82,19 @@ features will be new kinds.
 | 1 | Activation applied to the outputs (`0` for the final layer) |
 | 1 | Weight type |
 | 1 | Bias type |
-| 1 | Flags: bit 0 = a separate set of weights and biases per output bucket; bit 1 (first hidden layer only) = linear skip, see below |
+| 1 | Flags: bit 0 = a separate set of weights and biases per output bucket; bit 1 (first hidden layer only) = linear skip, bit 2 (first hidden layer only) = pre-activation readout, see below |
 
 Linear skip (flag bit 1 on the first hidden layer): the layer's last neuron
 has no activation. Its pre-activation (weights times inputs plus bias, in
 real terms) is added to the network output, before the eval scale, and the
 next layer takes only the other outputs - 1 neurons as its inputs. Needs a
 second hidden layer.
+
+Pre-activation readout (flag bit 2 on the first hidden layer): an f32 block
+`[output bucket][neuron]` ends the file. Each neuron's pre-activation (in
+real terms) times its weight for the position's bucket is added to the
+network output, before the eval scale; the neurons still feed the next layer
+as usual.
 
 **`0x0006` QUANTISATION** (required).
 

@@ -55,6 +55,7 @@ usage:
       --l1 N               one hidden layer of N neurons after the FT (bullet only)
       --l1-shared          the hidden layer is shared by all output buckets
       --l1-dual            the second hidden layer takes SCReLU and CReLU of the first (needs --l2)
+      --l1-lin N           the first N hidden neurons' pre-activations also feed the output (trainer l1lin=N)
       --l1-skip            the hidden layer's last neuron is a linear skip to the output (trainer l1skip=1; needs --l2)
       --description TEXT   training run, data and settings
       --permute FILE       FT neuron order (hidden-layer nets; from the engine's l1perm)
@@ -469,6 +470,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         l1_shared: false,
         l1_dual: false,
         l1_skip: false,
+        l1_lin: 0,
         perm: Vec::new(),
         l1_shift: 0,
         l2: 0,
@@ -499,6 +501,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         let val = opts.get(i + 1).ok_or_else(|| format!("{} needs a value", flag))?;
         let num = || val.parse::<i64>().map_err(|_| format!("{}: bad number {}", flag, val));
         match flag {
+            "--l1-lin" => arch.l1_lin = num()? as usize,
             "--hidden" => arch.hidden = num()? as usize,
             "--l1" => arch.l1 = num()? as usize,
             "--l1-shift" => arch.l1_shift = num()? as u32,

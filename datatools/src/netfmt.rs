@@ -52,6 +52,9 @@ pub struct Arch {
     /// The hidden layer's last neuron is a linear skip: no activation, added
     /// to the output; the second hidden layer sees the other l1 - 1.
     pub l1_skip: bool,
+    /// The first l1_lin hidden neurons' pre-activations also go straight to
+    /// the output, with a weight per output bucket (0 = none).
+    pub l1_lin: usize,
     /// FT neuron order for a net with a hidden layer: new neuron k is old
     /// neuron perm[k] (empty = unchanged). Reordering the FT columns and the
     /// matching hidden-layer inputs together leaves every eval unchanged; the
@@ -120,6 +123,7 @@ pub fn write_hidden(
     mid: Option<(&[f32], &[f32])>,
     w2: &[f32],
     b2: &[f32],
+    lin: &[f32],
 ) -> Vec<u8> {
     let (h, nb, l1, l2) = (arch.hidden, arch.output_buckets, arch.l1, arch.l2);
     let nb1 = if arch.l1_shared { 1 } else { nb };
@@ -130,10 +134,11 @@ pub fn write_hidden(
     assert_eq!(b1.len(), nb1 * l1);
     assert_eq!(w2.len(), nb * last);
     assert_eq!(b2.len(), nb);
+    assert_eq!(lin.len(), if arch.l1_lin > 0 { nb * l1 } else { 0 });
     assert_eq!(mid.is_some(), l2 > 0);
     let mut p1 = (inl as u32).to_le_bytes().to_vec();
     p1.extend_from_slice(&(l1 as u32).to_le_bytes());
-    p1.extend_from_slice(&[ACT_SCRELU, TYPE_I8, TYPE_F32, !arch.l1_shared as u8 | (arch.l1_skip as u8) << 1]);
+    p1.extend_from_slice(&[ACT_SCRELU, TYPE_I8, TYPE_F32, !arch.l1_shared as u8 | (arch.l1_skip as u8) << 1 | ((arch.l1_lin > 0) as u8) << 2]);
     let in2 = if arch.l1_dual { 2 * l1 } else if arch.l1_skip { l1 - 1 } else { l1 };
     let mut pm = (in2 as u32).to_le_bytes().to_vec();
     pm.extend_from_slice(&(l2 as u32).to_le_bytes());
@@ -148,7 +153,7 @@ pub fn write_hidden(
     }
     let mut weights: Vec<u8> = w1.iter().map(|&v| v as u8).collect();
     let (wm, bm): (&[f32], &[f32]) = mid.unwrap_or((&[], &[]));
-    for v in b1.iter().chain(wm).chain(bm).chain(w2).chain(b2) {
+    for v in b1.iter().chain(wm).chain(bm).chain(w2).chain(b2).chain(lin) {
         weights.extend_from_slice(&v.to_le_bytes());
     }
     if l2 > 0 {
@@ -290,7 +295,11 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
         return Err("--l1-skip needs --l2 and no --l1-dual".into());
     }
     let in2 = if arch.l1_dual { 2 * l1 } else if arch.l1_skip { l1 - 1 } else { l1 };
-    let expect = 2 * (n_ftw + h) + nb1 * l1 * inl + 4 * (nb1 * l1 + nb * l2 * (in2 + 1) + nb * last + nb);
+    let nlin = arch.l1_lin;
+    if nlin > l1 {
+        return Err(format!("--l1-lin {} is more than the {} hidden neurons", nlin, l1));
+    }
+    let expect = 2 * (n_ftw + h) + nb1 * l1 * inl + 4 * (nb1 * l1 + nb * l2 * (in2 + 1) + nb * last + nb + nb * nlin);
     let ok = data.len() == expect.div_ceil(64) * 64
         && (data[expect..].iter().all(|&b| b == 0) || data[expect..].iter().zip(b"bullet".iter().cycle()).all(|(a, b)| a == b));
     if !ok {
@@ -314,9 +323,12 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let bm = f32s(take(4 * nb * l2));
     let w2 = f32s(take(4 * nb * last));
     let b2 = f32s(take(4 * nb));
+    // Readout [bucket][nlin], padded to [bucket][l1] with zeros.
+    let linf = f32s(take(4 * nb * nlin));
+    let lin: Vec<f32> = if nlin == 0 { Vec::new() } else { (0..nb * l1).map(|i| if i % l1 < nlin { linf[i / l1 * nlin + i % l1] } else { 0.0 }).collect() };
     let mid = (l2 > 0).then_some((&wm[..], &bm[..]));
     if arch.perm.is_empty() {
-        return Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2));
+        return Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2, &lin));
     }
     // The order covers the hidden layer's inputs per perspective: h neurons, or
     // for pairwise nets h/2 pairs (neurons j and j + h/2 move together).
@@ -333,7 +345,7 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
         .chunks_exact(2 * u)
         .flat_map(|row| p.iter().map(move |&i| row[i]).chain(p.iter().map(move |&i| row[u + i])))
         .collect();
-    Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2))
+    Ok(write_hidden(arch, &ftw, &ftb, &w1, &b1, mid, &w2, &b2, &lin))
 }
 
 /// Describes a network file's header (and checks its size), for `net-info`.

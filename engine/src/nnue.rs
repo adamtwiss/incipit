@@ -74,6 +74,9 @@ struct Hidden {
     // 1 when the last neuron is a linear skip (no activation, added to the
     // output; the next layer doesn't see it), else 0: branch-free.
     skip_k: f32,
+    // Pre-activation readout [bucket][neuron]: each neuron's pre-activation
+    // times this is added to the output (zeros when the net has none).
+    lin: Vec<[f32; L1_SIZE]>,
     // Optional second hidden layer (f32, SCReLU, per bucket): n2 neurons
     // (0 = none). wm is [bucket][input][n2] (input-major, so the product
     // vectorises over the outputs), bm [bucket][n2]; the output layer is then
@@ -356,6 +359,8 @@ fn load_hidden(
     let shared = l1.5 & 1 == 0;
     // Flag bit 1: the last neuron is a linear skip to the output.
     let skip = l1.5 & 2 != 0;
+    // Flag bit 2: a pre-activation readout block ends the file.
+    let lin = l1.5 & 4 != 0;
     let ln = l1.1;
     if (l1.0, l1.2, l1.3, l1.4) != (inl, ACT_SCRELU, TYPE_I8, TYPE_F32) || (ln != 8 && ln != 16) {
         return Err(format!("unsupported hidden layer {:?} (need {} -> 8 or 16 SCReLU, i8 weights, f32 biases)", l1, inl));
@@ -388,7 +393,7 @@ fn load_hidden(
         return Err(format!("hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs", shift, w_scale));
     }
     let n_ftw = nkb * 768 * h;
-    let expect = 2 * (n_ftw + h) + nb1 * ln * inl + 4 * (nb1 * ln + buckets * n2 * (in2 + 1) + buckets * (last_in + 1));
+    let expect = 2 * (n_ftw + h) + nb1 * ln * inl + 4 * (nb1 * ln + buckets * n2 * (in2 + 1) + buckets * (last_in + 1) + if lin { buckets * ln } else { 0 });
     if d.len() - header != expect {
         return Err(format!("weights are {} bytes, but the header describes {}", d.len() - header, expect));
     }
@@ -452,6 +457,7 @@ fn load_hidden(
         w2 = rows(f32s(buckets * ln));
     }
     let b2 = f32s(buckets);
+    let lin = if lin { rows(f32s(buckets * ln)) } else { vec![[0f32; L1_SIZE]; buckets] };
     Ok(Network {
         h,
         mirror,
@@ -479,6 +485,7 @@ fn load_hidden(
             w2,
             b2,
             skip_k: skip as u8 as f32,
+            lin,
             n2,
             wm,
             dual,
@@ -866,17 +873,20 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &H
     };
     // First hidden layer activations, 8 at a time.
     let b1 = &l1.b1[b1i];
+    let lin = &l1.lin[bucket];
     let mut v1 = [zero; L1_SIZE / 8];
     let mut c1 = [zero; L1_SIZE / 8]; // CReLU of the same pre-activations (dual)
+    // Pre-activation readout (zero weights for nets without one).
+    let mut acc = zero;
     for c in 0..L / 8 {
         let zi = _mm256_loadu_si256(z.as_ptr().add(8 * c) as *const __m256i);
         let pre = _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(zi), kv), _mm256_loadu_ps(b1.as_ptr().add(8 * c)));
+        acc = _mm256_add_ps(acc, _mm256_mul_ps(pre, _mm256_loadu_ps(lin.as_ptr().add(8 * c))));
         v1[c] = screlu(pre);
         if DUAL {
             c1[c] = _mm256_min_ps(_mm256_max_ps(pre, zero), one);
         }
     }
-    let mut acc = zero;
     if L2 == 0 {
         let w2 = &l1.w2[bucket];
         for c in 0..L / 8 {
@@ -922,16 +932,19 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &H
         c * c
     };
     let b1 = &l1.b1[b1i];
+    let lin = &l1.lin[bucket];
     // Second-layer inputs: SCReLU (L), then CReLU (L) when dual.
     let mut v1 = [0f32; 2 * L1_SIZE];
+    // Pre-activation readout, in the AVX2 version's lane order.
+    let mut acc = [0f32; 8];
     for i in 0..L {
         let pre = z[i] as f32 * k + b1[i];
+        acc[i % 8] = acc[i % 8] + pre * lin[i];
         v1[i] = screlu(pre);
         if DUAL {
             v1[L + i] = pre.max(0.0).min(1.0);
         }
     }
-    let mut acc = [0f32; 8];
     if L2 == 0 {
         let w2 = &l1.w2[bucket];
         for i in 0..L {
