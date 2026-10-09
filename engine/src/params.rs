@@ -86,7 +86,10 @@ params! {
     // Clock surplus (ponder games with an increment): reserve in increments,
     // and the number of moves to spend the surplus over.
     TmSurplusInc = "TmSurplusInc", 3, 1, 40, 1;
-    TmSurplusDiv = "TmSurplusDiv", 8, 3, 30, 1;
+    TmSurplusDiv = "TmSurplusDiv", 4, 2, 30, 1;
+    // Clock trajectory length (moves) in ponder games with an increment.
+    TmTrajMoves = "TmTrajMoves", 50, 20, 120, 5;
+    TmTrajFloor = "TmTrajFloor", 10, 0, 40, 2;
     // Sudden death: moves of overhead held back from the budget.
     TmReserveMoves = "TmReserveMoves", 20, 0, 60, 4;
     // Depth gates (formerly constants).

@@ -137,6 +137,8 @@ struct Uci {
     /// Our usable clock at this game's first timed move (the clock-surplus
     /// baseline); cleared by ucinewgame.
     start_clock: Option<i64>,
+    /// Our timed moves so far this game (the clock trajectory's position).
+    game_moves: i64,
 }
 
 impl Uci {
@@ -232,16 +234,21 @@ impl Uci {
             };
             base_soft = soft.max(1) as u64;
             let mut soft = (soft as f64 * self.searcher.pt.feed_scale()) as i64;
-            // Clock surplus (games where the GUI ponders, with an increment):
-            // ponder hits leave our budget unspent and the clock grows above
-            // where it started. Spend what's above both the starting clock and a
-            // reserve of TmSurplusInc increments over about TmSurplusDiv moves.
-            // Games whose clock never grows (small increments) are unchanged.
+            // Clock trajectory (games where the GUI ponders, with an increment):
+            // ponder hits leave the budget unspent, so without a target the
+            // clock just sits near its start (or grows). Target clock after this
+            // move: falling linearly from the starting clock to 0 over
+            // TmTrajMoves moves, never below TmSurplusInc increments or TmTrajFloor% of
+            // the starting clock. Spend what
+            // is above it over about TmSurplusDiv moves.
             let start = *self.start_clock.get_or_insert(left);
+            self.game_moves += 1;
             if params::on(params::P::UseTmSurplus) && self.searcher.pt.ponder_seen && inc > 0 {
-                let base = start.max(inc * params::tp(params::P::TmSurplusInc) as i64);
-                if left > base {
-                    soft += (left - base) / params::tp(params::P::TmSurplusDiv) as i64;
+                let n = params::tp(params::P::TmTrajMoves) as i64;
+                let floor = (inc * params::tp(params::P::TmSurplusInc) as i64).max(start * params::tp(params::P::TmTrajFloor) as i64 / 100);
+                let target = (start * (n - self.game_moves).max(0) / n).max(floor);
+                if left > target {
+                    soft += (left - target) / params::tp(params::P::TmSurplusDiv) as i64;
                 }
             }
             let hard = (left * 2 / 5).min(soft * params::tp(params::P::TmHardMul) as i64).max(1);
@@ -426,6 +433,7 @@ fn main() {
         searcher: Searcher::new(16, stop.clone()),
         overhead: 20,
         start_clock: None,
+        game_moves: 0,
     };
     uci.searcher.pt.hit = ponder_hit;
     let mut hash_mb = 16usize;
@@ -456,6 +464,7 @@ fn main() {
             "ucinewgame" => {
                 uci.searcher.clear();
                 uci.start_clock = None;
+                uci.game_moves = 0;
             }
             "setoption" => {
                 // setoption name <id> value <x>
