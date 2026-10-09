@@ -942,15 +942,15 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &H
     l1.b2[bucket] + ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]))
 }
 
-/// Portable kernels (non-x86 targets; NEON versions to come): the same
-/// results as the SIMD ones.
+/// Portable kernels (targets without SIMD versions): the same results as the
+/// SIMD ones.
 #[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
 unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
     to_u8_scalar(a, x, 255, 9)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
     let half = a0.len() / 2;
@@ -995,7 +995,7 @@ unsafe fn l1_product_portable(x: &[u8], nz: &[u16], count: usize, w: &[i8], l: u
     z
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     l1_product_portable(x, nz, count, w, 16)
@@ -1189,7 +1189,7 @@ unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
 
 /// For each 8-bit mask, the positions of its set bits (unused slots 0): lets
 /// the kernels list non-zero input groups without a branch per group.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 static NZ_TABLE: [[u16; 8]; 256] = {
     let mut t = [[0u16; 8]; 256];
     let mut m = 0;
@@ -1605,6 +1605,15 @@ pub fn l1check(trials: usize) -> usize {
             if l1_matmul::<8>(&x1, &w[..8 * 2 * h]) != l1_matmul_scalar(&x1, &w[..8 * 2 * h], 8) {
                 bad += 1;
             }
+            // Sparse inputs, as in real positions (few non-zero groups, odd counts).
+            let keep = rnd() % 64;
+            let xs: Vec<u8> = x1.iter().map(|&v| if rnd() % 64 < keep { v } else { 0 }).collect();
+            if l1_matmul::<16>(&xs, &w) != l1_matmul_scalar(&xs, &w, 16) {
+                bad += 1;
+            }
+            if l1_matmul::<8>(&xs, &w[..8 * 2 * h]) != l1_matmul_scalar(&xs, &w[..8 * 2 * h], 8) {
+                bad += 1;
+            }
         }
     }
     bad
@@ -1805,6 +1814,115 @@ pub fn l1perm(path: &str, fens: &str, out: &str) -> Result<(), String> {
     let s: Vec<String> = perm.iter().map(|i| i.to_string()).collect();
     std::fs::write(out, s.join(" ") + "\n").map_err(|e| format!("{}: {}", out, e))?;
     Ok(())
+}
+
+/// NEON: appends the indices (base + bit) of the set bits of the 8-bit mask m
+/// to nz at count, with one 16-byte store (as the x86 push_nz).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn push_nz(nz: &mut [u16], count: usize, m: u32, base: u16) -> usize {
+    use std::arch::aarch64::*;
+    let idx = vaddq_u16(vld1q_u16(NZ_TABLE.get_unchecked(m as usize).as_ptr()), vdupq_n_u16(base));
+    vst1q_u16(nz.as_mut_ptr().add(count), idx);
+    count + m.count_ones() as usize
+}
+
+/// Bit k set if the k-th 4-byte group of q0:q1 (32 bytes) has a non-zero
+/// byte: each group's all-ones/zero test, narrowed to 16 bits, weighted by
+/// its bit and summed.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn nz_mask8(q0: std::arch::aarch64::uint8x16_t, q1: std::arch::aarch64::uint8x16_t) -> u32 {
+    use std::arch::aarch64::*;
+    const BITS: [u16; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
+    let (g0, g1) = (vreinterpretq_u32_u8(q0), vreinterpretq_u32_u8(q1));
+    let t = vcombine_u16(vmovn_u32(vtstq_u32(g0, g0)), vmovn_u32(vtstq_u32(g1, g1)));
+    vaddvq_u16(vandq_u16(t, vld1q_u16(BITS.as_ptr()))) as u32
+}
+
+/// NEON version of to_u8_pw_nz_255_9: per perspective, 16 outputs at a time,
+/// clamp(a[i]) * clamp(a[half + i]) >> 9. vqmovun saturates i16 to 0..255
+/// (the clamp), the u8 x u8 product is exact in u16 (at most 65025), uzp2
+/// takes the products' high bytes (>> 8) and a shift by 1 completes the >> 9.
+/// half is a multiple of 32.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
+    use std::arch::aarch64::*;
+    let half = a0.len() / 2;
+    let mut count = 0;
+    for (p, a) in [a0, a1].into_iter().enumerate() {
+        let base = p * half;
+        let ap = a.as_ptr();
+        let clamp = |o: usize| vqmovun_high_s16(vqmovun_s16(vld1q_s16(ap.add(o))), vld1q_s16(ap.add(o + 8)));
+        let prod = |o: usize| {
+            let (c1, c2) = (clamp(o), clamp(half + o));
+            let (lo, hi) = (vmull_u8(vget_low_u8(c1), vget_low_u8(c2)), vmull_high_u8(c1, c2));
+            vshrq_n_u8(vuzp2q_u8(vreinterpretq_u8_u16(lo), vreinterpretq_u8_u16(hi)), 1)
+        };
+        for i in (0..half).step_by(32) {
+            let (q0, q1) = (prod(i), prod(i + 16));
+            let o = base + i;
+            vst1q_u8(x.as_mut_ptr().add(o), q0);
+            vst1q_u8(x.as_mut_ptr().add(o + 16), q1);
+            count = push_nz(nz, count, nz_mask8(q0, q1), (o / 4) as u16);
+        }
+    }
+    count
+}
+
+/// acc + Σ x · w over each 4-byte group, per 32-bit lane: one sdot with the
+/// dot-product extension (every Apple and recent Arm core), else widening
+/// multiplies and pairwise adds. The u8 inputs are at most 127, so they are
+/// exact as i8 and the signed dot product gives the u8 x i8 result.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn dot4(acc: std::arch::aarch64::int32x4_t, x: std::arch::aarch64::int8x16_t, w: std::arch::aarch64::int8x16_t) -> std::arch::aarch64::int32x4_t {
+    use std::arch::aarch64::*;
+    #[cfg(target_feature = "dotprod")]
+    {
+        vdotq_s32(acc, x, w)
+    }
+    #[cfg(not(target_feature = "dotprod"))]
+    {
+        // i8 x i8 products fit i16; pairs, then pairs of pairs, to i32.
+        let lo = vpaddlq_s16(vmull_s8(vget_low_s8(x), vget_low_s8(w)));
+        let hi = vpaddlq_s16(vmull_high_s8(x, w));
+        vaddq_s32(acc, vpaddq_s32(lo, hi))
+    }
+}
+
+/// NEON, 16 outputs: a group's 64-byte weight row is four vectors of 4
+/// outputs; per listed group, a broadcast of its 4 inputs and four dot4s.
+/// Two groups per step into separate accumulators (eight chains).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+    use std::arch::aarch64::*;
+    let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
+    let mut a = [vdupq_n_s32(0); 8];
+    let mut step = |k: usize, g: usize| {
+        let xb = vreinterpretq_s8_s32(vdupq_n_s32(xp.add(g).read_unaligned()));
+        let wv = vld1q_s8_x4(wp.add(g * 64));
+        a[4 * k] = dot4(a[4 * k], xb, wv.0);
+        a[4 * k + 1] = dot4(a[4 * k + 1], xb, wv.1);
+        a[4 * k + 2] = dot4(a[4 * k + 2], xb, wv.2);
+        a[4 * k + 3] = dot4(a[4 * k + 3], xb, wv.3);
+    };
+    let mut i = 0;
+    while i + 1 < count {
+        step(0, *nz.get_unchecked(i) as usize);
+        step(1, *nz.get_unchecked(i + 1) as usize);
+        i += 2;
+    }
+    if i < count {
+        step(0, *nz.get_unchecked(i) as usize);
+    }
+    let mut z = [0i32; L1_SIZE];
+    for j in 0..4 {
+        vst1q_s32(z.as_mut_ptr().add(4 * j), vaddq_s32(a[j], a[4 + j]));
+    }
+    z
 }
 
 /// NEON version: four 8-lane vectors per 32-wide step, each with its own
