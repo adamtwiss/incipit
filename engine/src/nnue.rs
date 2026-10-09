@@ -160,6 +160,28 @@ impl Drop for Aligned {
 #[repr(C, align(64))]
 pub struct Acc {
     pub v: [i16; 2 * MAX_H],
+    /// The move that leads to this ply, recorded by set_pending/set_null and
+    /// applied only when an eval needs this accumulator (ensure).
+    delta: Delta,
+    /// v is out of date: delta is still to be applied to the parent's.
+    dirty: bool,
+}
+
+/// What a move changes in the accumulator: its (piece, square) adds and subs
+/// and the king squares before it (each perspective's bucket and mirror), or a
+/// rebuild through the refresh cache of the mover's perspective when its king
+/// changes bucket, or (null move) a copy of the parent.
+#[derive(Clone, Copy)]
+struct Delta {
+    adds: [(u8, u8); 2],
+    subs: [(u8, u8); 2],
+    na: u8,
+    ns: u8,
+    ksq: [u8; 2],
+    refresh: u8,      // 1 + the perspective rebuilt, or 0
+    null: bool,
+    pieces: [u64; 6], // the position after the move, for a rebuild (set only then)
+    colors: [u64; 2],
 }
 
 static mut NET: *const Network = std::ptr::null();
@@ -537,7 +559,8 @@ fn row(n: &Network, f: usize, h: usize) -> &[i16] {
 
 impl Acc {
     pub fn new() -> Self {
-        Acc { v: [0; 2 * MAX_H] }
+        let delta = Delta { adds: [(0, 64); 2], subs: [(0, 64); 2], na: 0, ns: 0, ksq: [0; 2], refresh: 0, null: false, pieces: [0; 6], colors: [0; 2] };
+        Acc { v: [0; 2 * MAX_H], delta, dirty: false }
     }
 
     // Safe: p < 2 and load() checks h <= MAX_H.
@@ -551,18 +574,12 @@ impl Acc {
         unsafe { self.v.get_unchecked_mut(p * h..(p + 1) * h) }
     }
 
-    /// Copies only the part of `other` the loaded network uses.
-    #[inline(always)]
-    pub fn copy_from(&mut self, other: &Acc) {
-        let h2 = 2 * net().h;
-        self.v[..h2].copy_from_slice(&other.v[..h2]);
-    }
-
     pub fn refresh(&mut self, pos: &Position) {
         let n = net();
         for p in 0..2 {
             with_h!(n.h, refresh_persp(self, n, p, pos));
         }
+        self.dirty = false;
     }
 
     /// Compute accumulator of `child` after move m made in parent position `pos`.
@@ -570,8 +587,58 @@ impl Acc {
     /// that perspective via `cache`.
     #[inline]
     pub fn update_from(&mut self, parent: &Acc, pos: &Position, child: &Position, m: Move, cache: &mut RefreshCache) {
+        self.set_pending(pos, child, m);
         let n = net();
-        with_h!(n.h, update(self, n, parent, pos, child, m, cache));
+        let d = self.delta;
+        with_h!(n.h, apply(self, n, parent, &d, cache));
+        self.dirty = false;
+    }
+
+    /// Records move m (from `pos` to `child`) as this ply's pending update;
+    /// ensure() applies it when an eval needs it.
+    #[inline(always)]
+    pub fn set_pending(&mut self, pos: &Position, child: &Position, m: Move) {
+        record(&mut self.delta, net(), pos, child, m);
+        self.dirty = true;
+    }
+
+    /// Records a null move: this ply is a copy of the parent's accumulator.
+    #[inline(always)]
+    pub fn set_null(&mut self) {
+        self.delta.null = true;
+        self.dirty = true;
+    }
+
+    /// Whether the used part of v equals `other`'s (tests).
+    #[cfg(test)]
+    pub fn same(&self, other: &Acc) -> bool {
+        let h2 = 2 * net().h;
+        self.v[..h2] == other.v[..h2]
+    }
+}
+
+/// Brings accs[ply] up to date: applies the pending moves forward from the
+/// last computed ply (accs[0], refreshed at the root, always is). One check
+/// when nothing is pending.
+#[inline(always)]
+pub fn ensure(accs: &mut [Acc], ply: usize, cache: &mut RefreshCache) {
+    if accs[ply].dirty {
+        let n = net();
+        with_h!(n.h, catch_up(accs, n, ply, cache));
+    }
+}
+
+#[inline(never)]
+fn catch_up<const H: usize>(accs: &mut [Acc], n: &Network, ply: usize, cache: &mut RefreshCache) {
+    let mut q = ply;
+    while accs[q - 1].dirty {
+        q -= 1;
+    }
+    for r in q..=ply {
+        let (a, b) = accs.split_at_mut(r);
+        let d = b[0].delta;
+        apply::<H>(&mut b[0], n, &a[r - 1], &d, cache);
+        b[0].dirty = false;
     }
 }
 
@@ -621,16 +688,16 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
 /// Rebuilds perspective p of `acc` for `pos` through the cache entry for p's
 /// king bucket and mirror state.
 #[inline(never)]
-fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Position, cache: &mut RefreshCache) {
+fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pieces: &[u64; 6], colors: &[u64; 2], cache: &mut RefreshCache) {
     let h = hidden::<H>(n);
-    let ki = kinfo(n, p, pos.king_sq(p));
+    let ki = kinfo(n, p, crate::attacks::lsb(pieces[KING] & colors[p]));
     let idx = (p * n.nkb + ki.0 / 768) * 2 + (ki.1 != 0) as usize;
     let e = &mut cache.entries[idx];
     let v = &mut e.acc[..h];
     for c in 0..2 {
         for pt in 0..6 {
             let pc = make_pc(pt, c);
-            let cur = pos.pieces[pt] & pos.colors[c];
+            let cur = pieces[pt] & colors[c];
             let old = e.bb[pc as usize];
             for sq in Bits(cur & !old) {
                 for (x, &w) in v.iter_mut().zip(row(n, feat(p, ki, pc, sq), h)) {
@@ -648,52 +715,67 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
     acc.side_mut(p, h).copy_from_slice(v);
 }
 
-#[inline(never)]
-fn update<const H: usize>(acc: &mut Acc, n: &Network, parent: &Acc, pos: &Position, child: &Position, m: Move, cache: &mut RefreshCache) {
-    let h = hidden::<H>(n);
+/// Records in d what move m (from `pos` to `child`) changes.
+#[inline(always)]
+fn record(d: &mut Delta, n: &Network, pos: &Position, child: &Position, m: Move) {
     let from = mfrom(m);
     let to = mto(m);
     let flag = mflag(m);
     let pc = pos.board[from];
     let us = pos.stm;
     let newpc = if flag & 8 != 0 { make_pc(promo_pt(m), us) } else { pc };
-    let mut adds: [(u8, usize); 2] = [(newpc, to), (0, 64)];
-    let mut subs: [(u8, usize); 2] = [(pc, from), (0, 64)];
-    let mut na = 1;
-    let mut ns = 1;
+    d.adds = [(newpc, to as u8), (0, 64)];
+    d.subs = [(pc, from as u8), (0, 64)];
+    d.na = 1;
+    d.ns = 1;
+    d.null = false;
     if is_castle(m) {
         // Checked first: in Chess960 the king's destination may hold the rook.
         let q = flag == F_QCASTLE;
-        subs[1] = (make_pc(ROOK, us), pos.rook_sq[castle_right(us, q)] as usize);
-        adds[1] = (make_pc(ROOK, us), if q { to + 1 } else { to - 1 });
-        ns = 2;
-        na = 2;
+        d.subs[1] = (make_pc(ROOK, us), pos.rook_sq[castle_right(us, q)]);
+        d.adds[1] = (make_pc(ROOK, us), if q { to + 1 } else { to - 1 } as u8);
+        d.ns = 2;
+        d.na = 2;
     } else if flag == F_EP {
-        subs[1] = (make_pc(PAWN, us ^ 1), to ^ 8);
-        ns = 2;
+        d.subs[1] = (make_pc(PAWN, us ^ 1), (to ^ 8) as u8);
+        d.ns = 2;
     } else if pos.board[to] != NONE_PC {
-        subs[1] = (pos.board[to], to);
-        ns = 2;
+        d.subs[1] = (pos.board[to], to as u8);
+        d.ns = 2;
+    }
+    d.ksq = [pos.king_sq(WHITE) as u8, pos.king_sq(BLACK) as u8];
+    d.refresh = 0;
+    if n.refresh_on_king_move && pc_type(pc) == KING && kinfo(n, us, to) != kinfo(n, us, pos.king_sq(us)) {
+        d.refresh = us as u8 + 1;
+        d.pieces = child.pieces;
+        d.colors = child.colors;
+    }
+}
+
+/// acc = parent's accumulator with the recorded move d applied.
+#[inline(always)]
+fn apply<const H: usize>(acc: &mut Acc, n: &Network, parent: &Acc, d: &Delta, cache: &mut RefreshCache) {
+    let h = hidden::<H>(n);
+    if d.null {
+        acc.v[..2 * h].copy_from_slice(&parent.v[..2 * h]);
+        return;
     }
     for p in 0..2 {
-        let ki = kinfo(n, p, pos.king_sq(p));
-        if n.refresh_on_king_move && p == us && pc_type(pc) == KING && kinfo(n, p, to) != ki {
-            refresh_cached::<H>(acc, n, p, child, cache);
+        if d.refresh as usize == p + 1 {
+            refresh_cached::<H>(acc, n, p, &d.pieces, &d.colors, cache);
             continue;
         }
-        let a0 = row(n, feat(p, ki, adds[0].0, adds[0].1), h);
-        let s0 = row(n, feat(p, ki, subs[0].0, subs[0].1), h);
+        let ki = kinfo(n, p, d.ksq[p] as usize);
+        let r = |(pc, sq): (u8, u8)| row(n, feat(p, ki, pc, sq as usize), h);
+        let (a0, s0) = (r(d.adds[0]), r(d.subs[0]));
         let src = parent.side(p, h);
         let dst = acc.side_mut(p, h);
-        if ns == 1 {
+        if d.ns == 1 {
             add_sub(dst, src, [a0], [s0]);
-        } else if na == 1 {
-            let s1 = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
-            add_sub(dst, src, [a0], [s0, s1]);
+        } else if d.na == 1 {
+            add_sub(dst, src, [a0], [s0, r(d.subs[1])]);
         } else {
-            let s1 = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
-            let a1 = row(n, feat(p, ki, adds[1].0, adds[1].1), h);
-            add_sub(dst, src, [a0, a1], [s0, s1]);
+            add_sub(dst, src, [a0, r(d.adds[1])], [s0, r(d.subs[1])]);
         }
     }
 }

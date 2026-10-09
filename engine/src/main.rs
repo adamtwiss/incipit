@@ -533,3 +533,32 @@ fn main() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lazy accumulator updates: a bench-like search over the bench positions
+    /// in which every NNUE eval checks its accumulator against a refresh from
+    /// scratch (Searcher::evaluate does this in test builds).
+    #[test]
+    fn lazy_accumulators_match_refresh() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            attacks::init();
+            nnue::init();
+        });
+        let mut s = Searcher::new(16, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        let before = search::LAZY_CHECKS.load(Ordering::Relaxed);
+        for f in BENCH_FENS.iter() {
+            let pos = Position::from_fen(f).unwrap();
+            s.clear();
+            s.hash_hist.clear();
+            s.search(&pos, &Limits { soft_ms: None, hard_ms: None, depth: 9, nodes: None });
+        }
+        let checked = search::LAZY_CHECKS.load(Ordering::Relaxed) - before;
+        eprintln!("lazy checks {}", checked);
+        assert!(checked > 100_000, "only {} evals checked", checked);
+    }
+}

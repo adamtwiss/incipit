@@ -17,6 +17,11 @@ fn eval_cache_entries(kb: usize) -> usize {
 pub const MATE: i32 = 31000;
 pub const MATE_BOUND: i32 = MATE - 512;
 pub const MAX_PLY: usize = 128;
+
+/// Test builds: number of evals whose lazily updated accumulator was checked
+/// against a refresh from scratch.
+#[cfg(test)]
+pub static LAZY_CHECKS: AtomicU64 = AtomicU64::new(0);
 /// Default eval cache size in KB (UCI EvalCacheKB). Sized for the per-core
 /// L2: under concurrent load (16 engines on sn1) 2 MB tables evict the FT
 /// weights from the shared L3 and cost ~9% nps, while 256 KB is neutral for
@@ -517,8 +522,8 @@ impl Searcher {
         if cfg!(feature = "hce") {
             return; // bootstrap build: no NNUE, skip accumulator updates
         }
-        let (a, b) = self.acc.split_at_mut(ply + 1);
-        b[0].update_from(&a[ply], pos, child, m, &mut self.refresh_cache);
+        // Lazy: recorded here, applied when an eval needs it (nnue::ensure).
+        self.acc[ply + 1].set_pending(pos, child, m);
     }
 
     /// The network's eval (side to move), without the fifty-move damping: the
@@ -536,6 +541,14 @@ impl Searcher {
         let e = if cfg!(feature = "hce") {
             crate::eval::evaluate(pos)
         } else {
+            nnue::ensure(&mut self.acc, ply, &mut self.refresh_cache);
+            #[cfg(test)]
+            {
+                let mut fresh = Acc::new();
+                fresh.refresh(pos);
+                assert!(self.acc[ply].same(&fresh), "lazy accumulator differs from a refresh at ply {}", ply);
+                LAZY_CHECKS.fetch_add(1, Ordering::Relaxed);
+            }
             nnue::evaluate(&self.acc[ply], pos)
         };
         let e = e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
@@ -1008,8 +1021,7 @@ impl Searcher {
                 child.make_null();
                 self.tt.prefetch(child.hash);
                 self.prefetch_eval(child.hash);
-                let (a, b) = self.acc.split_at_mut(ply + 1);
-                b[0].copy_from(&a[ply]);
+                self.acc[ply + 1].set_null();
                 self.stack[ply].mv = 0;
                 self.stack[ply].cont_idx = 0;
                 self.hash_hist.push(pos.hash);
