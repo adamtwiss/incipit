@@ -83,6 +83,10 @@ params! {
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
     TmFailLow = "TmFailLow", 30, 0, 100, 8;
     TmFeedMax = "TmFeedMax", 250, 100, 400, 20;
+    // Clock surplus (ponder games with an increment): reserve in increments,
+    // and the number of moves to spend the surplus over.
+    TmSurplusInc = "TmSurplusInc", 10, 2, 40, 2;
+    TmSurplusDiv = "TmSurplusDiv", 10, 3, 30, 2;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
@@ -132,6 +136,8 @@ params! {
     // time ponder hits would otherwise leave unused. Only in games where the
     // GUI ponders (without pondering spend already meets the budget).
     UseTmFeed = "UseTmFeed", 1, 0, 1, 0;
+    // Spend the clock surplus above TmSurplusInc increments in ponder games.
+    UseTmSurplus = "UseTmSurplus", 1, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
 }
 

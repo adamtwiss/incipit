@@ -220,7 +220,17 @@ impl Uci {
                 left / params::tp(params::P::TmSoftDiv) as i64 + inc * params::tp(params::P::TmIncPct) as i64 / 100
             };
             base_soft = soft.max(1) as u64;
-            let soft = (soft as f64 * self.searcher.pt.feed_scale()) as i64;
+            let mut soft = (soft as f64 * self.searcher.pt.feed_scale()) as i64;
+            // Clock surplus (games where the GUI ponders, with an increment):
+            // ponder hits leave our budget unspent and the clock grows, so spend
+            // what's above a reserve of TmSurplusInc increments over about
+            // TmSurplusDiv moves.
+            if params::on(params::P::UseTmSurplus) && self.searcher.pt.ponder_seen && inc > 0 {
+                let reserve = inc * params::tp(params::P::TmSurplusInc) as i64;
+                if left > reserve {
+                    soft += (left - reserve) / params::tp(params::P::TmSurplusDiv) as i64;
+                }
+            }
             let hard = (left * 2 / 5).min(soft * params::tp(params::P::TmHardMul) as i64).max(1);
             let soft = soft.min(hard);
             lim.soft_ms = Some(soft as u64);
