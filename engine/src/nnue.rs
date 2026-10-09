@@ -1015,7 +1015,7 @@ fn hidden_float_portable<const L: usize, const L2: usize, const DUAL: bool>(l1: 
 
 /// Portable kernels (targets without SIMD versions): the same results as the
 /// SIMD ones.
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
     to_u8_scalar(a, x, 255, 9)
@@ -1030,7 +1030,7 @@ unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]
     scan_nz(&x[..2 * half], nz)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
     let h = a0.len();
@@ -1039,9 +1039,14 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
     scan_nz(&x[..2 * h], nz)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
+    scan_nz_scalar(x, nz)
+}
+
+/// Portable scan_nz (the reference l1check compares the SIMD scans against).
+fn scan_nz_scalar(x: &[u8], nz: &mut [u16]) -> usize {
     let mut count = 0;
     for (g, c) in x.chunks_exact(4).enumerate() {
         nz[count] = g as u16;
@@ -1050,7 +1055,7 @@ unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
     count
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn l1_product_portable(x: &[u8], nz: &[u16], count: usize, w: &[i8], l: usize) -> [i32; L1_SIZE] {
     let mut z = [0i32; L1_SIZE];
@@ -1072,7 +1077,7 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
     l1_product_portable(x, nz, count, w, 16)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     l1_product_portable(x, nz, count, w, 8)
@@ -1646,8 +1651,13 @@ pub fn l1check(trials: usize) -> usize {
             let mut nz1 = vec![0u16; 2 * h / 4 + 8];
             let mut nz2 = vec![0u16; 2 * h / 4 + 8];
             let c1 = unsafe { to_u8_nz_255_9(&a[..h], &a[h..], &mut x3, &mut nz1) };
-            let c2 = unsafe { scan_nz(&x2, &mut nz2) };
+            let c2 = scan_nz_scalar(&x2, &mut nz2);
             if x3 != x2 || c1 != c2 || nz1[..c1] != nz2[..c2] {
+                bad += 1;
+                continue;
+            }
+            let c3 = unsafe { scan_nz(&x2, &mut nz1) };
+            if c3 != c2 || nz1[..c3] != nz2[..c2] {
                 bad += 1;
                 continue;
             }
@@ -1660,7 +1670,7 @@ pub fn l1check(trials: usize) -> usize {
                 let d1 = unsafe { to_u8_pw_nz_255_9(&a[..h], &a[h..], &mut p1, &mut pz1) };
                 to_u8_pw_scalar(&a[..h], &mut p2[..h / 2], 255, 9);
                 to_u8_pw_scalar(&a[h..], &mut p2[h / 2..], 255, 9);
-                let d2 = unsafe { scan_nz(&p2, &mut pz2) };
+                let d2 = scan_nz_scalar(&p2, &mut pz2);
                 if p1 != p2 || d1 != d2 || pz1[..d1] != pz2[..d2] {
                     bad += 1;
                     continue;
@@ -1947,11 +1957,27 @@ unsafe fn nz_mask8(q0: std::arch::aarch64::uint8x16_t, q1: std::arch::aarch64::u
     vaddvq_u16(vandq_u16(t, vld1q_u16(BITS.as_ptr()))) as u32
 }
 
-/// NEON version of to_u8_pw_nz_255_9: per perspective, 16 outputs at a time,
-/// clamp(a[i]) * clamp(a[half + i]) >> 9. vqmovun saturates i16 to 0..255
-/// (the clamp), the u8 x u8 product is exact in u16 (at most 65025), uzp2
-/// takes the products' high bytes (>> 8) and a shift by 1 completes the >> 9.
-/// half is a multiple of 32.
+/// NEON: clamp(a[o..o + 16], 0, 255) as u8 (vqmovun saturates i16 to 0..255).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn clamp_u8(ap: *const i16) -> std::arch::aarch64::uint8x16_t {
+    use std::arch::aarch64::*;
+    vqmovun_high_s16(vqmovun_s16(vld1q_s16(ap)), vld1q_s16(ap.add(8)))
+}
+
+/// NEON: (c1 * c2) >> 9 per byte. The u8 x u8 product is exact in u16 (at
+/// most 65025); uzp2 takes the products' high bytes (>> 8) and a shift by 1
+/// completes the >> 9.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn mul_255_9(c1: std::arch::aarch64::uint8x16_t, c2: std::arch::aarch64::uint8x16_t) -> std::arch::aarch64::uint8x16_t {
+    use std::arch::aarch64::*;
+    let (lo, hi) = (vmull_u8(vget_low_u8(c1), vget_low_u8(c2)), vmull_high_u8(c1, c2));
+    vshrq_n_u8(vuzp2q_u8(vreinterpretq_u8_u16(lo), vreinterpretq_u8_u16(hi)), 1)
+}
+
+/// NEON version of to_u8_pw_nz_255_9: per perspective, 32 outputs at a time,
+/// clamp(a[i]) * clamp(a[half + i]) >> 9. half is a multiple of 32.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
@@ -1961,12 +1987,7 @@ unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]
     for (p, a) in [a0, a1].into_iter().enumerate() {
         let base = p * half;
         let ap = a.as_ptr();
-        let clamp = |o: usize| vqmovun_high_s16(vqmovun_s16(vld1q_s16(ap.add(o))), vld1q_s16(ap.add(o + 8)));
-        let prod = |o: usize| {
-            let (c1, c2) = (clamp(o), clamp(half + o));
-            let (lo, hi) = (vmull_u8(vget_low_u8(c1), vget_low_u8(c2)), vmull_high_u8(c1, c2));
-            vshrq_n_u8(vuzp2q_u8(vreinterpretq_u8_u16(lo), vreinterpretq_u8_u16(hi)), 1)
-        };
+        let prod = |o: usize| mul_255_9(clamp_u8(ap.add(o)), clamp_u8(ap.add(half + o)));
         for i in (0..half).step_by(32) {
             let (q0, q1) = (prod(i), prod(i + 16));
             let o = base + i;
@@ -1974,6 +1995,53 @@ unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]
             vst1q_u8(x.as_mut_ptr().add(o + 16), q1);
             count = push_nz(nz, count, nz_mask8(q0, q1), (o / 4) as u16);
         }
+    }
+    count
+}
+
+/// NEON version of to_u8_nz_255_9 (a.len() a multiple of 32).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
+    use std::arch::aarch64::*;
+    let mut count = 0;
+    for (half, a) in [a0, a1].into_iter().enumerate() {
+        let base = half * a0.len();
+        let sq = |o: usize| {
+            let c = clamp_u8(a.as_ptr().add(o));
+            mul_255_9(c, c)
+        };
+        for i in (0..a.len()).step_by(32) {
+            let (q0, q1) = (sq(i), sq(i + 16));
+            let o = base + i;
+            vst1q_u8(x.as_mut_ptr().add(o), q0);
+            vst1q_u8(x.as_mut_ptr().add(o + 16), q1);
+            count = push_nz(nz, count, nz_mask8(q0, q1), (o / 4) as u16);
+        }
+    }
+    count
+}
+
+/// NEON version of to_u8_255_9 (a.len() a multiple of 32).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
+    use std::arch::aarch64::*;
+    for i in (0..a.len()).step_by(16) {
+        let c = clamp_u8(a.as_ptr().add(i));
+        vst1q_u8(x.as_mut_ptr().add(i), mul_255_9(c, c));
+    }
+}
+
+/// NEON version of scan_nz (x.len() a multiple of 32).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
+    use std::arch::aarch64::*;
+    let mut count = 0;
+    for c in (0..x.len()).step_by(32) {
+        let (q0, q1) = (vld1q_u8(x.as_ptr().add(c)), vld1q_u8(x.as_ptr().add(c + 16)));
+        count = push_nz(nz, count, nz_mask8(q0, q1), (c / 4) as u16);
     }
     count
 }
@@ -2028,6 +2096,38 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
     let mut z = [0i32; L1_SIZE];
     for j in 0..4 {
         vst1q_s32(z.as_mut_ptr().add(4 * j), vaddq_s32(a[j], a[4 + j]));
+    }
+    z
+}
+
+/// NEON, 8 outputs: a group's 32-byte weight row is two vectors of 4
+/// outputs; four groups per step into separate accumulators (eight chains).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+    use std::arch::aarch64::*;
+    let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
+    let mut a = [vdupq_n_s32(0); 8];
+    let mut step = |k: usize, g: usize| {
+        let xb = vreinterpretq_s8_s32(vdupq_n_s32(xp.add(g).read_unaligned()));
+        let wv = vld1q_s8_x2(wp.add(g * 32));
+        a[2 * k] = dot4(a[2 * k], xb, wv.0);
+        a[2 * k + 1] = dot4(a[2 * k + 1], xb, wv.1);
+    };
+    let mut i = 0;
+    while i + 3 < count {
+        for k in 0..4 {
+            step(k, *nz.get_unchecked(i + k) as usize);
+        }
+        i += 4;
+    }
+    while i < count {
+        step(0, *nz.get_unchecked(i) as usize);
+        i += 1;
+    }
+    let mut z = [0i32; L1_SIZE];
+    for j in 0..2 {
+        vst1q_s32(z.as_mut_ptr().add(4 * j), vaddq_s32(vaddq_s32(a[j], a[2 + j]), vaddq_s32(a[4 + j], a[6 + j])));
     }
     z
 }
