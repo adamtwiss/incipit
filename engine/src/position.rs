@@ -563,6 +563,75 @@ impl Position {
         }
     }
 
+    /// The moves `gen_moves(list, true)` leaves out, in the same order as
+    /// `gen_moves(list, false)` would produce them: under-promotion pushes,
+    /// quiet pawn pushes, quiet piece and king moves, castling. Together with
+    /// the noisy moves this is exactly the full move list (for staged move
+    /// generation: quiets are generated only if no earlier move cuts off).
+    pub fn gen_quiets(&self, list: &mut MoveList) {
+        let us = self.stm;
+        let them = us ^ 1;
+        let occ = self.occ();
+        let empty = !occ;
+        let pawns = self.pcs(us, PAWN);
+        let (up, rank3, rank8): (i32, u64, u64) = if us == WHITE { (8, RANK_3, RANK_8) } else { (-8, RANK_6, RANK_1) };
+        #[inline(always)]
+        fn sh(b: u64, d: i32) -> u64 {
+            if d > 0 {
+                b << d
+            } else {
+                b >> (-d)
+            }
+        }
+        let push1 = sh(pawns, up) & empty;
+        for to in Bits(push1 & rank8) {
+            let from = (to as i32 - up) as usize;
+            list.push(mk(from, to, F_PROMO));
+            list.push(mk(from, to, F_PROMO + 1));
+            list.push(mk(from, to, F_PROMO + 2));
+        }
+        let push2 = sh(push1 & rank3, up) & empty;
+        for to in Bits(push1 & !rank8) {
+            list.push(mk((to as i32 - up) as usize, to, F_QUIET));
+        }
+        for to in Bits(push2) {
+            list.push(mk((to as i32 - 2 * up) as usize, to, F_DOUBLE));
+        }
+        let mut add = |from: usize, att: u64| {
+            for to in Bits(att & empty) {
+                list.push(mk(from, to, F_QUIET));
+            }
+        };
+        for from in Bits(self.pcs(us, KNIGHT)) {
+            add(from, knight_attacks(from));
+        }
+        for from in Bits((self.pieces[BISHOP] | self.pieces[QUEEN]) & self.colors[us]) {
+            add(from, bishop_attacks(from, occ));
+        }
+        for from in Bits((self.pieces[ROOK] | self.pieces[QUEEN]) & self.colors[us]) {
+            add(from, rook_attacks(from, occ));
+        }
+        let ksq = self.king_sq(us);
+        add(ksq, king_attacks(ksq));
+        if self.checkers == 0 && self.castling & (3 << (2 * us)) != 0 {
+            let base = if us == WHITE { 0 } else { 56 };
+            for (q, kdest, rdest, flag) in [(false, base + 6, base + 5, F_KCASTLE), (true, base + 2, base + 3, F_QCASTLE)] {
+                let r = castle_right(us, q);
+                if self.castling & (1 << r) == 0 {
+                    continue;
+                }
+                let rsq = self.rook_sq[r] as usize;
+                let rest = occ & !(1u64 << ksq) & !(1u64 << rsq);
+                if (span(ksq, kdest) | span(rsq, rdest)) & rest != 0 {
+                    continue;
+                }
+                if Bits(span(ksq, kdest) & !(1u64 << ksq)).all(|sq| !self.attacked_occ(sq, them, rest)) {
+                    list.push(mk(ksq, kdest, flag));
+                }
+            }
+        }
+    }
+
     /// Neither side can mate: bare kings plus at most one minor piece.
     #[inline]
     pub fn insufficient_material(&self) -> bool {
@@ -842,6 +911,31 @@ mod tests {
 
     /// is_pseudo_legal (used on TT and other stored moves) must accept exactly
     /// the moves the generator produces, for every 16-bit encoding.
+    #[test]
+    fn noisy_plus_quiets_is_the_full_move_list() {
+        crate::attacks::init();
+        let positions = random_positions(4, 75);
+        assert!(positions.len() > 1000);
+        for pos in &positions {
+            let mut all = MoveList::new();
+            pos.gen_moves(&mut all, false);
+            let mut split = MoveList::new();
+            pos.gen_moves(&mut split, true);
+            let noisy = split.len;
+            pos.gen_quiets(&mut split);
+            let mut a: Vec<Move> = all.moves[..all.len].to_vec();
+            let mut b: Vec<Move> = split.moves[..split.len].to_vec();
+            a.sort_unstable();
+            b.sort_unstable();
+            assert_eq!(a, b, "{}", pos.to_fen());
+            // gen_quiets adds no noisy move except under-promotion pushes.
+            for k in noisy..split.len {
+                let m = split.moves[k];
+                assert!(!is_noisy(m) || (is_promo(m) && pos.board[mto(m)] == NONE_PC), "{}", pos.to_fen());
+            }
+        }
+    }
+
     #[test]
     fn pseudo_legal_matches_generator_exhaustively() {
         crate::attacks::init();
