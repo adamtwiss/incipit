@@ -899,12 +899,83 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &H
     l1.b2[bucket] + ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5])) + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]))
 }
 
-/// Portable version of hidden_float with the same operations in the same
-/// order per lane (8 lanes; separate multiply and add; the same final
-/// reduction), so it gives the same result as the AVX2 version.
-#[cfg(not(target_arch = "x86_64"))]
+/// NEON version of hidden_float: the AVX2 version's 8 lanes as two 4-lane
+/// halves, with the same operations in the same order per lane (separate
+/// multiply and add, never fused) and the same final reduction. Vectors of 4
+/// outputs alternate between the two accumulator halves, so each lane sums
+/// the same outputs in the same order as in the 8-lane version. maxnm/minnm
+/// clamp as max/min do (finite inputs; -0 and +0 both clamp to +0).
+#[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
+    use std::arch::aarch64::*;
+    let (zero, one, kv) = (vdupq_n_f32(0.0), vdupq_n_f32(1.0), vdupq_n_f32(k));
+    let clamp = |v: float32x4_t| vminnmq_f32(vmaxnmq_f32(v, zero), one);
+    let screlu = |v: float32x4_t| {
+        let c = clamp(v);
+        vmulq_f32(c, c)
+    };
+    // First hidden layer activations, 4 at a time.
+    let b1 = &l1.b1[b1i];
+    let mut v1 = [zero; L1_SIZE / 4];
+    let mut c1 = [zero; L1_SIZE / 4]; // CReLU of the same pre-activations (dual)
+    for c in 0..L / 4 {
+        let zi = vld1q_s32(z.as_ptr().add(4 * c));
+        let pre = vaddq_f32(vmulq_f32(vcvtq_f32_s32(zi), kv), vld1q_f32(b1.as_ptr().add(4 * c)));
+        v1[c] = screlu(pre);
+        if DUAL {
+            c1[c] = clamp(pre);
+        }
+    }
+    // acc[0] is the 8-lane accumulator's lanes 0-3, acc[1] lanes 4-7.
+    let mut acc = [zero; 2];
+    if L2 == 0 {
+        let w2 = &l1.w2[bucket];
+        for c in 0..L / 4 {
+            acc[c % 2] = vaddq_f32(acc[c % 2], vmulq_f32(v1[c], vld1q_f32(w2.as_ptr().add(4 * c))));
+        }
+    } else {
+        let (wm, bm, wo) = (&l1.wm[bucket], &l1.bm[bucket], &l1.wo[bucket]);
+        // Second-layer inputs: SCReLU (L), then CReLU (L) when dual.
+        let mut a1 = [0f32; 2 * L1_SIZE];
+        for c in 0..L / 4 {
+            vst1q_f32(a1.as_mut_ptr().add(4 * c), v1[c]);
+            if DUAL {
+                vst1q_f32(a1.as_mut_ptr().add(L + 4 * c), c1[c]);
+            }
+        }
+        let mut u = [zero; L2_MAX / 4];
+        for c in 0..L2 / 4 {
+            u[c] = vld1q_f32(bm.as_ptr().add(4 * c));
+        }
+        for i in 0..if DUAL { 2 * L } else { L } {
+            let x = vdupq_n_f32(a1[i]);
+            for c in 0..L2 / 4 {
+                u[c] = vaddq_f32(u[c], vmulq_f32(x, vld1q_f32(wm[i].as_ptr().add(4 * c))));
+            }
+        }
+        for c in 0..L2 / 4 {
+            acc[c % 2] = vaddq_f32(acc[c % 2], vmulq_f32(screlu(u[c]), vld1q_f32(wo.as_ptr().add(4 * c))));
+        }
+    }
+    // (l0 + l4, l1 + l5, l2 + l6, l3 + l7), then the same sums as the x86 version.
+    let s = vaddq_f32(acc[0], acc[1]);
+    let p = vpaddq_f32(s, s);
+    l1.b2[bucket] + vgetq_lane_f32(p, 0) + vgetq_lane_f32(p, 1)
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[inline(always)]
+unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
+    hidden_float_portable::<L, L2, DUAL>(l1, z, k, b1i, bucket)
+}
+
+/// Portable version of hidden_float with the same operations in the same
+/// order per lane (8 lanes; separate multiply and add; the same final
+/// reduction), so it gives the same result as the SIMD versions (l1check
+/// compares them).
+#[inline(always)]
+fn hidden_float_portable<const L: usize, const L2: usize, const DUAL: bool>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
     let screlu = |v: f32| {
         let c = v.max(0.0).min(1.0);
         c * c
@@ -1615,6 +1686,42 @@ pub fn l1check(trials: usize) -> usize {
                 bad += 1;
             }
         }
+    }
+    // The float layers against the portable version, bit for bit, for each
+    // layer shape eval_hidden uses. Pre-activations span below 0, 0..1 and
+    // above 1, so every clamp region is used.
+    let mut rf = || ((rnd() % 2001) as f32 - 1000.0) / 1000.0;
+    for _ in 0..trials {
+        let l1 = Hidden {
+            n: L1_SIZE,
+            shift: 9,
+            in_scale: 1.0,
+            w_scale: 1.0,
+            w1: AlignedI8::zeroed(0),
+            b1: vec![std::array::from_fn(|_| rf())],
+            shared: false,
+            pw: false,
+            w2: vec![std::array::from_fn(|_| rf())],
+            b2: vec![rf()],
+            n2: 0,
+            wm: vec![std::array::from_fn(|_| std::array::from_fn(|_| rf()))],
+            dual: false,
+            bm: vec![std::array::from_fn(|_| rf())],
+            wo: vec![std::array::from_fn(|_| rf())],
+        };
+        let z: [i32; L1_SIZE] = std::array::from_fn(|_| (rf() * 40000.0) as i32);
+        let k = 1.0 / (12345.0 + rf() * 1000.0);
+        let pairs = unsafe {
+            [
+                (hidden_float::<8, 0, false>(&l1, &z, k, 0, 0), hidden_float_portable::<8, 0, false>(&l1, &z, k, 0, 0)),
+                (hidden_float::<16, 0, false>(&l1, &z, k, 0, 0), hidden_float_portable::<16, 0, false>(&l1, &z, k, 0, 0)),
+                (hidden_float::<16, 16, false>(&l1, &z, k, 0, 0), hidden_float_portable::<16, 16, false>(&l1, &z, k, 0, 0)),
+                (hidden_float::<16, 32, false>(&l1, &z, k, 0, 0), hidden_float_portable::<16, 32, false>(&l1, &z, k, 0, 0)),
+                (hidden_float::<16, 16, true>(&l1, &z, k, 0, 0), hidden_float_portable::<16, 16, true>(&l1, &z, k, 0, 0)),
+                (hidden_float::<16, 32, true>(&l1, &z, k, 0, 0), hidden_float_portable::<16, 32, true>(&l1, &z, k, 0, 0)),
+            ]
+        };
+        bad += pairs.iter().filter(|(a, b)| a.to_bits() != b.to_bits()).count();
     }
     bad
 }
