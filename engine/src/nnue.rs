@@ -653,33 +653,108 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
 }
 
 /// Rebuilds perspective p of `acc` for `pos` through the cache entry for p's
-/// king bucket and mirror state.
+/// king bucket and mirror state: the entry's rows plus the pieces added and
+/// minus those removed since it was last used, written back to the entry and
+/// to acc.
 #[inline(never)]
 fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Position, cache: &mut RefreshCache) {
     let h = hidden::<H>(n);
     let ki = kinfo(n, p, pos.king_sq(p));
     let idx = (p * n.nkb + ki.0 / 768) * 2 + (ki.1 != 0) as usize;
     let e = &mut cache.entries[idx];
-    let v = &mut e.acc[..h];
+    // Feature rows to add and subtract (at most 32 pieces each way).
+    let mut adds = [0usize; 32];
+    let mut subs = [0usize; 32];
+    let (mut na, mut ns) = (0, 0);
     for c in 0..2 {
         for pt in 0..6 {
             let pc = make_pc(pt, c);
             let cur = pos.pieces[pt] & pos.colors[c];
             let old = e.bb[pc as usize];
             for sq in Bits(cur & !old) {
-                for (x, &w) in v.iter_mut().zip(row(n, feat(p, ki, pc, sq), h)) {
-                    *x = x.wrapping_add(w);
-                }
+                adds[na] = feat(p, ki, pc, sq);
+                na += 1;
             }
             for sq in Bits(old & !cur) {
-                for (x, &w) in v.iter_mut().zip(row(n, feat(p, ki, pc, sq), h)) {
-                    *x = x.wrapping_sub(w);
-                }
+                subs[ns] = feat(p, ki, pc, sq);
+                ns += 1;
             }
             e.bb[pc as usize] = cur;
         }
     }
-    acc.side_mut(p, h).copy_from_slice(v);
+    apply_rows(&mut e.acc[..h], acc.side_mut(p, h), n, h, &adds[..na], &subs[..ns]);
+}
+
+/// v += the rows `adds` - the rows `subs`, then out = v. One pass per row.
+/// (Wrapping i16 arithmetic: the order of the rows doesn't matter.)
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn apply_rows(v: &mut [i16], out: &mut [i16], n: &Network, h: usize, adds: &[usize], subs: &[usize]) {
+    for &f in adds {
+        for (x, &w) in v.iter_mut().zip(row(n, f, h)) {
+            *x = x.wrapping_add(w);
+        }
+    }
+    for &f in subs {
+        for (x, &w) in v.iter_mut().zip(row(n, f, h)) {
+            *x = x.wrapping_sub(w);
+        }
+    }
+    out.copy_from_slice(v);
+}
+
+/// NEON version of apply_rows: one pass over v, 128 values at a time held in
+/// sixteen registers while every row is applied, so v is read and written
+/// once instead of once per row. h is a multiple of 32; a 32-value tail
+/// step handles sizes that aren't multiples of 128.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn apply_rows(v: &mut [i16], out: &mut [i16], n: &Network, h: usize, adds: &[usize], subs: &[usize]) {
+    #[inline(always)]
+    unsafe fn chunk<const K: usize>(
+        v: *mut i16,
+        out: *mut i16,
+        w: *const i16,
+        h: usize,
+        adds: &[usize],
+        subs: &[usize],
+    ) {
+        use std::arch::aarch64::*;
+        let mut x = [vdupq_n_s16(0); K];
+        for k in 0..K {
+            x[k] = vld1q_s16(v.add(8 * k));
+        }
+        for &f in adds {
+            let r = w.add(f * h);
+            for k in 0..K {
+                x[k] = vaddq_s16(x[k], vld1q_s16(r.add(8 * k)));
+            }
+        }
+        for &f in subs {
+            let r = w.add(f * h);
+            for k in 0..K {
+                x[k] = vsubq_s16(x[k], vld1q_s16(r.add(8 * k)));
+            }
+        }
+        for k in 0..K {
+            vst1q_s16(v.add(8 * k), x[k]);
+            vst1q_s16(out.add(8 * k), x[k]);
+        }
+    }
+    // Safe: v and out hold h values, and load() checks every feature row
+    // (f * h .. f * h + h) is inside ftw.
+    unsafe {
+        let w = n.ftw.as_ptr();
+        let mut o = 0;
+        while o + 128 <= h {
+            chunk::<16>(v.as_mut_ptr().add(o), out.as_mut_ptr().add(o), w.add(o), h, adds, subs);
+            o += 128;
+        }
+        while o < h {
+            chunk::<4>(v.as_mut_ptr().add(o), out.as_mut_ptr().add(o), w.add(o), h, adds, subs);
+            o += 32;
+        }
+    }
 }
 
 #[inline(never)]
