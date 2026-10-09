@@ -1933,25 +1933,28 @@ pub fn l1perm(path: &str, fens: &str, out: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// NEON: appends the indices (base + bit) of the set bits of the 8-bit mask m
-/// to nz at count, with one 16-byte store (as the x86 push_nz).
+/// NEON: appends the indices (base + bit) of the set bits of mask mc (an
+/// nz_mask8 result: mask in bits 0-7, its count in bits 8-11) to nz at
+/// count, with one 16-byte store (as the x86 push_nz).
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn push_nz(nz: &mut [u16], count: usize, m: u32, base: u16) -> usize {
+unsafe fn push_nz(nz: &mut [u16], count: usize, mc: u32, base: u16) -> usize {
     use std::arch::aarch64::*;
-    let idx = vaddq_u16(vld1q_u16(NZ_TABLE.get_unchecked(m as usize).as_ptr()), vdupq_n_u16(base));
+    let idx = vaddq_u16(vld1q_u16(NZ_TABLE.get_unchecked((mc & 0xff) as usize).as_ptr()), vdupq_n_u16(base));
     vst1q_u16(nz.as_mut_ptr().add(count), idx);
-    count + m.count_ones() as usize
+    count + (mc >> 8) as usize
 }
 
-/// Bit k set if the k-th 4-byte group of q0:q1 (32 bytes) has a non-zero
-/// byte: each group's all-ones/zero test, narrowed to 16 bits, weighted by
-/// its bit and summed.
+/// For the eight 4-byte groups of q0:q1 (32 bytes): bit k set if group k has
+/// a non-zero byte (bits 0-7), and the number of such groups (bits 8-11).
+/// Each group's all-ones/zero test, narrowed to 16 bits, is weighted by
+/// 0x100 | its bit and summed, so one addv gives both and the count needs no
+/// popcount (a slow vector-unit round trip on aarch64 without CSSC).
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn nz_mask8(q0: std::arch::aarch64::uint8x16_t, q1: std::arch::aarch64::uint8x16_t) -> u32 {
     use std::arch::aarch64::*;
-    const BITS: [u16; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
+    const BITS: [u16; 8] = [0x101, 0x102, 0x104, 0x108, 0x110, 0x120, 0x140, 0x180];
     let (g0, g1) = (vreinterpretq_u32_u8(q0), vreinterpretq_u32_u8(q1));
     let t = vcombine_u16(vmovn_u32(vtstq_u32(g0, g0)), vmovn_u32(vtstq_u32(g1, g1)));
     vaddvq_u16(vandq_u16(t, vld1q_u16(BITS.as_ptr()))) as u32
