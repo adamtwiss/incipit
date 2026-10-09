@@ -158,7 +158,10 @@ impl Uci {
             }
             match Position::from_fen(&fen) {
                 Some(p) => pos = p,
-                None => return,
+                None => {
+                    println!("info string invalid fen ignored: {}", fen.trim());
+                    return;
+                }
             }
         } else {
             return;
@@ -188,6 +191,7 @@ impl Uci {
         let mut depth = MAX_PLY as i32;
         let mut nodes = None;
         let mut ponder = false;
+        let mut infinite = false;
         let mut i = 1;
         while i < toks.len() {
             let v = toks.get(i + 1).and_then(|s| s.parse::<i64>().ok());
@@ -200,8 +204,9 @@ impl Uci {
                 "movetime" => movetime = v,
                 "depth" => depth = v.unwrap_or(depth as i64).clamp(1, MAX_PLY as i64 - 4) as i32,
                 "nodes" => nodes = v.map(|x| x.max(1) as u64),
-                "ponder" => {
-                    ponder = true;
+                "ponder" | "infinite" => {
+                    ponder |= toks[i] == "ponder";
+                    infinite |= toks[i] == "infinite";
                     i += 1;
                     continue;
                 }
@@ -213,6 +218,9 @@ impl Uci {
             i += 2;
         }
         let (time, inc) = if self.pos.stm == WHITE { (wtime, winc) } else { (btime, binc) };
+        // Our clock missing (or unparsable) but the other side's given: use
+        // theirs rather than searching without a limit.
+        let time = time.or(wtime).or(btime);
         let mut lim = Limits { soft_ms: None, hard_ms: None, depth, nodes };
         let mut base_soft = 0u64;
         let t0 = search::now_ms();
@@ -220,7 +228,9 @@ impl Uci {
             lim.hard_ms = Some((mt - self.overhead).max(1) as u64);
         } else if let Some(t) = time {
             let left = (t - self.overhead).max(1);
-            let left = if inc < self.overhead { (left - self.overhead * self.reserve_moves).max(1) } else { left };
+            // MoveReserve is for sudden death only (no movestogo).
+            let left =
+                if mtg == 0 && inc < self.overhead { (left - self.overhead * self.reserve_moves).max(1) } else { left };
             let soft = if mtg > 0 {
                 left / (mtg + 1).min(40) + inc * 3 / 4
             } else {
@@ -238,9 +248,10 @@ impl Uci {
         self.searcher.pt.pondering = ponder;
         self.searcher.pt.ponder_seen |= ponder;
         let (m, _) = self.searcher.search(&self.pos, &lim);
-        // UCI: no bestmove while pondering, until ponderhit or stop.
-        while ponder
-            && self.searcher.pt.hit.load(Ordering::SeqCst) == 0
+        // UCI: no bestmove while pondering, until ponderhit or stop, nor in
+        // an infinite search (which can end early: max depth, a mate, a
+        // tablebase root), until stop.
+        while ((ponder && self.searcher.pt.hit.load(Ordering::SeqCst) == 0) || infinite)
             && !self.searcher.stop_flag.load(Ordering::SeqCst)
         {
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -427,6 +438,13 @@ fn main() {
                     }
                     "isready" if searching.load(Ordering::SeqCst) => println!("readyok"),
                     "go" => {
+                        // The previous search may still be running (e.g. a
+                        // stop it hasn't seen yet, then this go): resetting the
+                        // flags now would lose that stop, so wait for its
+                        // bestmove first.
+                        while searching.load(Ordering::SeqCst) {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
                         stop.store(false, Ordering::SeqCst);
                         ponder_hit.store(0, Ordering::SeqCst);
                         searching.store(true, Ordering::SeqCst);
@@ -481,7 +499,7 @@ fn main() {
                 let lower: Vec<String> = toks.iter().map(|s| s.to_lowercase()).collect();
                 let ni = lower.iter().position(|s| s == "name");
                 let vi = lower.iter().position(|s| s == "value");
-                if let (Some(ni), Some(vi)) = (ni, vi) {
+                if let Some((ni, vi)) = ni.zip(vi).filter(|(ni, vi)| vi > ni) {
                     let name = lower[ni + 1..vi].join(" ");
                     let val = toks.get(vi + 1).copied().unwrap_or("");
                     match name.as_str() {

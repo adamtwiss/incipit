@@ -275,6 +275,10 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         return Err(format!("unsupported output buckets (scheme {}, {} buckets)", scheme, buckets));
     }
     let (qa, qb, scale) = quant.ok_or_else(|| missing("QUANTISATION"))?;
+    // The kernels clamp to qa as an i16, and the output divides by qa and qb.
+    if !(1..=i16::MAX as i32).contains(&qa) || !(1..=i16::MAX as i32).contains(&qb) || scale <= 0 {
+        return Err(format!("unsupported quantisation (QA {}, QB {}, scale {})", qa, qb, scale));
+    }
     if act == ACT_PAIRWISE && !(layers.len() == 2 || layers.len() == 3) {
         return Err("a pairwise feature transformer needs a hidden layer".into());
     }
@@ -388,6 +392,11 @@ fn load_hidden(
     }
     if pw && ln != 16 {
         return Err(format!("pairwise hidden nets need a 16-neuron first hidden layer, got {}", ln));
+    }
+    // The two-hidden-layer kernels exist for 16 -> 16 and 16 -> 32 only
+    // (evaluate dispatches on these).
+    if n2 > 0 && (ln != 16 || (n2 != 16 && n2 != 32)) {
+        return Err(format!("a second hidden layer needs 16 -> 16 or 16 -> 32 neurons, got {} -> {}", ln, n2));
     }
     // Dual activation: the second hidden layer takes SCReLU then CReLU of the
     // first layer's outputs (2L inputs).
