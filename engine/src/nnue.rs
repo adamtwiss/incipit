@@ -71,6 +71,9 @@ struct Hidden {
     pw: bool,               // pairwise FT: the hidden layer has h inputs, not 2h
     w2: Vec<[f32; L1_SIZE]>, // output layer [bucket] (no second hidden layer)
     b2: Vec<f32>,           // output bias [bucket]
+    // 1 when the last neuron is a linear skip (no activation, added to the
+    // output; the next layer doesn't see it), else 0: branch-free.
+    skip_k: f32,
     // Optional second hidden layer (f32, SCReLU, per bucket): n2 neurons
     // (0 = none). wm is [bucket][input][n2] (input-major, so the product
     // vectorises over the outputs), bm [bucket][n2]; the output layer is then
@@ -351,6 +354,8 @@ fn load_hidden(
     // Hidden-layer inputs: both perspectives, h each (SCReLU) or h/2 each (pairwise).
     let inl = if pw { h } else { 2 * h };
     let shared = l1.5 & 1 == 0;
+    // Flag bit 1: the last neuron is a linear skip to the output.
+    let skip = l1.5 & 2 != 0;
     let ln = l1.1;
     if (l1.0, l1.2, l1.3, l1.4) != (inl, ACT_SCRELU, TYPE_I8, TYPE_F32) || (ln != 8 && ln != 16) {
         return Err(format!("unsupported hidden layer {:?} (need {} -> 8 or 16 SCReLU, i8 weights, f32 biases)", l1, inl));
@@ -358,9 +363,12 @@ fn load_hidden(
     let nb1 = if shared { 1 } else { buckets };
     let n2 = mid.map_or(0, |m| m.1);
     if let Some(m) = mid {
-        if (m.0 != ln && m.0 != 2 * ln) || (m.1, m.2, m.3, m.4, m.5) != (n2, ACT_SCRELU, TYPE_F32, TYPE_F32, 1) || n2 == 0 || n2 > L2_MAX {
+        if (m.0 != ln && m.0 != 2 * ln && !(skip && m.0 == ln - 1)) || (m.1, m.2, m.3, m.4, m.5) != (n2, ACT_SCRELU, TYPE_F32, TYPE_F32, 1) || n2 == 0 || n2 > L2_MAX {
             return Err(format!("unsupported second hidden layer {:?} (need {} -> 1..{} SCReLU, f32, per bucket)", m, ln, L2_MAX));
         }
+    }
+    if skip && (n2 == 0 || mid.is_some_and(|m| m.0 != ln - 1)) {
+        return Err("a linear-skip hidden layer needs a second hidden layer of its other neurons".into());
     }
     if pw && ln != 16 {
         return Err(format!("pairwise hidden nets need a 16-neuron first hidden layer, got {}", ln));
@@ -368,7 +376,7 @@ fn load_hidden(
     // Dual activation: the second hidden layer takes SCReLU then CReLU of the
     // first layer's outputs (2L inputs).
     let dual = mid.is_some_and(|m| m.0 == 2 * ln);
-    let in2 = if dual { 2 * ln } else { ln };
+    let in2 = if dual { 2 * ln } else if skip { ln - 1 } else { ln };
     let last_in = if n2 > 0 { n2 } else { ln };
     if l2 != (last_in, 1, ACT_NONE, TYPE_F32, TYPE_F32, 1) {
         return Err(format!("unsupported final layer {:?} (need {} -> 1, f32, per bucket)", l2, last_in));
@@ -470,6 +478,7 @@ fn load_hidden(
             pw,
             w2,
             b2,
+            skip_k: skip as u8 as f32,
             n2,
             wm,
             dual,
@@ -837,6 +846,9 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, 
     // x86-64-v3 baseline). Separate multiply and add (no FMA) and a fixed
     // reduction order: every ISA gives the same result.
     let out = unsafe { hidden_float::<L, L2, DUAL>(l1, &z, k, b1i, bucket) };
+    // Linear skip: the last neuron's pre-activation (its second-layer
+    // weights are zero, so its SCReLU above adds nothing).
+    let out = out + l1.skip_k * (z[L - 1] as f32 * k + l1.b1[b1i][L - 1]);
     (out * n.scale as f32) as i32
 }
 
