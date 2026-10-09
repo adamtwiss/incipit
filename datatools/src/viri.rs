@@ -117,6 +117,10 @@ pub fn count(data: &[u8]) -> Result<(u64, u64, u64), String> {
 /// Returns None if the board isn't valid.
 pub fn unpack_board(b: &[u8]) -> Option<(Position, i16, u8)> {
     let occ = u64::from_le_bytes(b[0..8].try_into().unwrap());
+    // 32 pieces fill the packed board; a WDL above 2 isn't a result.
+    if occ.count_ones() > 32 || b[30] > 2 {
+        return None;
+    }
     let mut sqs = [None; 64];
     let mut castling = String::new();
     let (mut bits, mut i) = (occ, 0);

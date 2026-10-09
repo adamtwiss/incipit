@@ -64,6 +64,11 @@ impl Layout {
     }
 }
 
+/// A record decode can handle: at most 32 pieces (the packed board holds 32).
+fn valid(r: &[u8; 32]) -> bool {
+    u64::from_le_bytes(r[0..8].try_into().unwrap()).count_ones() <= 32
+}
+
 #[inline(always)]
 fn decode(r: &[u8; 32], fw: &mut [usize; 32], fb: &mut [usize; 32]) -> (usize, usize, f32, f32, usize) {
     let occ = u64::from_le_bytes(r[0..8].try_into().unwrap());
@@ -274,6 +279,11 @@ fn main() {
         } else if args[i] == "--kb" {
             unsafe {
                 NKB = args[i + 1].parse().unwrap();
+                // kb_of is the 8-bucket table; other counts would index past the FT.
+                if NKB != 1 && NKB != 8 {
+                    eprintln!("--kb must be 1 or 8 (the king bucket table has 8 buckets)");
+                    std::process::exit(1);
+                }
             }
             i += 2;
         } else if args[i] == "--init" {
@@ -292,9 +302,11 @@ fn main() {
         let mut b = Vec::new();
         std::fs::File::open(f).unwrap().read_to_end(&mut b).unwrap();
         let n = b.len() / 32;
+        let before = data.len();
         data.reserve(n);
-        for k in 0..n {
-            data.push(b[k * 32..k * 32 + 32].try_into().unwrap());
+        data.extend(b.chunks_exact(32).map(|c| <[u8; 32]>::try_from(c).unwrap()).filter(valid));
+        if data.len() - before < n {
+            println!("{}: skipped {} corrupt records", f, n - (data.len() - before));
         }
     }
     println!("loaded {} positions in {:?}", data.len(), t0.elapsed());
@@ -307,9 +319,7 @@ fn main() {
     let (val, mut train): (Vec<u32>, Vec<u32>) = if let Some(vf) = &valfile {
         let n0 = data.len();
         let b = std::fs::read(vf).unwrap();
-        for k in 0..b.len() / 32 {
-            data.push(b[k * 32..k * 32 + 32].try_into().unwrap());
-        }
+        data.extend(b.chunks_exact(32).map(|c| <[u8; 32]>::try_from(c).unwrap()).filter(valid));
         let mut v: Vec<u32> = (n0 as u32..data.len() as u32).collect();
         v.truncate(500_000);
         println!("val from {}: {}", vf, v.len());
@@ -338,6 +348,10 @@ fn main() {
     let mut m = vec![0f32; l.total];
     let mut v = vec![0f32; l.total];
     let bs = 16384usize;
+    if train.len() < bs || val.is_empty() {
+        eprintln!("need at least {} training positions and a non-empty validation set", bs);
+        std::process::exit(1);
+    }
     let (b1, b2, eps) = (0.9f32, 0.999f32, 1e-8f32);
     let mut step = 0i32;
     let mut grads: Vec<Vec<f32>> = (0..threads).map(|_| vec![0f32; l.total]).collect();
@@ -380,6 +394,7 @@ fn main() {
         };
         let mut tl = 0f64;
         let nbatches = train.len() / bs;
+        let mut last_lr = lr_step;
         for bi in 0..nbatches {
             let lr = if cosine {
                 let t = (ep as f32 + bi as f32 / nbatches as f32) / epochs as f32;
@@ -388,6 +403,7 @@ fn main() {
             } else {
                 lr_step
             };
+            last_lr = lr;
             let batch = &train[bi * bs..(bi + 1) * bs];
             let chunk = (bs + threads - 1) / threads;
             let wr = &w;
@@ -473,7 +489,7 @@ fn main() {
         println!(
             "epoch {} lr {} train {:.6} val {:.6} time {:?}",
             ep,
-            lr_step,
+            last_lr,
             tl / (nbatches * bs) as f64,
             vl / val.len() as f64,
             te.elapsed()

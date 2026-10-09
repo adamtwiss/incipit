@@ -357,6 +357,9 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
     let u16_at = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]);
     let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
     let header_size = u32_at(12) as usize;
+    if header_size < 16 || header_size > data.len() {
+        return Err(format!("header size {} doesn't fit a {}-byte file", header_size, data.len()));
+    }
     let mut s =
         format!("version {}, header {} bytes, weights {} bytes\n", u16_at(8), header_size, data.len() - header_size);
     let mut o = 16;
@@ -364,6 +367,22 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
         let (tag, len) = (u16_at(o), u32_at(o + 4) as usize);
         if tag == 0 {
             break;
+        }
+        // Smallest payload each known field needs (its last byte read below).
+        let need = match tag {
+            TAG_INPUTS => 10,
+            TAG_KING_BUCKETS => 68,
+            TAG_FT => 7,
+            TAG_OUTPUT_BUCKETS => 2,
+            TAG_LAYER => 12,
+            TAG_QUANT => 12,
+            _ => 0,
+        };
+        if o + 8 + len > header_size || len < need {
+            return Err(format!(
+                "field 0x{:04x} at byte {} ({} bytes) is truncated or overruns the header",
+                tag, o, len
+            ));
         }
         let p = &data[o + 8..o + 8 + len];
         let p32 = |i: usize| u32::from_le_bytes(p[i..i + 4].try_into().unwrap());
