@@ -194,6 +194,10 @@ pub struct PonderTm {
     bmc_avg: f64,
     /// Static eval of the root (TM complexity signal).
     root_static: i32,
+    /// Best move of the last completed depth (mid-depth soft stop: only while
+    /// the current depth hasn't changed it), and whether we stopped that way.
+    last_best: Move,
+    mid_stop: bool,
     /// Last printed info line: depth, seldepth, score, PV (repeated before
     /// bestmove after a ponder hit, so GUIs record this move's search).
     last_info: (i32, usize, i32, String),
@@ -371,6 +375,8 @@ impl Searcher {
                 bm_changes: 0,
                 bmc_avg: 0.0,
                 root_static: 0,
+                last_best: 0,
+                mid_stop: false,
                 last_info: (0, 0, 0, String::new()),
                 spend_avg: 1.0,
                 ponder_seen: false,
@@ -509,8 +515,22 @@ impl Searcher {
                         self.stopped = true;
                     }
                 }
-            } else if self.elapsed_ms() >= h {
-                self.stopped = true;
+            } else {
+                let el = self.elapsed_ms();
+                if el >= h {
+                    self.stopped = true;
+                } else if on(P::UseTmMid)
+                    && self.root_depth >= tp(P::TmMidDepth)
+                    && !self.pt.root_fail_low
+                    && (self.root_best == 0 || self.root_best == self.pt.last_best)
+                    && el as f64 >= self.pt.target_ms * tp(P::TmMidPct) as f64 / 100.0
+                {
+                    // Soft target reached mid-depth with the last depth's best move
+                    // still best and not failing low: stop now. Aborted subtrees store
+                    // nothing (every abort returns before TT/history/PV updates).
+                    self.stopped = true;
+                    self.pt.mid_stop = true;
+                }
             }
         }
         if let Some(n) = self.node_limit {
@@ -613,6 +633,8 @@ impl Searcher {
         self.node_limit = lim.nodes;
         self.root_best = 0;
         self.pt.last_pv2 = (0, 0);
+        self.pt.last_best = 0;
+        self.pt.mid_stop = false;
         self.seldepth = 0;
         self.acc[0].refresh(root);
         self.pt.bm_changes = 0;
@@ -716,6 +738,8 @@ impl Searcher {
                     "nodes"
                 } else if self.pt.pondering {
                     "ponder"
+                } else if self.pt.mid_stop {
+                    "mid"
                 } else {
                     "hard"
                 };
@@ -768,6 +792,7 @@ impl Searcher {
                 stability = 0;
             }
             prev_best = best;
+            self.pt.last_best = best;
             if let Some(soft) = lim.soft_ms {
                 let total = self.nodes.max(1) as f64;
                 let frac = self.root_node_counts[mfrom(best)][mto(best)] as f64 / total;
@@ -827,6 +852,15 @@ impl Searcher {
                 if self.tm_elapsed(target).is_some_and(|el| el >= target) {
                     tm_stop = "soft";
                     break;
+                }
+                // Don't start a depth that is predicted to end well past the target
+                // (next depth ~ this one times the branching factor).
+                if on(P::UseTmPredict) && !self.pt.pondering && d >= 6 && last_ebf > 0.0 {
+                    let iter_ms = el * iter_nodes as f64 / self.nodes.max(1) as f64;
+                    if el + iter_ms * last_ebf.clamp(1.2, 4.0) > target * tp(P::TmPredPct) as f64 / 100.0 {
+                        tm_stop = "predict";
+                        break;
+                    }
                 }
                 // The next depth costs about this one times the branching factor;
                 // elapsed so far approximates this depth plus all earlier ones.
@@ -1337,6 +1371,11 @@ impl Searcher {
             }
             if root {
                 self.root_node_counts[mfrom(m)][mto(m)] += self.nodes - nodes_before;
+                // The previous best (searched first) fails low: no mid-depth stop
+                // until this depth resolves.
+                if legal == 1 && score <= alpha && on(P::UseTmMid) {
+                    self.pt.root_fail_low = true;
+                }
             }
             if score > best_score {
                 best_score = score;

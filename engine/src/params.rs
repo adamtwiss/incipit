@@ -63,6 +63,9 @@ params! {
     // PonderHitPct rule already prevents instant replies to short ponders).
     PonderMinPct = "PonderMinPct", 0, 0, 100, 5;
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
+    TmMidDepth = "TmMidDepth", 6, 4, 12, 1;
+    TmMidPct = "TmMidPct", 100, 60, 150, 8;
+    TmPredPct = "TmPredPct", 100, 50, 200, 10;
     TmFailLow = "TmFailLow", 34, 0, 100, 8;
     TmBmc = "TmBmc", 20, 0, 80, 5;
     TmBmcDecay = "TmBmcDecay", 50, 0, 90, 8;
@@ -121,6 +124,13 @@ params! {
     // Don't start a depth predicted (elapsed x last branching factor) to end past
     // TmFinishPct% of the hard limit: it would be cut off anyway.
     UseTmFinish = "UseTmFinish", 0, 0, 1, 0;
+    // Mid-depth soft stop: once elapsed >= TmMidPct% of the soft target from
+    // depth TmMidDepth on, stop inside the current depth if its best move is
+    // still the last depth's and the first root move hasn't failed low.
+    UseTmMid = "UseTmMid", 0, 0, 1, 0;
+    // Don't start a depth predicted (last depth x branching factor) to end
+    // past TmPredPct% of the soft target.
+    UseTmPredict = "UseTmPredict", 0, 0, 1, 0;
     // Extend the soft target by TmFailLow% per root aspiration fail-low in the
     // last depth (up to 3): the best line just got worse, so look harder.
     UseTmFailLow = "UseTmFailLow", 1, 0, 1, 0;
