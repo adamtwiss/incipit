@@ -87,6 +87,8 @@ params! {
     // and the number of moves to spend the surplus over.
     TmSurplusInc = "TmSurplusInc", 10, 2, 40, 2;
     TmSurplusDiv = "TmSurplusDiv", 10, 3, 30, 2;
+    // Sudden death: moves of overhead held back from the budget.
+    TmReserveMoves = "TmReserveMoves", 20, 0, 60, 4;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;

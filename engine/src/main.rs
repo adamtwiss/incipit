@@ -214,6 +214,14 @@ impl Uci {
             lim.hard_ms = Some((mt - self.overhead).max(1) as u64);
         } else if let Some(t) = time {
             let left = (t - self.overhead).max(1);
+            // Sudden death (increment below the move overhead): budget as if the
+            // next TmReserveMoves moves each cost the overhead (lag), so very long
+            // games don't run the clock down to where each move's lag flags us.
+            let left = if inc < self.overhead {
+                (left - self.overhead * params::tp(params::P::TmReserveMoves) as i64).max(1)
+            } else {
+                left
+            };
             let soft = if mtg > 0 {
                 left / (mtg + 1).min(40) + inc * 3 / 4
             } else {
