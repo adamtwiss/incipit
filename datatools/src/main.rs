@@ -150,7 +150,11 @@ fn cmd_bin(out_dir: &str, inputs: &[String]) -> Result<(), String> {
                     Ok(st) => {
                         println!(
                             "{} -> {}: {} records, {} games, {} positions",
-                            input, out.display(), st.records, st.games, st.moves
+                            input,
+                            out.display(),
+                            st.records,
+                            st.games,
+                            st.moves
                         );
                         let mut t = total.lock().unwrap();
                         t.records += st.records;
@@ -172,13 +176,22 @@ fn cmd_bin(out_dir: &str, inputs: &[String]) -> Result<(), String> {
     let scored = t.moves - t.unscored;
     println!(
         "total: {} records -> {} games, {} positions ({} scored = {:.1}% of records, {} unscored bridging moves)",
-        t.records, t.games, t.moves, scored, 100.0 * scored as f64 / t.records.max(1) as f64, t.unscored
+        t.records,
+        t.games,
+        t.moves,
+        scored,
+        100.0 * scored as f64 / t.records.max(1) as f64,
+        t.unscored
     );
     let bridges: Vec<String> = (1..=oldbin::MAX_GAP).map(|d| format!("{}: {}", d, t.gaps[d])).collect();
     println!("bridge lengths (plies): {}", bridges.join(", "));
     println!("chain restarts within a game: {}; records without a move: {}", t.restarts, t.dropped);
     let errors = errors.into_inner().unwrap();
-    if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 fn cmd_stats(inputs: &[String]) -> Result<(), String> {
@@ -435,15 +448,23 @@ fn cmd_tbstats(tb_path: &str, inputs: &[String]) -> Result<(), String> {
         .map_err(|e| format!("{}: {}", input, e))?;
     }
     let reach: u64 = m.iter().flatten().sum();
-    let flips: u64 = (0..3).flat_map(|g| (0..3).map(move |t| (g, t))).filter(|(g, t)| g != t).map(|(g, t)| m[g][t]).sum();
+    let flips: u64 =
+        (0..3).flat_map(|g| (0..3).map(move |t| (g, t))).filter(|(g, t)| g != t).map(|(g, t)| m[g][t]).sum();
     println!("{}-man tables; {} games, {} positions", largest, games, positions);
     println!(
         "games reaching the tables: {} ({:.1}%), probe failures {}; positions in them {} ({:.1}%)",
-        reach, 100.0 * reach as f64 / games.max(1) as f64, failed, reach_pos, 100.0 * reach_pos as f64 / positions.max(1) as f64
+        reach,
+        100.0 * reach as f64 / games.max(1) as f64,
+        failed,
+        reach_pos,
+        100.0 * reach_pos as f64 / positions.max(1) as f64
     );
     println!(
         "result differs from the tables: {} games ({:.1}% of those reaching them), {} positions ({:.2}% of all)",
-        flips, 100.0 * flips as f64 / reach.max(1) as f64, flip_pos, 100.0 * flip_pos as f64 / positions.max(1) as f64
+        flips,
+        100.0 * flips as f64 / reach.max(1) as f64,
+        flip_pos,
+        100.0 * flip_pos as f64 / positions.max(1) as f64
     );
     let name = ["black win", "draw", "white win"];
     println!("game result -> tablebase result (rows: game):");
@@ -503,7 +524,11 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
             "--description" => arch.description = val.clone(),
             "--permute" => {
                 let text = std::fs::read_to_string(val).map_err(|e| format!("{}: {}", val, e))?;
-                arch.perm = text.split_whitespace().map(|x| x.parse::<usize>()).collect::<Result<_, _>>().map_err(|_| format!("bad --permute file {}", val))?;
+                arch.perm = text
+                    .split_whitespace()
+                    .map(|x| x.parse::<usize>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| format!("bad --permute file {}", val))?;
             }
             "--activation" => {
                 arch.activation = match val.as_str() {
@@ -514,7 +539,11 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
                 }
             }
             "--king-buckets" => {
-                let v: Vec<u8> = val.split(',').map(|x| x.trim().parse::<u8>()).collect::<Result<_, _>>().map_err(|_| format!("bad --king-buckets {}", val))?;
+                let v: Vec<u8> = val
+                    .split(',')
+                    .map(|x| x.trim().parse::<u8>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| format!("bad --king-buckets {}", val))?;
                 // A 32-entry table covers files a-d (mirrored boards), as in
                 // Bullet's ChessBucketsMirrored; expand it to all 64 squares.
                 arch.king_buckets = match v.len() {
@@ -554,16 +583,17 @@ fn cmd_net_info(inputs: &[String]) -> Result<(), String> {
 /// convention (same as `sha256sum | cut -c1-8 | tr a-f A-F`).
 fn sha256_prefix(data: &[u8]) -> String {
     const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+        0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
+        0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+        0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
     ];
-    let mut h: [u32; 8] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    let mut h: [u32; 8] =
+        [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
     let mut msg = data.to_vec();
     msg.push(0x80);
     while msg.len() % 64 != 56 {
@@ -630,7 +660,14 @@ fn fen_category(pos: &crate::position::Position) -> usize {
     }
     let mut list = MoveList::new();
     pos.gen_moves(&mut list, true);
-    let captures = (0..list.len).filter(|&k| is_capture(list.moves[k]) && { let mut c = *pos; c.make_move(list.moves[k]) }).count();
+    let captures = (0..list.len)
+        .filter(|&k| {
+            is_capture(list.moves[k]) && {
+                let mut c = *pos;
+                c.make_move(list.moves[k])
+            }
+        })
+        .count();
     if captures >= 5 {
         return 4;
     }

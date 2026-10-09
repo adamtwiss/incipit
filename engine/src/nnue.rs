@@ -53,7 +53,7 @@ pub struct Network {
     ftw: Aligned, // [king bucket][feature][h]
     ftb: Aligned, // [h]
     ow: Aligned,  // [output bucket][2h], side to move first
-    ob: Vec<i32>,  // [output bucket]
+    ob: Vec<i32>, // [output bucket]
     l1: Option<Hidden>,
 }
 
@@ -61,23 +61,23 @@ pub struct Network {
 /// outputs become u8 inputs (clamp(a, 0, QA)^2 >> shift), times int8 weights,
 /// then a float SCReLU and a float output layer, all per output bucket.
 struct Hidden {
-    n: usize,               // neurons: 8 or 16 (b1 and w2 rows padded to L1_SIZE with zeros)
+    n: usize, // neurons: 8 or 16 (b1 and w2 rows padded to L1_SIZE with zeros)
     shift: u32,
-    in_scale: f32,          // QA^2 / 2^shift: one input unit in real terms
-    w_scale: f32,           // int8 weight quantisation
-    w1: AlignedI8,          // [bucket][input / 4][n][4], the kernels' layout
+    in_scale: f32,           // QA^2 / 2^shift: one input unit in real terms
+    w_scale: f32,            // int8 weight quantisation
+    w1: AlignedI8,           // [bucket][input / 4][n][4], the kernels' layout
     b1: Vec<[f32; L1_SIZE]>, // [bucket]
-    shared: bool,           // one hidden layer for all buckets (w1, b1 have one entry)
-    pw: bool,               // pairwise FT: the hidden layer has h inputs, not 2h
+    shared: bool,            // one hidden layer for all buckets (w1, b1 have one entry)
+    pw: bool,                // pairwise FT: the hidden layer has h inputs, not 2h
     w2: Vec<[f32; L1_SIZE]>, // output layer [bucket] (no second hidden layer)
-    b2: Vec<f32>,           // output bias [bucket]
+    b2: Vec<f32>,            // output bias [bucket]
     // Optional second hidden layer (f32, SCReLU, per bucket): n2 neurons
     // (0 = none). wm is [bucket][input][n2] (input-major, so the product
     // vectorises over the outputs), bm [bucket][n2]; the output layer is then
     // wo [bucket][n2] with bias b2.
     n2: usize,
     wm: Vec<[[f32; L2_MAX]; 2 * L1_SIZE]>, // [bucket][input][l2]; 2L inputs when dual
-    dual: bool, // the second hidden layer sees SCReLU and CReLU of the first (2L inputs)
+    dual: bool,                            // the second hidden layer sees SCReLU and CReLU of the first (2L inputs)
     bm: Vec<[f32; L2_MAX]>,
     wo: Vec<[f32; L2_MAX]>,
 }
@@ -179,7 +179,9 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     let u16_at = |o: usize| u16::from_le_bytes([d[o], d[o + 1]]);
     let u32_at = |o: usize| u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]);
     if d.len() < 16 || &d[0..8] != MAGIC {
-        return Err("not an Incipit network (bad magic); old headerless nets must be converted with `datatools net raw`".into());
+        return Err(
+            "not an Incipit network (bad magic); old headerless nets must be converted with `datatools net raw`".into(),
+        );
     }
     if u16_at(8) != 1 {
         return Err(format!("unsupported format version {}", u16_at(8)));
@@ -213,7 +215,11 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
                 need(2)?;
                 let n = u16::from_le_bytes([p[0], p[1]]) as usize;
                 need(2 + 8 * n)?;
-                inputs = Some((0..n).map(|i| (u16::from_le_bytes([p[2 + 8 * i], p[3 + 8 * i]]), p32(6 + 8 * i))).collect::<Vec<_>>());
+                inputs = Some(
+                    (0..n)
+                        .map(|i| (u16::from_le_bytes([p[2 + 8 * i], p[3 + 8 * i]]), p32(6 + 8 * i)))
+                        .collect::<Vec<_>>(),
+                );
             }
             TAG_KING_BUCKETS => {
                 need(68)?;
@@ -278,7 +284,13 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     let &[(lin, lout, lact, lwt, lbt, lflags)] = layers.as_slice() else {
         return Err(format!("{} layers after the feature transformer; one to three are supported", layers.len()));
     };
-    if lin != 2 * h || lout != 1 || lact != ACT_NONE || lwt != TYPE_I16 || !(lbt == TYPE_I16 || lbt == TYPE_I32) || lflags & 1 == 0 {
+    if lin != 2 * h
+        || lout != 1
+        || lact != ACT_NONE
+        || lwt != TYPE_I16
+        || !(lbt == TYPE_I16 || lbt == TYPE_I32)
+        || lflags & 1 == 0
+    {
         return Err("unsupported output layer (need 2H -> 1, no activation, i16 weights, per output bucket)".into());
     }
 
@@ -308,7 +320,9 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         king_bucket,
         screlu: act == ACT_SCRELU,
         nkb,
-        bucket_of: std::array::from_fn(|pieces| (pieces.saturating_sub(2) / 32usize.div_ceil(buckets)).min(buckets - 1) as u8),
+        bucket_of: std::array::from_fn(|pieces| {
+            (pieces.saturating_sub(2) / 32usize.div_ceil(buckets)).min(buckets - 1) as u8
+        }),
         qa,
         qb,
         scale,
@@ -353,13 +367,23 @@ fn load_hidden(
     let shared = l1.5 & 1 == 0;
     let ln = l1.1;
     if (l1.0, l1.2, l1.3, l1.4) != (inl, ACT_SCRELU, TYPE_I8, TYPE_F32) || (ln != 8 && ln != 16) {
-        return Err(format!("unsupported hidden layer {:?} (need {} -> 8 or 16 SCReLU, i8 weights, f32 biases)", l1, inl));
+        return Err(format!(
+            "unsupported hidden layer {:?} (need {} -> 8 or 16 SCReLU, i8 weights, f32 biases)",
+            l1, inl
+        ));
     }
     let nb1 = if shared { 1 } else { buckets };
     let n2 = mid.map_or(0, |m| m.1);
     if let Some(m) = mid {
-        if (m.0 != ln && m.0 != 2 * ln) || (m.1, m.2, m.3, m.4, m.5) != (n2, ACT_SCRELU, TYPE_F32, TYPE_F32, 1) || n2 == 0 || n2 > L2_MAX {
-            return Err(format!("unsupported second hidden layer {:?} (need {} -> 1..{} SCReLU, f32, per bucket)", m, ln, L2_MAX));
+        if (m.0 != ln && m.0 != 2 * ln)
+            || (m.1, m.2, m.3, m.4, m.5) != (n2, ACT_SCRELU, TYPE_F32, TYPE_F32, 1)
+            || n2 == 0
+            || n2 > L2_MAX
+        {
+            return Err(format!(
+                "unsupported second hidden layer {:?} (need {} -> 1..{} SCReLU, f32, per bucket)",
+                m, ln, L2_MAX
+            ));
         }
     }
     if pw && ln != 16 {
@@ -377,7 +401,10 @@ fn load_hidden(
         return Err("a hidden layer needs a LAYER_QUANT field".into());
     };
     if shift > 30 || w_scale <= 0 || ((qa as i64 * qa as i64) >> shift) > 127 {
-        return Err(format!("hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs", shift, w_scale));
+        return Err(format!(
+            "hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs",
+            shift, w_scale
+        ));
     }
     let n_ftw = nkb * 768 * h;
     let expect = 2 * (n_ftw + h) + nb1 * ln * inl + 4 * (nb1 * ln + buckets * n2 * (in2 + 1) + buckets * (last_in + 1));
@@ -405,7 +432,8 @@ fn load_hidden(
     }
     o += nb1 * ln * inl;
     let mut f32s = |n: usize| {
-        let v: Vec<f32> = d[o..o + 4 * n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let v: Vec<f32> =
+            d[o..o + 4 * n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
         o += 4 * n;
         v
     };
@@ -451,7 +479,9 @@ fn load_hidden(
         king_bucket,
         screlu: true,
         nkb,
-        bucket_of: std::array::from_fn(|pieces| (pieces.saturating_sub(2) / 32usize.div_ceil(buckets)).min(buckets - 1) as u8),
+        bucket_of: std::array::from_fn(|pieces| {
+            (pieces.saturating_sub(2) / 32usize.div_ceil(buckets)).min(buckets - 1) as u8
+        }),
         qa,
         qb,
         scale,
@@ -524,7 +554,11 @@ macro_rules! with_h {
 
 #[inline(always)]
 fn hidden<const H: usize>(n: &Network) -> usize {
-    if H > 0 { H } else { n.h }
+    if H > 0 {
+        H
+    } else {
+        n.h
+    }
 }
 
 /// Feature-transformer row `f` (length h).
@@ -649,7 +683,15 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
 }
 
 #[inline(never)]
-fn update<const H: usize>(acc: &mut Acc, n: &Network, parent: &Acc, pos: &Position, child: &Position, m: Move, cache: &mut RefreshCache) {
+fn update<const H: usize>(
+    acc: &mut Acc,
+    n: &Network,
+    parent: &Acc,
+    pos: &Position,
+    child: &Position,
+    m: Move,
+    cache: &mut RefreshCache,
+) {
     let h = hidden::<H>(n);
     let from = mfrom(m);
     let to = mto(m);
@@ -797,7 +839,12 @@ fn eval_hidden16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &P
 }
 
 #[inline(always)]
-fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, const DUAL: bool>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
+fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, const DUAL: bool>(
+    n: &Network,
+    l1: &Hidden,
+    acc: &Acc,
+    pos: &Position,
+) -> i32 {
     let h = hidden::<H>(n);
     // Hidden-layer inputs: h per perspective (SCReLU) or h/2 (pairwise).
     let inl = if PW { h } else { 2 * h };
@@ -845,7 +892,13 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, 
 /// SCReLU) and the output layer. Returns the output before scaling.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
+unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(
+    l1: &Hidden,
+    z: &[i32; L1_SIZE],
+    k: f32,
+    b1i: usize,
+    bucket: usize,
+) -> f32 {
     use std::arch::x86_64::*;
     let (zero, one, kv) = (_mm256_setzero_ps(), _mm256_set1_ps(1.0), _mm256_set1_ps(k));
     let screlu = |v: __m256| {
@@ -907,7 +960,13 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &H
 /// clamp as max/min do (finite inputs; -0 and +0 both clamp to +0).
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
+unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(
+    l1: &Hidden,
+    z: &[i32; L1_SIZE],
+    k: f32,
+    b1i: usize,
+    bucket: usize,
+) -> f32 {
     use std::arch::aarch64::*;
     let (zero, one, kv) = (vdupq_n_f32(0.0), vdupq_n_f32(1.0), vdupq_n_f32(k));
     let clamp = |v: float32x4_t| vminnmq_f32(vmaxnmq_f32(v, zero), one);
@@ -966,7 +1025,13 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &H
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
-unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
+unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(
+    l1: &Hidden,
+    z: &[i32; L1_SIZE],
+    k: f32,
+    b1i: usize,
+    bucket: usize,
+) -> f32 {
     hidden_float_portable::<L, L2, DUAL>(l1, z, k, b1i, bucket)
 }
 
@@ -975,7 +1040,13 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(l1: &H
 /// reduction), so it gives the same result as the SIMD versions (l1check
 /// compares them).
 #[inline(always)]
-fn hidden_float_portable<const L: usize, const L2: usize, const DUAL: bool>(l1: &Hidden, z: &[i32; L1_SIZE], k: f32, b1i: usize, bucket: usize) -> f32 {
+fn hidden_float_portable<const L: usize, const L2: usize, const DUAL: bool>(
+    l1: &Hidden,
+    z: &[i32; L1_SIZE],
+    k: f32,
+    b1i: usize,
+    bucket: usize,
+) -> f32 {
     let screlu = |v: f32| {
         let c = v.max(0.0).min(1.0);
         c * c
@@ -1121,7 +1192,8 @@ unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
     let order = _mm512_set_epi64(7, 5, 3, 1, 6, 4, 2, 0);
     for i in (0..a.len()).step_by(64) {
         let sq = |o: usize| {
-            let c = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero), qa);
+            let c =
+                _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero), qa);
             _mm512_mulhi_epu16(_mm512_slli_epi16(c, 7), c)
         };
         let (lo, hi) = (sq(i), if i + 32 < a.len() { sq(i + 32) } else { zero });
@@ -1149,7 +1221,10 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
         let base = half * a0.len();
         for i in (0..a.len()).step_by(64) {
             let sq = |o: usize| {
-                let c = _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero), qa);
+                let c = _mm512_min_epi16(
+                    _mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero),
+                    qa,
+                );
                 _mm512_mulhi_epu16(_mm512_slli_epi16(c, 7), c)
             };
             let (lo, hi) = (sq(i), if i + 32 < a.len() { sq(i + 32) } else { zero });
@@ -1183,7 +1258,9 @@ unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]
     let mut count = 0;
     for (p, a) in [a0, a1].into_iter().enumerate() {
         let base = p * half;
-        let clamp = |o: usize| _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero), qa);
+        let clamp = |o: usize| {
+            _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero), qa)
+        };
         for i in (0..half).step_by(64) {
             let prod = |o: usize| _mm512_mulhi_epu16(_mm512_slli_epi16(clamp(o), 7), clamp(half + o));
             let q = _mm512_permutexvar_epi64(order, _mm512_packus_epi16(prod(i), prod(i + 32)));
@@ -1208,7 +1285,9 @@ unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]
     let mut count = 0;
     for (p, a) in [a0, a1].into_iter().enumerate() {
         let base = p * half;
-        let clamp = |o: usize| _mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero), qa);
+        let clamp = |o: usize| {
+            _mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero), qa)
+        };
         for i in (0..half).step_by(32) {
             let prod = |o: usize| _mm256_mulhi_epu16(_mm256_slli_epi16(clamp(o), 7), clamp(half + o));
             let q = _mm256_permute4x64_epi64(_mm256_packus_epi16(prod(i), prod(i + 16)), 0b11_01_10_00);
@@ -1233,7 +1312,10 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
         let base = half * a0.len();
         for i in (0..a.len()).step_by(32) {
             let sq = |o: usize| {
-                let c = _mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero), qa);
+                let c = _mm256_min_epi16(
+                    _mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero),
+                    qa,
+                );
                 _mm256_mulhi_epu16(_mm256_slli_epi16(c, 7), c)
             };
             let p = _mm256_permute4x64_epi64(_mm256_packus_epi16(sq(i), sq(i + 16)), 0b11_01_10_00);
@@ -1254,7 +1336,8 @@ unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
     let qa = _mm256_set1_epi16(255);
     for i in (0..a.len()).step_by(32) {
         let sq = |o: usize| {
-            let c = _mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero), qa);
+            let c =
+                _mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero), qa);
             _mm256_mulhi_epu16(_mm256_slli_epi16(c, 7), c)
         };
         // packus interleaves the 128-bit lanes; permute4x64 restores the order.
@@ -1290,7 +1373,10 @@ static NZ_TABLE: [[u16; 8]; 256] = {
 #[inline(always)]
 unsafe fn push_nz(nz: &mut [u16], count: usize, m: u32, base: u16) -> usize {
     use std::arch::x86_64::*;
-    let idx = _mm_add_epi16(_mm_loadu_si128(NZ_TABLE.get_unchecked(m as usize).as_ptr() as *const __m128i), _mm_set1_epi16(base as i16));
+    let idx = _mm_add_epi16(
+        _mm_loadu_si128(NZ_TABLE.get_unchecked(m as usize).as_ptr() as *const __m128i),
+        _mm_set1_epi16(base as i16),
+    );
     _mm_storeu_si128(nz.as_mut_ptr().add(count) as *mut __m128i, idx);
     count + m.count_ones() as usize
 }
@@ -1381,7 +1467,10 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
         i += 1;
     }
     let mut z = [0i32; L1_SIZE];
-    _mm512_storeu_si512(z.as_mut_ptr() as *mut __m512i, _mm512_add_epi32(_mm512_add_epi32(s0, s1), _mm512_add_epi32(s2, s3)));
+    _mm512_storeu_si512(
+        z.as_mut_ptr() as *mut __m512i,
+        _mm512_add_epi32(_mm512_add_epi32(s0, s1), _mm512_add_epi32(s2, s3)),
+    );
     z
 }
 
@@ -1392,7 +1481,11 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
 /// keep maddubs's i16 pair sums (at most 32258) from saturating.
 #[cfg(all(target_arch = "x86_64", not(all(avx512_intrinsics, target_feature = "avx512bw"))))]
 #[inline(always)]
-unsafe fn dpbusd256(acc: std::arch::x86_64::__m256i, x: std::arch::x86_64::__m256i, w: std::arch::x86_64::__m256i) -> std::arch::x86_64::__m256i {
+unsafe fn dpbusd256(
+    acc: std::arch::x86_64::__m256i,
+    x: std::arch::x86_64::__m256i,
+    w: std::arch::x86_64::__m256i,
+) -> std::arch::x86_64::__m256i {
     use std::arch::x86_64::*;
     #[cfg(target_feature = "avxvnni")]
     {
@@ -1724,11 +1817,26 @@ pub fn l1check(trials: usize) -> usize {
         let pairs = unsafe {
             [
                 (hidden_float::<8, 0, false>(&l1, &z, k, 0, 0), hidden_float_portable::<8, 0, false>(&l1, &z, k, 0, 0)),
-                (hidden_float::<16, 0, false>(&l1, &z, k, 0, 0), hidden_float_portable::<16, 0, false>(&l1, &z, k, 0, 0)),
-                (hidden_float::<16, 16, false>(&l1, &z, k, 0, 0), hidden_float_portable::<16, 16, false>(&l1, &z, k, 0, 0)),
-                (hidden_float::<16, 32, false>(&l1, &z, k, 0, 0), hidden_float_portable::<16, 32, false>(&l1, &z, k, 0, 0)),
-                (hidden_float::<16, 16, true>(&l1, &z, k, 0, 0), hidden_float_portable::<16, 16, true>(&l1, &z, k, 0, 0)),
-                (hidden_float::<16, 32, true>(&l1, &z, k, 0, 0), hidden_float_portable::<16, 32, true>(&l1, &z, k, 0, 0)),
+                (
+                    hidden_float::<16, 0, false>(&l1, &z, k, 0, 0),
+                    hidden_float_portable::<16, 0, false>(&l1, &z, k, 0, 0),
+                ),
+                (
+                    hidden_float::<16, 16, false>(&l1, &z, k, 0, 0),
+                    hidden_float_portable::<16, 16, false>(&l1, &z, k, 0, 0),
+                ),
+                (
+                    hidden_float::<16, 32, false>(&l1, &z, k, 0, 0),
+                    hidden_float_portable::<16, 32, false>(&l1, &z, k, 0, 0),
+                ),
+                (
+                    hidden_float::<16, 16, true>(&l1, &z, k, 0, 0),
+                    hidden_float_portable::<16, 16, true>(&l1, &z, k, 0, 0),
+                ),
+                (
+                    hidden_float::<16, 32, true>(&l1, &z, k, 0, 0),
+                    hidden_float_portable::<16, 32, true>(&l1, &z, k, 0, 0),
+                ),
             ]
         };
         bad += pairs.iter().filter(|(a, b)| a.to_bits() != b.to_bits()).count();
@@ -1788,8 +1896,14 @@ pub fn l1stats(path: &str, fens: &str) -> Result<(), String> {
         let c = cnt[b].max(1) as f64;
         let dead = (0..l1.n).filter(|&i| act[b][i] == 0).count();
         let always = (0..l1.n).filter(|&i| sat[b][i] == cnt[b] && cnt[b] > 0).count();
-        print!("bucket {} positions {} dead {} always-saturated {} clipped {:.2}% | active%:",
-               b, cnt[b], dead, always, 100.0 * clip as f64 / w.len() as f64);
+        print!(
+            "bucket {} positions {} dead {} always-saturated {} clipped {:.2}% | active%:",
+            b,
+            cnt[b],
+            dead,
+            always,
+            100.0 * clip as f64 / w.len() as f64
+        );
         for i in 0..l1.n {
             print!(" {:.0}", 100.0 * act[b][i] as f64 / c);
         }
@@ -1973,7 +2087,10 @@ unsafe fn clamp_u8(ap: *const i16) -> std::arch::aarch64::uint8x16_t {
 /// completes the >> 9.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn mul_255_9(c1: std::arch::aarch64::uint8x16_t, c2: std::arch::aarch64::uint8x16_t) -> std::arch::aarch64::uint8x16_t {
+unsafe fn mul_255_9(
+    c1: std::arch::aarch64::uint8x16_t,
+    c2: std::arch::aarch64::uint8x16_t,
+) -> std::arch::aarch64::uint8x16_t {
     use std::arch::aarch64::*;
     let (lo, hi) = (vmull_u8(vget_low_u8(c1), vget_low_u8(c2)), vmull_high_u8(c1, c2));
     vshrq_n_u8(vuzp2q_u8(vreinterpretq_u8_u16(lo), vreinterpretq_u8_u16(hi)), 1)
@@ -2055,7 +2172,11 @@ unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
 /// exact as i8 and the signed dot product gives the u8 x i8 result.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn dot4(acc: std::arch::aarch64::int32x4_t, x: std::arch::aarch64::int8x16_t, w: std::arch::aarch64::int8x16_t) -> std::arch::aarch64::int32x4_t {
+unsafe fn dot4(
+    acc: std::arch::aarch64::int32x4_t,
+    x: std::arch::aarch64::int8x16_t,
+    w: std::arch::aarch64::int8x16_t,
+) -> std::arch::aarch64::int32x4_t {
     use std::arch::aarch64::*;
     #[cfg(target_feature = "dotprod")]
     {
@@ -2158,7 +2279,10 @@ unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
         }
         i += 32;
     }
-    let s = vaddq_s32(vaddq_s32(vaddq_s32(s[0], s[1]), vaddq_s32(s[2], s[3])), vaddq_s32(vaddq_s32(s[4], s[5]), vaddq_s32(s[6], s[7])));
+    let s = vaddq_s32(
+        vaddq_s32(vaddq_s32(s[0], s[1]), vaddq_s32(s[2], s[3])),
+        vaddq_s32(vaddq_s32(s[4], s[5]), vaddq_s32(s[6], s[7])),
+    );
     vaddvq_s32(s)
 }
 
@@ -2190,8 +2314,20 @@ mod tests {
                 let a = Aligned::from((0..h).map(|_| next() as i16));
                 let w: Vec<i16> = (0..h).map(|_| next() as i16).collect();
                 for qa in [255, 181, 127, 64] {
-                    assert_eq!(unsafe { dot::<true>(&a, &w, qa) }, dot_scalar::<true>(&a, &w, qa), "screlu h={} qa={}", h, qa);
-                    assert_eq!(unsafe { dot::<false>(&a, &w, qa) }, dot_scalar::<false>(&a, &w, qa), "crelu h={} qa={}", h, qa);
+                    assert_eq!(
+                        unsafe { dot::<true>(&a, &w, qa) },
+                        dot_scalar::<true>(&a, &w, qa),
+                        "screlu h={} qa={}",
+                        h,
+                        qa
+                    );
+                    assert_eq!(
+                        unsafe { dot::<false>(&a, &w, qa) },
+                        dot_scalar::<false>(&a, &w, qa),
+                        "crelu h={} qa={}",
+                        h,
+                        qa
+                    );
                 }
             }
         }

@@ -197,7 +197,12 @@ pub fn for_each_game(data: &[u8], mut f: impl FnMut(&[(Position, Move)], u8)) ->
             pos.gen_moves(&mut list, false);
             let m = (0..list.len)
                 .map(|k| list.moves[k])
-                .find(|&m| encode_move(&pos, m) == raw && { let mut c = pos; c.make_move(m) })
+                .find(|&m| {
+                    encode_move(&pos, m) == raw && {
+                        let mut c = pos;
+                        c.make_move(m)
+                    }
+                })
                 .ok_or_else(|| format!("illegal move {:04x} in {}", raw, pos.to_fen()))?;
             moves.push((pos, m));
             pos.make_move(m);
@@ -228,7 +233,12 @@ pub fn for_each_position(data: &[u8], mut f: impl FnMut(&Position, Move, i16, u8
             pos.gen_moves(&mut list, false);
             let m = (0..list.len)
                 .map(|k| list.moves[k])
-                .find(|&m| encode_move(&pos, m) == raw && { let mut c = pos; c.make_move(m) })
+                .find(|&m| {
+                    encode_move(&pos, m) == raw && {
+                        let mut c = pos;
+                        c.make_move(m)
+                    }
+                })
                 .ok_or_else(|| format!("illegal move {:04x} in {}", raw, pos.to_fen()))?;
             f(&pos, m, score, wdl);
             pos.make_move(m);

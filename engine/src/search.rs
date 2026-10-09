@@ -109,17 +109,44 @@ impl Stats {
                 kn(self.tt_cutoffs)
             ),
         );
-        line("Eval cache:", format!("{} hits of {} lookups ({:.1}%)", self.eval_hits, self.eval_hits + self.evals, pct(self.eval_hits, self.eval_hits + self.evals)));
+        line(
+            "Eval cache:",
+            format!(
+                "{} hits of {} lookups ({:.1}%)",
+                self.eval_hits,
+                self.eval_hits + self.evals,
+                pct(self.eval_hits, self.eval_hits + self.evals)
+            ),
+        );
         line("Aspiration:", format!("fail-low {}, fail-high {}", self.asp_fail_low, self.asp_fail_high));
         line("RFP:", format!("{} cutoffs ({:.1}/Kn)", self.rfp, kn(self.rfp)));
-        line("Razoring:", format!("{} tries, {} cutoffs ({:.0}%)", self.razor_tries, self.razor_cuts, pct(self.razor_cuts, self.razor_tries)));
-        line("Null move:", format!("{} tries, {} cutoffs ({:.0}%)", self.nmp_tries, self.nmp_cuts, pct(self.nmp_cuts, self.nmp_tries)));
+        line(
+            "Razoring:",
+            format!(
+                "{} tries, {} cutoffs ({:.0}%)",
+                self.razor_tries,
+                self.razor_cuts,
+                pct(self.razor_cuts, self.razor_tries)
+            ),
+        );
+        line(
+            "Null move:",
+            format!("{} tries, {} cutoffs ({:.0}%)", self.nmp_tries, self.nmp_cuts, pct(self.nmp_cuts, self.nmp_tries)),
+        );
         line("ProbCut:", format!("{} cutoffs ({:.1}/Kn)", self.probcut_cuts, kn(self.probcut_cuts)));
         line("IIR:", format!("{} reductions", self.iir));
         line("LMP:", format!("{} triggers (remaining quiets skipped)", self.lmp));
         line("Futility:", format!("{} triggers (remaining quiets skipped)", self.futility));
         line("History prune:", format!("{} moves ({:.1}/Kn)", self.hist_prunes, kn(self.hist_prunes)));
-        line("SEE prune:", format!("{} quiet, {} noisy ({:.1}/Kn)", self.see_quiet, self.see_noisy, kn(self.see_quiet + self.see_noisy)));
+        line(
+            "SEE prune:",
+            format!(
+                "{} quiet, {} noisy ({:.1}/Kn)",
+                self.see_quiet,
+                self.see_noisy,
+                kn(self.see_quiet + self.see_noisy)
+            ),
+        );
         line(
             "LMR:",
             format!(
@@ -311,7 +338,11 @@ fn wdl_str(s: i32, pos: &Position) -> String {
         return String::new();
     }
     let (w, l) = if s.abs() >= MATE_BOUND {
-        if s > 0 { (1000, 0) } else { (0, 1000) }
+        if s > 0 {
+            (1000, 0)
+        } else {
+            (0, 1000)
+        }
     } else {
         let mat: u32 = [(PAWN, 1), (KNIGHT, 3), (BISHOP, 3), (ROOK, 5), (QUEEN, 9)]
             .iter()
@@ -346,7 +377,9 @@ impl Searcher {
         let mut lmr = Box::new([[0i32; 64]; 64]);
         for d in 1..64 {
             for m in 1..64 {
-                lmr[d][m] = (tp(P::LmrBaseX100) as f64 / 100.0 + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDivX100) as f64 / 100.0)) as i32;
+                lmr[d][m] = (tp(P::LmrBaseX100) as f64 / 100.0
+                    + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDivX100) as f64 / 100.0))
+                    as i32;
             }
         }
         Searcher {
@@ -398,7 +431,9 @@ impl Searcher {
     pub fn init_lmr(&mut self) {
         for d in 1..64 {
             for m in 1..64 {
-                self.lmr[d][m] = (tp(P::LmrBaseX100) as f64 / 100.0 + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDivX100) as f64 / 100.0)) as i32;
+                self.lmr[d][m] = (tp(P::LmrBaseX100) as f64 / 100.0
+                    + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDivX100) as f64 / 100.0))
+                    as i32;
             }
         }
     }
@@ -533,11 +568,7 @@ impl Searcher {
             self.stats.eval_hits += 1;
             return *slot as u16 as i16 as i32;
         }
-        let e = if cfg!(feature = "hce") {
-            crate::eval::evaluate(pos)
-        } else {
-            nnue::evaluate(&self.acc[ply], pos)
-        };
+        let e = if cfg!(feature = "hce") { crate::eval::evaluate(pos) } else { nnue::evaluate(&self.acc[ply], pos) };
         let e = e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
         *slot = (pos.hash & !0xffff) | (e as i16 as u16 as u64);
         self.stats.evals += 1;
@@ -588,7 +619,11 @@ impl Searcher {
 
     /// The move to ponder on after `best`: the reply in the last PV, if any.
     pub fn ponder_move(&self, best: Move) -> Move {
-        if self.pt.last_pv2.0 == best { self.pt.last_pv2.1 } else { 0 }
+        if self.pt.last_pv2.0 == best {
+            self.pt.last_pv2.1
+        } else {
+            0
+        }
     }
 
     /// Returns (best move, score).
@@ -639,7 +674,12 @@ impl Searcher {
                     crate::tb::Wdl::Draw => 0,
                 };
                 if !self.silent {
-                    println!("info depth 1 score {}{} nodes 0 tbhits 1 time 0 pv {}", score_str(s), wdl_str(s, root), root.move_uci(m));
+                    println!(
+                        "info depth 1 score {}{} nodes 0 tbhits 1 time 0 pv {}",
+                        score_str(s),
+                        wdl_str(s, root),
+                        root.move_uci(m)
+                    );
                 }
                 return (m, s);
             }
@@ -760,7 +800,11 @@ impl Searcher {
                 let drop = (prev_score - score).clamp(-50, 150) as f64;
                 let score_scale = if d >= 6 { 1.0 + drop / 200.0 } else { 1.0 };
                 let score_scale = if on(P::UseTmScore) { score_scale } else { 1.0 };
-                let fl_scale = if on(P::UseTmFailLow) { 1.0 + fail_lows.min(3) as f64 * tp(P::TmFailLow) as f64 / 100.0 } else { 1.0 };
+                let fl_scale = if on(P::UseTmFailLow) {
+                    1.0 + fail_lows.min(3) as f64 * tp(P::TmFailLow) as f64 / 100.0
+                } else {
+                    1.0
+                };
                 let (node_scale, stab_scale) = if on(P::UseTm) { (node_scale, stab_scale) } else { (1.0, 1.0) };
                 let ext = if on(P::UseTmExtMax) { score_scale.max(fl_scale) } else { score_scale * fl_scale };
                 let target = soft as f64 * node_scale * stab_scale * ext;
@@ -796,7 +840,7 @@ impl Searcher {
         if self.pt.pondering && self.pt.hit.load(Ordering::Relaxed) != 0 && !self.silent && self.pt.last_info.0 > 0 {
             self.print_last_info();
         }
-                if TM_LOG.load(Ordering::Relaxed) && !self.silent {
+        if TM_LOG.load(Ordering::Relaxed) && !self.silent {
             println!(
                 "info string pgncomment tm el={} soft={} hard={} tgt={:.0} stab={} frac={:.2} d={} stop={}",
                 self.elapsed_ms(),
@@ -842,7 +886,15 @@ impl Searcher {
         );
     }
 
-    fn negamax(&mut self, pos: &Position, mut alpha: i32, mut beta: i32, mut depth: i32, ply: usize, cut_node: bool) -> i32 {
+    fn negamax(
+        &mut self,
+        pos: &Position,
+        mut alpha: i32,
+        mut beta: i32,
+        mut depth: i32,
+        ply: usize,
+        cut_node: bool,
+    ) -> i32 {
         let pv_node = beta - alpha > 1;
         let root = ply == 0;
         self.pv_len[ply] = 0;
@@ -936,7 +988,13 @@ impl Searcher {
                     crate::tb::Wdl::Draw => (0, BOUND_EXACT),
                 };
                 if bound == BOUND_EXACT || (bound == BOUND_LOWER && s >= beta) || (bound == BOUND_UPPER && s <= alpha) {
-                    let ss = if s >= MATE_BOUND { s + ply as i32 } else if s <= -MATE_BOUND { s - ply as i32 } else { s };
+                    let ss = if s >= MATE_BOUND {
+                        s + ply as i32
+                    } else if s <= -MATE_BOUND {
+                        s - ply as i32
+                    } else {
+                        s
+                    };
                     let ev = if in_check { -INF } else { self.evaluate(pos, ply) };
                     self.tt.store(pos.hash, 0, ss, ev, (depth + 6).min(MAX_PLY as i32 - 1), bound);
                     return s;
@@ -980,7 +1038,11 @@ impl Searcher {
 
         if !pv_node && !in_check && excluded == 0 {
             // reverse futility pruning
-            if on(P::UseRfp) && depth <= tp(P::RfpDepth) && eval.abs() < MATE_BOUND && eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta {
+            if on(P::UseRfp)
+                && depth <= tp(P::RfpDepth)
+                && eval.abs() < MATE_BOUND
+                && eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta
+            {
                 self.stats.rfp += 1;
                 return (eval + beta) / 2;
             }
@@ -1050,7 +1112,14 @@ impl Searcher {
                     self.hash_hist.push(pos.hash);
                     let mut v = -self.qsearch(&child, -pc_beta, -pc_beta + 1, ply + 1);
                     if v >= pc_beta {
-                        v = -self.negamax(&child, -pc_beta, -pc_beta + 1, depth - tp(P::ProbcutRed), ply + 1, !cut_node);
+                        v = -self.negamax(
+                            &child,
+                            -pc_beta,
+                            -pc_beta + 1,
+                            depth - tp(P::ProbcutRed),
+                            ply + 1,
+                            !cut_node,
+                        );
                     }
                     self.hash_hist.pop();
                     if self.stopped {
@@ -1158,12 +1227,20 @@ impl Searcher {
                         continue;
                     }
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
-                    if on(P::UseFut) && !in_check && lmr_d <= tp(P::FutDepth) && static_eval + tp(P::FutBase) + tp(P::FutMul) * lmr_d <= alpha {
+                    if on(P::UseFut)
+                        && !in_check
+                        && lmr_d <= tp(P::FutDepth)
+                        && static_eval + tp(P::FutBase) + tp(P::FutMul) * lmr_d <= alpha
+                    {
                         self.stats.futility += 1;
                         skip_quiets = true;
                         continue;
                     }
-                    if on(P::UseHistPrune) && !in_check && lmr_d <= tp(P::HistPruneDepth) && hist_score < -tp(P::HistPrune) * depth {
+                    if on(P::UseHistPrune)
+                        && !in_check
+                        && lmr_d <= tp(P::HistPruneDepth)
+                        && hist_score < -tp(P::HistPrune) * depth
+                    {
                         self.stats.hist_prunes += 1;
                         continue;
                     }
@@ -1171,7 +1248,10 @@ impl Searcher {
                         self.stats.see_quiet += 1;
                         continue;
                     }
-                } else if on(P::UseSeeNoisy) && depth <= tp(P::SeeNoisyDepth) && !pos.see_ge(m, -tp(P::SeeNoisy) * depth) {
+                } else if on(P::UseSeeNoisy)
+                    && depth <= tp(P::SeeNoisyDepth)
+                    && !pos.see_ge(m, -tp(P::SeeNoisy) * depth)
+                {
                     self.stats.see_noisy += 1;
                     continue;
                 }
@@ -1399,7 +1479,17 @@ impl Searcher {
 
     #[inline]
     #[allow(clippy::too_many_arguments)]
-    fn score_moves(&self, pos: &Position, moves: &[Move], scores: &mut [i32], tt_move: Move, killers: [Move; 2], prev1: usize, prev2: usize, prev4: usize) {
+    fn score_moves(
+        &self,
+        pos: &Position,
+        moves: &[Move],
+        scores: &mut [i32],
+        tt_move: Move,
+        killers: [Move; 2],
+        prev1: usize,
+        prev2: usize,
+        prev4: usize,
+    ) {
         let us = pos.stm;
         for i in 0..moves.len() {
             let m = moves[i];
@@ -1423,7 +1513,10 @@ impl Searcher {
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ci = pc * 64 + mto(m);
-                self.hist[us][mfrom(m)][mto(m)] as i32 + self.cont[prev1][ci] as i32 + self.cont[prev2][ci] as i32 + self.cont[prev4][ci] as i32 / 2
+                self.hist[us][mfrom(m)][mto(m)] as i32
+                    + self.cont[prev1][ci] as i32
+                    + self.cont[prev2][ci] as i32
+                    + self.cont[prev4][ci] as i32 / 2
             };
         }
     }
@@ -1465,7 +1558,9 @@ impl Searcher {
             tt_move = e.mv;
             if !pv_node
                 && (pos.halfmove < 90 || s.abs() <= tp(P::HmGuard))
-                && (e.bound == BOUND_EXACT || (e.bound == BOUND_LOWER && s >= beta) || (e.bound == BOUND_UPPER && s <= alpha))
+                && (e.bound == BOUND_EXACT
+                    || (e.bound == BOUND_LOWER && s >= beta)
+                    || (e.bound == BOUND_UPPER && s <= alpha))
             {
                 self.stats.tt_cutoffs += 1;
                 return s;

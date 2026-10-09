@@ -159,7 +159,14 @@ pub fn write_hidden(
 }
 
 /// Header plus FT weights, then the given layer records and their weights.
-fn assemble(arch: &Arch, ftw: &[i16], ftb: &[i16], layers: &[Vec<u8>], layer_quant: Option<&[u8]>, weights: &[u8]) -> Vec<u8> {
+fn assemble(
+    arch: &Arch,
+    ftw: &[i16],
+    ftb: &[i16],
+    layers: &[Vec<u8>],
+    layer_quant: Option<&[u8]>,
+    weights: &[u8],
+) -> Vec<u8> {
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
     assert_eq!(ftw.len(), nkb * 768 * h);
     assert_eq!(ftb.len(), h);
@@ -246,7 +253,12 @@ pub fn convert(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, String
     if !ok {
         return Err(format!(
             "input is {} bytes, but hidden {}, {} king bucket(s) and {} output buckets need {} ({} layout)",
-            data.len(), h, nkb, nb, expect, source
+            data.len(),
+            h,
+            nkb,
+            nb,
+            expect,
+            source
         ));
     }
     let mut o = 0;
@@ -286,11 +298,17 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let in2 = if arch.l1_dual { 2 * l1 } else { l1 };
     let expect = 2 * (n_ftw + h) + nb1 * l1 * inl + 4 * (nb1 * l1 + nb * l2 * (in2 + 1) + nb * last + nb);
     let ok = data.len() == expect.div_ceil(64) * 64
-        && (data[expect..].iter().all(|&b| b == 0) || data[expect..].iter().zip(b"bullet".iter().cycle()).all(|(a, b)| a == b));
+        && (data[expect..].iter().all(|&b| b == 0)
+            || data[expect..].iter().zip(b"bullet".iter().cycle()).all(|(a, b)| a == b));
     if !ok {
         return Err(format!(
             "input is {} bytes, but hidden {}, {} king bucket(s), {} output buckets and l1 {} need {}",
-            data.len(), h, nkb, nb, l1, expect
+            data.len(),
+            h,
+            nkb,
+            nb,
+            l1,
+            expect
         ));
     }
     let mut o = 0;
@@ -302,7 +320,8 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let ftw = i16s(take(2 * n_ftw));
     let ftb = i16s(take(2 * h));
     let w1: Vec<i8> = take(nb1 * l1 * inl).iter().map(|&b| b as i8).collect();
-    let f32s = |b: &[u8]| -> Vec<f32> { b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect() };
+    let f32s =
+        |b: &[u8]| -> Vec<f32> { b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect() };
     let b1 = f32s(take(4 * nb1 * l1));
     let wm = f32s(take(4 * nb * l2 * in2));
     let bm = f32s(take(4 * nb * l2));
@@ -338,7 +357,8 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
     let u16_at = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]);
     let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
     let header_size = u32_at(12) as usize;
-    let mut s = format!("version {}, header {} bytes, weights {} bytes\n", u16_at(8), header_size, data.len() - header_size);
+    let mut s =
+        format!("version {}, header {} bytes, weights {} bytes\n", u16_at(8), header_size, data.len() - header_size);
     let mut o = 16;
     while o + 8 <= header_size {
         let (tag, len) = (u16_at(o), u32_at(o + 4) as usize);
@@ -349,25 +369,50 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
         let p32 = |i: usize| u32::from_le_bytes(p[i..i + 4].try_into().unwrap());
         match tag {
             TAG_INPUTS => {
-                let _ = writeln!(s, "inputs: {} set(s), first kind {} with {} features", u16::from_le_bytes([p[0], p[1]]), u16::from_le_bytes([p[2], p[3]]), p32(6));
+                let _ = writeln!(
+                    s,
+                    "inputs: {} set(s), first kind {} with {} features",
+                    u16::from_le_bytes([p[0], p[1]]),
+                    u16::from_le_bytes([p[2], p[3]]),
+                    p32(6)
+                );
             }
             TAG_KING_BUCKETS => {
                 let _ = writeln!(s, "king buckets: {}, mirrored: {}, table {:?}", p[0], p[1] != 0, &p[4..68]);
             }
             TAG_FT => {
-                let _ = writeln!(s, "feature transformer: hidden {}, activation {}, weight type {}, bias type {}", p32(0), p[4], p[5], p[6]);
+                let _ = writeln!(
+                    s,
+                    "feature transformer: hidden {}, activation {}, weight type {}, bias type {}",
+                    p32(0),
+                    p[4],
+                    p[5],
+                    p[6]
+                );
             }
             TAG_OUTPUT_BUCKETS => {
                 let _ = writeln!(s, "output buckets: scheme {}, {} buckets", p[0], p[1]);
             }
             TAG_LAYER => {
-                let _ = writeln!(s, "layer: {} -> {}, activation {}, weight type {}, bias type {}, flags {}", p32(0), p32(4), p[8], p[9], p[10], p[11]);
+                let _ = writeln!(
+                    s,
+                    "layer: {} -> {}, activation {}, weight type {}, bias type {}, flags {}",
+                    p32(0),
+                    p32(4),
+                    p[8],
+                    p[9],
+                    p[10],
+                    p[11]
+                );
             }
             TAG_QUANT => {
-                let _ = writeln!(s, "quantisation: QA {}, QB {}, scale {}", p32(0) as i32, p32(4) as i32, p32(8) as i32);
+                let _ =
+                    writeln!(s, "quantisation: QA {}, QB {}, scale {}", p32(0) as i32, p32(4) as i32, p32(8) as i32);
             }
             TAG_LAYER_QUANT => {
-                let per: Vec<String> = (0..len / 8).map(|i| format!("(input shift {}, weight scale {})", p32(8 * i), p32(8 * i + 4) as i32)).collect();
+                let per: Vec<String> = (0..len / 8)
+                    .map(|i| format!("(input shift {}, weight scale {})", p32(8 * i), p32(8 * i + 4) as i32))
+                    .collect();
                 let _ = writeln!(s, "layer quantisation: {}", per.join(", "));
             }
             TAG_DESCRIPTION => {

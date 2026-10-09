@@ -232,20 +232,32 @@ impl Uci {
         self.searcher.pt.ponder_seen |= ponder;
         let (m, _) = self.searcher.search(&self.pos, &lim);
         // UCI: no bestmove while pondering, until ponderhit or stop.
-        while ponder && self.searcher.pt.hit.load(Ordering::SeqCst) == 0 && !self.searcher.stop_flag.load(Ordering::SeqCst) {
+        while ponder
+            && self.searcher.pt.hit.load(Ordering::SeqCst) == 0
+            && !self.searcher.stop_flag.load(Ordering::SeqCst)
+        {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         self.searcher.pt.pondering = false;
         // Budget feedback: our own clock time for this move (from the hit when
         // pondering; a ponder miss isn't counted).
         let hit = self.searcher.pt.hit.load(Ordering::SeqCst);
-        let own = if !ponder { Some(search::now_ms() - t0) } else if hit > 0 { Some(search::now_ms().saturating_sub(hit - 1)) } else { None };
+        let own = if !ponder {
+            Some(search::now_ms() - t0)
+        } else if hit > 0 {
+            Some(search::now_ms().saturating_sub(hit - 1))
+        } else {
+            None
+        };
         if let Some(own) = own {
             self.searcher.pt.record_spend(own, base_soft);
         }
         let pm = self.searcher.ponder_move(m);
         let mut after = self.pos;
-        let ok = pm != 0 && after.make_move(m) && after.is_pseudo_legal(pm) && { let mut q = after; q.make_move(pm) };
+        let ok = pm != 0 && after.make_move(m) && after.is_pseudo_legal(pm) && {
+            let mut q = after;
+            q.make_move(pm)
+        };
         if ok {
             println!("bestmove {} ponder {}", self.pos.move_uci(m), after.move_uci(pm));
         } else {
@@ -307,21 +319,45 @@ fn main() {
                         let mut list = MoveList::new();
                         pos.gen_moves(&mut list, false);
                         let mut legal = vec![];
-                        for i in 0..list.len { let mut c = pos; if c.make_move(list.moves[i]) { legal.push(list.moves[i]); } }
-                        if legal.is_empty() { break; }
-                        seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+                        for i in 0..list.len {
+                            let mut c = pos;
+                            if c.make_move(list.moves[i]) {
+                                legal.push(list.moves[i]);
+                            }
+                        }
+                        if legal.is_empty() {
+                            break;
+                        }
+                        seed ^= seed << 13;
+                        seed ^= seed >> 7;
+                        seed ^= seed << 17;
                         let m = legal[(seed % legal.len() as u64) as usize];
-                        let mut child = pos; child.make_move(m);
+                        let mut child = pos;
+                        child.make_move(m);
                         let mut a2 = nnue::Acc::new();
                         a2.update_from(&acc, &pos, &child, m, &mut cache);
                         let mut a3 = nnue::Acc::new();
                         a3.refresh(&child);
-                        if a2.v != a3.v { bad += 1; println!("mismatch {} {}", pos.to_fen(), move_str(m)); }
-                        pos = child; acc = a3;
+                        if a2.v != a3.v {
+                            bad += 1;
+                            println!("mismatch {} {}", pos.to_fen(), move_str(m));
+                        }
+                        pos = child;
+                        acc = a3;
                     }
                 }
                 println!("bad {}", bad);
-                println!("startpos eval {}", nnue::evaluate(&{ let mut a = nnue::Acc::new(); a.refresh(&Position::from_fen(START_FEN).unwrap()); a }, &Position::from_fen(START_FEN).unwrap()));
+                println!(
+                    "startpos eval {}",
+                    nnue::evaluate(
+                        &{
+                            let mut a = nnue::Acc::new();
+                            a.refresh(&Position::from_fen(START_FEN).unwrap());
+                            a
+                        },
+                        &Position::from_fen(START_FEN).unwrap()
+                    )
+                );
                 return;
             }
             "bench" => {
@@ -459,7 +495,12 @@ fn main() {
                             let raw = uci::option_value(&cmd).unwrap_or_default();
                             let dirs = uci::split_paths(if raw == "<empty>" { "" } else { &raw });
                             let n = tb::init(&dirs.join(if cfg!(windows) { ";" } else { ":" }));
-                            println!("info string syzygy: {} director{}, {}-man tables loaded", dirs.len(), if dirs.len() == 1 { "y" } else { "ies" }, n);
+                            println!(
+                                "info string syzygy: {} director{}, {}-man tables loaded",
+                                dirs.len(),
+                                if dirs.len() == 1 { "y" } else { "ies" },
+                                n
+                            );
                         }
                         "uci_showwdl" => {
                             search::SHOW_WDL.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed);

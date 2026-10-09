@@ -172,7 +172,11 @@ fn dfrc_start(rng: &mut Rng) -> String {
             .filter(|&i| r[i] == b'R')
             .map(|i| {
                 let f = (b'a' + i as u8) as char;
-                if upper { f.to_ascii_uppercase() } else { f }
+                if upper {
+                    f.to_ascii_uppercase()
+                } else {
+                    f
+                }
             })
             .collect()
     };
