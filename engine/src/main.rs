@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
 
-const NAME: &str = "Incipit 0.1";
+const NAME: &str = concat!("Incipit ", env!("INCIPIT_VERSION"));
 const AUTHOR: &str = "Adam Twiss";
 
 // Bench positions: 50 positions sampled from Incipit's own self-play (clean
