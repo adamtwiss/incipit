@@ -124,7 +124,9 @@ impl MoveList {
     #[inline(always)]
     pub fn new() -> Self {
         #[allow(invalid_value)]
-        unsafe { MoveList { moves: std::mem::MaybeUninit::uninit().assume_init(), len: 0 } }
+        unsafe {
+            MoveList { moves: std::mem::MaybeUninit::uninit().assume_init(), len: 0 }
+        }
     }
     #[inline(always)]
     pub fn push(&mut self, m: Move) {
@@ -546,7 +548,9 @@ impl Position {
             // from the two of them, and no square the king crosses or lands on
             // may be attacked (checked with both lifted off the board).
             let base = if us == WHITE { 0 } else { 56 };
-            for (q, kdest, rdest, flag) in [(false, base + 6, base + 5, F_KCASTLE), (true, base + 2, base + 3, F_QCASTLE)] {
+            for (q, kdest, rdest, flag) in
+                [(false, base + 6, base + 5, F_KCASTLE), (true, base + 2, base + 3, F_QCASTLE)]
+            {
                 let r = castle_right(us, q);
                 if self.castling & (1 << r) == 0 {
                     continue;
@@ -690,8 +694,7 @@ impl Position {
                 PAWN | BISHOP => pool |= bishop_attacks(target, occupied) & diagonal,
                 ROOK => pool |= rook_attacks(target, occupied) & straight,
                 QUEEN => {
-                    pool |= (bishop_attacks(target, occupied) & diagonal)
-                        | (rook_attacks(target, occupied) & straight)
+                    pool |= (bishop_attacks(target, occupied) & diagonal) | (rook_attacks(target, occupied) & straight)
                 }
                 _ => {}
             }

@@ -165,7 +165,8 @@ pub fn san(pos: &Position, m: Move, legal: &[Move]) -> String {
 
 /// Finds the legal move matching a SAN token (annotations like +, #, !, ? are ignored).
 pub fn find_san(pos: &Position, token: &str) -> Option<Move> {
-    let want = token.trim_end_matches(|c| matches!(c, '+' | '#' | '!' | '?')).replace("0-0-0", "O-O-O").replace("0-0", "O-O");
+    let want =
+        token.trim_end_matches(|c| matches!(c, '+' | '#' | '!' | '?')).replace("0-0-0", "O-O-O").replace("0-0", "O-O");
     let legal = legal_moves(pos);
     legal.iter().copied().find(|&m| san(pos, m, &legal) == want)
 }
@@ -213,7 +214,8 @@ pub fn to_game(g: &PgnGame) -> Result<Game, String> {
                 continue;
             }
             let tok = tok.rsplit('.').next().unwrap();
-            let m = find_san(&pos, tok).ok_or_else(|| format!("illegal or unknown move {} in {}", tok, pos.to_fen()))?;
+            let m =
+                find_san(&pos, tok).ok_or_else(|| format!("illegal or unknown move {} in {}", tok, pos.to_fen()))?;
             moves.push((m, None));
             scored.push(false);
             pos.make_move(m);

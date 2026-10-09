@@ -104,7 +104,15 @@ pub fn run(threads: usize, prefix: &str, nodes: u64, seconds: u64) {
                 loop {
                     let mv = legal_moves(&pos);
                     if mv.is_empty() {
-                        result = if pos.checkers != 0 { if pos.stm == WHITE { 0 } else { 2 } } else { 1 };
+                        result = if pos.checkers != 0 {
+                            if pos.stm == WHITE {
+                                0
+                            } else {
+                                2
+                            }
+                        } else {
+                            1
+                        };
                         break;
                     }
                     if pos.halfmove >= 100 || insufficient(&pos) {
@@ -240,7 +248,11 @@ pub fn genfens(toks: &[&str]) {
                 .lines()
                 .filter_map(|l| {
                     let f: Vec<&str> = l.split_whitespace().take(4).collect();
-                    if f.len() == 4 { Position::from_fen(&f.join(" ")) } else { None }
+                    if f.len() == 4 {
+                        Position::from_fen(&f.join(" "))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
             if book.is_empty() {
@@ -314,7 +326,8 @@ fn chess960_rank(rng: &mut Rng) -> [u8; 8] {
 fn dfrc_start(rng: &mut Rng) -> Position {
     let w = chess960_rank(rng);
     let b = chess960_rank(rng);
-    let rooks = |r: &[u8; 8]| -> String { (0..8).filter(|&i| r[i] == b'R').map(|i| (b'a' + i as u8) as char).collect() };
+    let rooks =
+        |r: &[u8; 8]| -> String { (0..8).filter(|&i| r[i] == b'R').map(|i| (b'a' + i as u8) as char).collect() };
     let fen = format!(
         "{}/pppppppp/8/8/8/8/PPPPPPPP/{} w {}{} - 0 1",
         String::from_utf8(b.iter().map(|c| c.to_ascii_lowercase()).collect()).unwrap(),
