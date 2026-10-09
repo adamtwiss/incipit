@@ -903,6 +903,11 @@ impl Searcher {
         let root = ply == 0;
         self.pv_len[ply] = 0;
         if depth <= 0 {
+            // qsearch doesn't check repetitions, so a move into a repeated
+            // position at the last ply would otherwise not be scored a draw.
+            if !root && self.is_repetition(pos) {
+                return 0;
+            }
             return self.qsearch(pos, alpha, beta, ply);
         }
         self.nodes += 1;
