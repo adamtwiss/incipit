@@ -134,6 +134,9 @@ struct Uci {
     hist: Vec<u64>,
     searcher: Searcher,
     overhead: i64,
+    /// Our usable clock at this game's first timed move (the clock-surplus
+    /// baseline); cleared by ucinewgame.
+    start_clock: Option<i64>,
 }
 
 impl Uci {
@@ -230,13 +233,15 @@ impl Uci {
             base_soft = soft.max(1) as u64;
             let mut soft = (soft as f64 * self.searcher.pt.feed_scale()) as i64;
             // Clock surplus (games where the GUI ponders, with an increment):
-            // ponder hits leave our budget unspent and the clock grows, so spend
-            // what's above a reserve of TmSurplusInc increments over about
-            // TmSurplusDiv moves.
+            // ponder hits leave our budget unspent and the clock grows above
+            // where it started. Spend what's above both the starting clock and a
+            // reserve of TmSurplusInc increments over about TmSurplusDiv moves.
+            // Games whose clock never grows (small increments) are unchanged.
+            let start = *self.start_clock.get_or_insert(left);
             if params::on(params::P::UseTmSurplus) && self.searcher.pt.ponder_seen && inc > 0 {
-                let reserve = inc * params::tp(params::P::TmSurplusInc) as i64;
-                if left > reserve {
-                    soft += (left - reserve) / params::tp(params::P::TmSurplusDiv) as i64;
+                let base = start.max(inc * params::tp(params::P::TmSurplusInc) as i64);
+                if left > base {
+                    soft += (left - base) / params::tp(params::P::TmSurplusDiv) as i64;
                 }
             }
             let hard = (left * 2 / 5).min(soft * params::tp(params::P::TmHardMul) as i64).max(1);
@@ -420,6 +425,7 @@ fn main() {
         hist: Vec::new(),
         searcher: Searcher::new(16, stop.clone()),
         overhead: 20,
+        start_clock: None,
     };
     uci.searcher.pt.hit = ponder_hit;
     let mut hash_mb = 16usize;
@@ -447,7 +453,10 @@ fn main() {
                 println!("uciok");
             }
             "isready" => println!("readyok"),
-            "ucinewgame" => uci.searcher.clear(),
+            "ucinewgame" => {
+                uci.searcher.clear();
+                uci.start_clock = None;
+            }
             "setoption" => {
                 // setoption name <id> value <x>
                 let lower: Vec<String> = toks.iter().map(|s| s.to_lowercase()).collect();
