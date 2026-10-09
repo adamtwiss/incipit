@@ -836,22 +836,42 @@ fn add_sub<const NA: usize, const NS: usize>(dst: &mut [i16], src: &[i16], adds:
     }
 }
 
+/// Working memory for the hidden-layer evals, owned by the caller and reused:
+/// zeroing it per eval showed up in profiles, and leaving it uninitialised
+/// isn't sound.
+#[repr(C, align(64))]
+pub struct Scratch {
+    /// Hidden-layer inputs; to_u8 writes the 2h bytes used.
+    x: Inputs,
+    /// Indices of the 4-input groups with any non-zero input (+ 8 of slack).
+    nz: [u16; 2 * MAX_H / 4 + 8],
+}
+
+#[repr(C, align(64))]
+struct Inputs([u8; 2 * MAX_H]);
+
+impl Scratch {
+    pub fn new() -> Box<Scratch> {
+        Box::new(Scratch { x: Inputs([0; 2 * MAX_H]), nz: [0; 2 * MAX_H / 4 + 8] })
+    }
+}
+
 #[inline]
-pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
+pub fn evaluate(acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
     let n = net();
     match &n.l1 {
         None => with_h!(n.h, eval_n(n, acc, pos)),
-        Some(l1) if l1.pw && l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32d(n, l1, acc, pos)),
-        Some(l1) if l1.pw && l1.dual => with_h!(n.h, eval_hidden_pw16x16d(n, l1, acc, pos)),
-        Some(l1) if l1.pw && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32(n, l1, acc, pos)),
-        Some(l1) if l1.pw && l1.n2 == 16 => with_h!(n.h, eval_hidden_pw16x16(n, l1, acc, pos)),
-        Some(l1) if l1.pw => with_h!(n.h, eval_hidden_pw16(n, l1, acc, pos)),
-        Some(l1) if l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden16x32d(n, l1, acc, pos)),
-        Some(l1) if l1.dual => with_h!(n.h, eval_hidden16x16d(n, l1, acc, pos)),
-        Some(l1) if l1.n2 == 32 => with_h!(n.h, eval_hidden16x32(n, l1, acc, pos)),
-        Some(l1) if l1.n2 == 16 => with_h!(n.h, eval_hidden16x16(n, l1, acc, pos)),
-        Some(l1) if l1.n == 8 => with_h!(n.h, eval_hidden8(n, l1, acc, pos)),
-        Some(l1) => with_h!(n.h, eval_hidden16(n, l1, acc, pos)),
+        Some(l1) if l1.pw && l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32d(n, l1, acc, pos, s)),
+        Some(l1) if l1.pw && l1.dual => with_h!(n.h, eval_hidden_pw16x16d(n, l1, acc, pos, s)),
+        Some(l1) if l1.pw && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32(n, l1, acc, pos, s)),
+        Some(l1) if l1.pw && l1.n2 == 16 => with_h!(n.h, eval_hidden_pw16x16(n, l1, acc, pos, s)),
+        Some(l1) if l1.pw => with_h!(n.h, eval_hidden_pw16(n, l1, acc, pos, s)),
+        Some(l1) if l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden16x32d(n, l1, acc, pos, s)),
+        Some(l1) if l1.dual => with_h!(n.h, eval_hidden16x16d(n, l1, acc, pos, s)),
+        Some(l1) if l1.n2 == 32 => with_h!(n.h, eval_hidden16x32(n, l1, acc, pos, s)),
+        Some(l1) if l1.n2 == 16 => with_h!(n.h, eval_hidden16x16(n, l1, acc, pos, s)),
+        Some(l1) if l1.n == 8 => with_h!(n.h, eval_hidden8(n, l1, acc, pos, s)),
+        Some(l1) => with_h!(n.h, eval_hidden16(n, l1, acc, pos, s)),
     }
 }
 
@@ -859,58 +879,58 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
 /// move first), an int8 matrix product per output bucket, then float SCReLU
 /// and the float output layer.
 #[inline(never)]
-fn eval_hidden16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 0, false, false>(n, l1, acc, pos)
+fn eval_hidden16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 0, false, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden8<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 8, 0, false, false>(n, l1, acc, pos)
+fn eval_hidden8<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 8, 0, false, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, false, true>(n, l1, acc, pos)
+fn eval_hidden16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 16, false, true>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, false, true>(n, l1, acc, pos)
+fn eval_hidden16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 32, false, true>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden_pw16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 0, true, false>(n, l1, acc, pos)
+fn eval_hidden_pw16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 0, true, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden_pw16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, true, false>(n, l1, acc, pos)
+fn eval_hidden_pw16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 16, true, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden_pw16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, true, false>(n, l1, acc, pos)
+fn eval_hidden_pw16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 32, true, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden_pw16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, true, true>(n, l1, acc, pos)
+fn eval_hidden_pw16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 16, true, true>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden_pw16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, true, true>(n, l1, acc, pos)
+fn eval_hidden_pw16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 32, true, true>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, false, false>(n, l1, acc, pos)
+fn eval_hidden16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 16, false, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, false, false>(n, l1, acc, pos)
+fn eval_hidden16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 32, false, false>(n, l1, acc, pos, s)
 }
 
 #[inline(always)]
@@ -919,36 +939,30 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, 
     l1: &Hidden,
     acc: &Acc,
     pos: &Position,
+    s: &mut Scratch,
 ) -> i32 {
     let h = hidden::<H>(n);
     // Hidden-layer inputs: h per perspective (SCReLU) or h/2 (pairwise).
     let inl = if PW { h } else { 2 * h };
     let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
-    #[repr(C, align(64))]
-    struct Inputs([u8; 2 * MAX_H]);
-    // Left uninitialised: to_u8 writes the 2h bytes used (zeroing 4 KB per
-    // eval showed up in profiles).
-    #[allow(invalid_value, clippy::uninit_assumed_init)]
-    let mut x: Inputs = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
-    // Indices of the 4-input groups with any non-zero input (+ 8 of slack).
-    #[allow(invalid_value, clippy::uninit_assumed_init)]
-    let mut nz: [u16; 2 * MAX_H / 4 + 8] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+    let Scratch { x, nz } = s;
+    let nz = &mut nz[..];
     let count = if PW {
         let (us, them) = (acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h));
         if n.qa == 255 && l1.shift == 9 {
-            unsafe { to_u8_pw_nz_255_9(us, them, &mut x.0[..h], &mut nz) }
+            unsafe { to_u8_pw_nz_255_9(us, them, &mut x.0[..h], nz) }
         } else {
             to_u8_pw_scalar(us, &mut x.0[..h / 2], n.qa, l1.shift);
             to_u8_pw_scalar(them, &mut x.0[h / 2..h], n.qa, l1.shift);
-            unsafe { scan_nz(&x.0[..h], &mut nz) }
+            unsafe { scan_nz(&x.0[..h], nz) }
         }
     } else if n.qa == 255 && l1.shift == 9 {
         // Converts and lists the non-zero groups in one pass.
-        unsafe { to_u8_nz_255_9(acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h), &mut x.0[..2 * h], &mut nz) }
+        unsafe { to_u8_nz_255_9(acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h), &mut x.0[..2 * h], nz) }
     } else {
         to_u8_scalar(acc.side(pos.stm, h), &mut x.0[..h], n.qa, l1.shift);
         to_u8_scalar(acc.side(pos.stm ^ 1, h), &mut x.0[h..2 * h], n.qa, l1.shift);
-        unsafe { scan_nz(&x.0[..2 * h], &mut nz) }
+        unsafe { scan_nz(&x.0[..2 * h], nz) }
     };
     // A shared hidden layer has one block for all buckets (branch-free).
     let b1i = bucket & !(l1.shared as usize).wrapping_neg();
@@ -1461,8 +1475,7 @@ unsafe fn push_nz(nz: &mut [u16], count: usize, m: u32, base: u16) -> usize {
 /// product; eval_hidden fuses the scan into the u8 conversion instead.)
 #[inline(always)]
 fn l1_matmul<const L: usize>(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
-    #[allow(invalid_value, clippy::uninit_assumed_init)]
-    let mut nz: [u16; 2 * MAX_H / 4 + 8] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+    let mut nz = [0u16; 2 * MAX_H / 4 + 8];
     unsafe {
         let count = scan_nz(x, &mut nz);
         l1_product::<L>(x, &nz[..count + 8], count, w)

@@ -326,10 +326,10 @@ fn main() {
                         let mut list = MoveList::new();
                         pos.gen_moves(&mut list, false);
                         let mut legal = vec![];
-                        for i in 0..list.len {
+                        for i in 0..list.len() {
                             let mut c = pos;
-                            if c.make_move(list.moves[i]) {
-                                legal.push(list.moves[i]);
+                            if c.make_move(list[i]) {
+                                legal.push(list[i]);
                             }
                         }
                         if legal.is_empty() {
@@ -362,7 +362,8 @@ fn main() {
                             a.refresh(&Position::from_fen(START_FEN).unwrap());
                             a
                         },
-                        &Position::from_fen(START_FEN).unwrap()
+                        &Position::from_fen(START_FEN).unwrap(),
+                        &mut nnue::Scratch::new()
                     )
                 );
                 return;
@@ -554,9 +555,9 @@ fn main() {
             "legal" => {
                 let mut list = MoveList::new();
                 uci.pos.gen_moves(&mut list, false);
-                let mut v: Vec<String> = (0..list.len)
-                    .filter(|&i| uci.pos.clone().make_move(list.moves[i]))
-                    .map(|i| uci.pos.move_uci(list.moves[i]))
+                let mut v: Vec<String> = (0..list.len())
+                    .filter(|&i| uci.pos.clone().make_move(list[i]))
+                    .map(|i| uci.pos.move_uci(list[i]))
                     .collect();
                 v.sort();
                 println!("legal {}", v.join(" "));
@@ -565,7 +566,7 @@ fn main() {
             "eval" => {
                 let mut acc = nnue::Acc::new();
                 acc.refresh(&uci.pos);
-                println!("eval {} (side to move, cp)", nnue::evaluate(&acc, &uci.pos));
+                println!("eval {} (side to move, cp)", nnue::evaluate(&acc, &uci.pos, &mut nnue::Scratch::new()));
             }
             "genfens" => datagen::genfens(&toks),
             // Tablebase result of the current position: tbprobe [path]
