@@ -312,6 +312,166 @@ fn pick(moves: &mut [Move; 256], scores: &mut [i32; 256], i: usize, n: usize) {
     }
 }
 
+/// Staged move picker for the main search. Moves are generated once (after the
+/// TT move, which needs no generation) and partitioned into noisy and quiet.
+/// Stages: TT move; noisy moves by MVV + capture history, each checked with
+/// SEE only when picked (failing ones are kept for last); the two killers;
+/// quiet moves, scored by history only when this stage is reached; bad noisy
+/// moves. Same score bands and keys as scoring the whole list up front, so the
+/// order is the old one; what's saved is SEE on captures and history lookups on
+/// quiets that are never reached (a cut-off or skipped quiets).
+struct MovePicker {
+    stage: u8,
+    tt_move: Move,
+    killers: [Move; 2],
+    list: MoveList,
+    scores: [i32; 256],
+    /// Noisy moves are list[0..nn], picked from `cur`; quiets list[nn..len],
+    /// picked from `q`.
+    cur: usize,
+    nn: usize,
+    q: usize,
+    /// Noisy moves that failed SEE, in picking order (best key first).
+    bad: [(Move, i32); 64],
+    nbad: usize,
+    nbad_out: usize,
+}
+
+impl MovePicker {
+    #[inline(always)]
+    fn new(tt_move: Move, killers: [Move; 2]) -> Self {
+        #[allow(invalid_value)]
+        unsafe {
+            MovePicker {
+                stage: 0,
+                tt_move,
+                killers,
+                list: MoveList::new(),
+                scores: std::mem::MaybeUninit::uninit().assume_init(),
+                cur: 0,
+                nn: 0,
+                q: 0,
+                bad: std::mem::MaybeUninit::uninit().assume_init(),
+                nbad: 0,
+                nbad_out: 0,
+            }
+        }
+    }
+
+    /// Next move and its ordering score. `skip_quiets` (late-move or futility
+    /// pruning) drops the killers and quiet moves.
+    #[inline(always)]
+    fn next(
+        &mut self,
+        s: &Searcher,
+        pos: &Position,
+        skip_quiets: bool,
+        ctx: (usize, usize, usize),
+    ) -> Option<(Move, i32)> {
+        loop {
+            match self.stage {
+                0 => {
+                    self.stage = 1;
+                    if self.tt_move != 0 && pos.is_pseudo_legal(self.tt_move) {
+                        return Some((self.tt_move, 1 << 30));
+                    }
+                    self.tt_move = 0;
+                }
+                1 => {
+                    // Generate everything once; noisy moves first (partition in
+                    // place), dropping the TT move.
+                    self.stage = 2;
+                    pos.gen_moves(&mut self.list, false);
+                    let n = self.list.len;
+                    let mut w = 0;
+                    let mut k = 0;
+                    #[allow(invalid_value)]
+                    let mut quiet: [Move; 256] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+                    let mut nq = 0;
+                    while k < n {
+                        let m = self.list.moves[k];
+                        k += 1;
+                        if m == self.tt_move {
+                            continue;
+                        }
+                        if is_noisy(m) {
+                            self.list.moves[w] = m;
+                            w += 1;
+                        } else {
+                            quiet[nq] = m;
+                            nq += 1;
+                        }
+                    }
+                    self.nn = w;
+                    self.list.moves[w..w + nq].copy_from_slice(&quiet[..nq]);
+                    self.list.len = w + nq;
+                    for i in 0..self.nn {
+                        self.scores[i] = s.noisy_key(pos, self.list.moves[i]);
+                    }
+                }
+                2 => {
+                    while self.cur < self.nn {
+                        pick(&mut self.list.moves, &mut self.scores, self.cur, self.nn);
+                        let (m, key) = (self.list.moves[self.cur], self.scores[self.cur]);
+                        self.cur += 1;
+                        if pos.see_ge(m, -50) {
+                            return Some((m, (1 << 28) + key));
+                        }
+                        self.bad[self.nbad] = (m, -(1 << 28) + key);
+                        self.nbad += 1;
+                    }
+                    self.stage = 3;
+                }
+                3 | 4 => {
+                    let ki = (self.stage - 3) as usize;
+                    let k = self.killers[ki];
+                    self.stage += 1;
+                    if !skip_quiets
+                        && k != 0
+                        && k != self.tt_move
+                        && (ki == 0 || k != self.killers[0])
+                        && !is_noisy(k)
+                        && pos.is_pseudo_legal(k)
+                    {
+                        return Some((k, (1 << 27) + 2 - ki as i32));
+                    }
+                    if ki == 0 || k != self.killers[0] {
+                        self.killers[ki] = 0;
+                    }
+                }
+                5 => {
+                    self.stage = 6;
+                    self.q = self.nn;
+                    if !skip_quiets {
+                        let (a, b) = (self.nn, self.list.len);
+                        s.score_quiets(pos, &self.list.moves[a..b], &mut self.scores[a..b], ctx);
+                    }
+                }
+                6 => {
+                    if !skip_quiets {
+                        while self.q < self.list.len {
+                            pick(&mut self.list.moves, &mut self.scores, self.q, self.list.len);
+                            let r = (self.list.moves[self.q], self.scores[self.q]);
+                            self.q += 1;
+                            if r.0 != self.killers[0] && r.0 != self.killers[1] {
+                                return Some(r);
+                            }
+                        }
+                    }
+                    self.stage = 7;
+                }
+                _ => {
+                    if self.nbad_out < self.nbad {
+                        self.nbad_out += 1;
+                        return Some(self.bad[self.nbad_out - 1]);
+                    }
+                    return None;
+                }
+            }
+        }
+    }
+}
+
 #[inline(always)]
 fn upd(h: &mut i16, bonus: i32) {
     let v = *h as i32;
@@ -1140,23 +1300,12 @@ impl Searcher {
             depth -= 1;
         }
 
-        let mut list = MoveList::new();
-        #[allow(invalid_value)]
-        let mut scores: [i32; 256] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
         let us = pos.stm;
         let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
         let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
         let prev4 = if ply >= 4 { self.stack[ply - 4].cont_idx } else { 0 };
         let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
-        let mut generated = false;
-        if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
-            list.push(tt_move);
-            scores[0] = 1 << 30;
-        } else {
-            generated = true;
-            pos.gen_moves(&mut list, false);
-            self.score_moves(pos, &list.moves[..list.len], &mut scores[..list.len], 0, killers, prev1, prev2, prev4);
-        }
+        let mut picker = MovePicker::new(tt_move, killers);
         let mut best_score = -INF;
         let mut best_move = 0;
         let mut legal = 0;
@@ -1169,48 +1318,10 @@ impl Searcher {
         let tt_capture = tt_move != 0 && is_noisy(tt_move);
         let lmp_limit = (tp(P::LmpBase) + depth * depth) / (2 - improving as i32);
 
-        let mut n = list.len;
-        let mut i = 0;
-        let mut compacted = false;
         loop {
-            if i >= n {
-                if generated {
-                    break;
-                }
-                generated = true;
-                let mut tmp = MoveList::new();
-                pos.gen_moves(&mut tmp, false);
-                for k in 0..tmp.len {
-                    if tmp.moves[k] != tt_move {
-                        list.push(tmp.moves[k]);
-                    }
-                }
-                n = list.len;
-                self.score_moves(pos, &list.moves[i..n], &mut scores[i..n], tt_move, killers, prev1, prev2, prev4);
-                compacted = false;
-                if i >= n {
-                    break;
-                }
-            }
-            if skip_quiets && !compacted {
-                compacted = true;
-                let mut k = i;
-                for j in i..n {
-                    if is_noisy(list.moves[j]) {
-                        list.moves[k] = list.moves[j];
-                        scores[k] = scores[j];
-                        k += 1;
-                    }
-                }
-                n = k;
-                if i >= n {
-                    break;
-                }
-            }
-            pick(&mut list.moves, &mut scores, i, n);
-            let m = list.moves[i];
-            let mscore = scores[i];
-            i += 1;
+            let Some((m, mscore)) = picker.next(self, pos, skip_quiets, (prev1, prev2, prev4)) else {
+                break;
+            };
             if m == excluded {
                 continue;
             }
@@ -1477,47 +1588,29 @@ impl Searcher {
         }
     }
 
-    #[inline]
-    #[allow(clippy::too_many_arguments)]
-    fn score_moves(
-        &self,
-        pos: &Position,
-        moves: &[Move],
-        scores: &mut [i32],
-        tt_move: Move,
-        killers: [Move; 2],
-        prev1: usize,
-        prev2: usize,
-        prev4: usize,
-    ) {
+    /// Ordering key of a noisy move without SEE (MVV, queen promotion, capture
+    /// history): the move picker checks SEE only on the move it picks.
+    #[inline(always)]
+    fn noisy_key(&self, pos: &Position, m: Move) -> i32 {
+        let ct = pos.captured_type(m);
+        let pc = pos.board[mfrom(m)] as usize;
+        SEE_VAL[ct.min(5)] * 16 * (ct < 6) as i32
+            + if is_promo(m) && promo_pt(m) == QUEEN { 8000 } else { 0 }
+            + self.capt[pc][mto(m)][ct] as i32 / 16
+    }
+
+    /// History scores of quiet moves (history + continuation histories).
+    #[inline(always)]
+    fn score_quiets(&self, pos: &Position, moves: &[Move], scores: &mut [i32], ctx: (usize, usize, usize)) {
         let us = pos.stm;
         for i in 0..moves.len() {
             let m = moves[i];
-            scores[i] = if m == tt_move {
-                1 << 30
-            } else if is_noisy(m) {
-                let ct = pos.captured_type(m);
-                let pc = pos.board[mfrom(m)] as usize;
-                let base = SEE_VAL[ct.min(5)] * 16 * (ct < 6) as i32
-                    + if is_promo(m) && promo_pt(m) == QUEEN { 8000 } else { 0 }
-                    + self.capt[pc][mto(m)][ct] as i32 / 16;
-                if pos.see_ge(m, -50) {
-                    (1 << 28) + base
-                } else {
-                    -(1 << 28) + base
-                }
-            } else if m == killers[0] {
-                (1 << 27) + 2
-            } else if m == killers[1] {
-                (1 << 27) + 1
-            } else {
-                let pc = pos.board[mfrom(m)] as usize;
-                let ci = pc * 64 + mto(m);
-                self.hist[us][mfrom(m)][mto(m)] as i32
-                    + self.cont[prev1][ci] as i32
-                    + self.cont[prev2][ci] as i32
-                    + self.cont[prev4][ci] as i32 / 2
-            };
+            let pc = pos.board[mfrom(m)] as usize;
+            let ci = pc * 64 + mto(m);
+            scores[i] = self.hist[us][mfrom(m)][mto(m)] as i32
+                + self.cont[ctx.0][ci] as i32
+                + self.cont[ctx.1][ci] as i32
+                + self.cont[ctx.2][ci] as i32 / 2;
         }
     }
 
@@ -1673,5 +1766,103 @@ impl Searcher {
         }
         self.tt.store(pos.hash, best_move, ss, raw_eval, 0, bound);
         best
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The staged picker returns every pseudo-legal move exactly once (TT move
+    /// and killers included) in score-band order (TT, good noisy, killers,
+    /// quiets, bad noisy); with quiets skipped, the TT move and noisy moves.
+    #[test]
+    fn staged_picker_yields_each_move_once() {
+        // Searcher is too large for the default test-thread stack.
+        std::thread::Builder::new().stack_size(256 << 20).spawn(staged_picker_body).unwrap().join().unwrap();
+    }
+
+    fn staged_picker_body() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let s = Searcher::new(1, Arc::new(AtomicBool::new(false)));
+        let text = include_str!("../tests/perft.epd");
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let band = |sc: i32| {
+            if sc >= 1 << 30 {
+                4
+            } else if sc >= 1 << 28 {
+                3
+            } else if sc >= 1 << 27 {
+                2
+            } else if sc > -(1 << 27) {
+                1
+            } else {
+                0
+            }
+        };
+        let mut checked = 0;
+        for line in text.lines() {
+            let fen = line.split(';').next().unwrap().trim();
+            let Some(start) = Position::from_fen(fen) else { continue };
+            for _game in 0..25 {
+                let mut pos = start;
+                for _ in 0..40 {
+                    let mut all = MoveList::new();
+                    pos.gen_moves(&mut all, false);
+                    if all.len == 0 {
+                        break;
+                    }
+                    let any = |r: u64| all.moves[(r % all.len as u64) as usize];
+                    let tt = if rnd() % 4 == 0 { (rnd() & 0xffff) as Move } else { any(rnd()) };
+                    let killers = [any(rnd()), if rnd() % 3 == 0 { 0 } else { any(rnd()) }];
+                    let tt_ok = tt != 0 && pos.is_pseudo_legal(tt);
+                    for skip in [false, true] {
+                        let mut p = MovePicker::new(tt, killers);
+                        let mut got: Vec<(Move, i32)> = Vec::new();
+                        while let Some(x) = p.next(&s, &pos, skip, (0, 0, 0)) {
+                            got.push(x);
+                        }
+                        if tt_ok {
+                            assert_eq!(got[0].0, tt, "{}", pos.to_fen());
+                        }
+                        let mut prev = 3;
+                        for &(m, sc) in &got[tt_ok as usize..] {
+                            let b = band(sc);
+                            assert!(b <= prev, "{} order: {} band {} after {}", pos.to_fen(), pos.move_uci(m), b, prev);
+                            prev = b;
+                        }
+                        let mut want: Vec<Move> = all.moves[..all.len].to_vec();
+                        if skip {
+                            want.retain(|&m| is_noisy(m) || (m == tt && tt_ok));
+                        }
+                        let mut have: Vec<Move> = got.iter().map(|x| x.0).collect();
+                        have.sort_unstable();
+                        want.sort_unstable();
+                        assert_eq!(have, want, "{} skip={}", pos.to_fen(), skip);
+                        checked += 1;
+                    }
+                    let mut legal: Vec<Move> = (0..all.len)
+                        .map(|i| all.moves[i])
+                        .filter(|&m| {
+                            let mut c = pos;
+                            c.make_move(m)
+                        })
+                        .collect();
+                    if legal.is_empty() || pos.halfmove >= 100 {
+                        break;
+                    }
+                    let m = legal.swap_remove((rnd() % legal.len() as u64) as usize);
+                    pos.make_move(m);
+                }
+            }
+        }
+        assert!(checked > 10000, "checked {}", checked);
     }
 }
