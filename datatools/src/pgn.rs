@@ -171,6 +171,49 @@ pub fn find_san(pos: &Position, token: &str) -> Option<Move> {
     legal.iter().copied().find(|&m| san(pos, m, &legal) == want)
 }
 
+/// The positions and moves of one PGN game with each move's comment (empty if
+/// none): (position before the move, move, comment). For analysing time use.
+pub fn moves_with_comments(g: &PgnGame) -> Result<Vec<(Position, Move, String)>, String> {
+    let mut pos = match g.tag("FEN") {
+        Some(fen) => Position::from_fen(fen).ok_or_else(|| format!("bad FEN {}", fen))?,
+        None => Position::from_fen(START_FEN).unwrap(),
+    };
+    let mut out: Vec<(Position, Move, String)> = Vec::new();
+    let mut commented = true;
+    let text = &g.movetext;
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c.is_ascii_whitespace() {
+            i += 1;
+        } else if c == b'{' {
+            let end = text[i..].find('}').map(|e| i + e).ok_or("unterminated comment")?;
+            if !commented {
+                commented = true;
+                out.last_mut().unwrap().2 = text[i + 1..end].to_string();
+            }
+            i = end + 1;
+        } else if c == b'(' || c == b';' {
+            return Err("variations or line comments are not supported".into());
+        } else {
+            let end = text[i..].find(|ch: char| ch.is_whitespace() || ch == '{').map_or(text.len(), |e| i + e);
+            let tok = &text[i..end];
+            i = end;
+            if tok.ends_with('.') || tok.starts_with('$') || matches!(tok, "1-0" | "0-1" | "1/2-1/2" | "*") {
+                continue;
+            }
+            let tok = tok.rsplit('.').next().unwrap();
+            let m =
+                find_san(&pos, tok).ok_or_else(|| format!("illegal or unknown move {} in {}", tok, pos.to_fen()))?;
+            out.push((pos, m, String::new()));
+            commented = false;
+            pos.make_move(m);
+        }
+    }
+    Ok(out)
+}
+
 /// Converts one PGN game. Returns Err with a reason if it can't be used.
 pub fn to_game(g: &PgnGame) -> Result<Game, String> {
     let wdl = match g.tag("Result") {
