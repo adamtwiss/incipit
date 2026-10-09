@@ -134,6 +134,12 @@ struct Uci {
     hist: Vec<u64>,
     searcher: Searcher,
     overhead: i64,
+    /// MoveReserve: in sudden death (increment below the move overhead),
+    /// budget as if this many further moves each cost the overhead, so very
+    /// long games don't run the clock down to where network lag flags us.
+    /// 0 (default) = off; set it where moves really cost the overhead (online
+    /// play), not in lag-free matches.
+    reserve_moves: i64,
 }
 
 impl Uci {
@@ -214,6 +220,7 @@ impl Uci {
             lim.hard_ms = Some((mt - self.overhead).max(1) as u64);
         } else if let Some(t) = time {
             let left = (t - self.overhead).max(1);
+            let left = if inc < self.overhead { (left - self.overhead * self.reserve_moves).max(1) } else { left };
             let soft = if mtg > 0 {
                 left / (mtg + 1).min(40) + inc * 3 / 4
             } else {
@@ -438,6 +445,7 @@ fn main() {
         hist: Vec::new(),
         searcher: Searcher::new(16, stop.clone()),
         overhead: 20,
+        reserve_moves: 0,
     };
     uci.searcher.pt.hit = ponder_hit;
     let mut hash_mb = 16usize;
@@ -454,6 +462,7 @@ fn main() {
                 println!("option name EvalCacheKB type spin default {} min 16 max 1048576", search::EVAL_CACHE_KB);
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
+                println!("option name MoveReserve type spin default 0 min 0 max 100");
                 println!("option name Ponder type check default false");
                 println!("option name UCI_Chess960 type check default false");
                 println!("option name UCI_ShowWDL type check default false");
@@ -512,6 +521,11 @@ fn main() {
                         "moveoverhead" => {
                             if let Ok(v) = val.parse::<i64>() {
                                 uci.overhead = v.clamp(0, 5000);
+                            }
+                        }
+                        "movereserve" => {
+                            if let Ok(v) = val.parse::<i64>() {
+                                uci.reserve_moves = v.clamp(0, 100);
                             }
                         }
                         other => {
