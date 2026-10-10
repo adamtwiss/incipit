@@ -37,6 +37,41 @@ fn main() {
         println!("cargo:rustc-cfg=avx512_intrinsics");
     }
     build_fathom(&dir);
+    version(&dir);
+}
+
+/// Engine version for `id name`: the Cargo version on a release tag (vX.Y.Z),
+/// else with the git position, like `git describe`: 0.1.0-12-gabc1234 (12
+/// commits after the last release tag), 0.1.0-gabc1234 before any release
+/// tag, and -dirty for uncommitted changes. Without git (e.g. a source zip)
+/// just the Cargo version.
+fn version(dir: &std::path::Path) {
+    let base = env::var("CARGO_PKG_VERSION").unwrap();
+    let git = |args: &[&str]| {
+        process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let v = match git(&["describe", "--tags", "--match", "v[0-9]*.[0-9]*.[0-9]*", "--dirty"]) {
+        Some(d) => d.trim_start_matches('v').to_string(),
+        None => match git(&["describe", "--always", "--dirty"]) {
+            Some(h) => format!("{base}-g{h}"),
+            None => base,
+        },
+    };
+    println!("cargo:rustc-env=INCIPIT_VERSION={v}");
+    // Rebuild when HEAD moves (new commit or branch switch).
+    if let Some(g) = git(&["rev-parse", "--git-dir"]) {
+        let g = dir.join(g);
+        println!("cargo:rerun-if-changed={}", g.join("HEAD").display());
+        if let Some(r) = git(&["symbolic-ref", "-q", "HEAD"]) {
+            println!("cargo:rerun-if-changed={}", g.join(r).display());
+        }
+    }
 }
 
 /// Minor version of the compiler building us ("rustc 1.89.0 ..." -> 89).

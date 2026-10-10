@@ -61,6 +61,7 @@ usage:
       --permute FILE       FT neuron order (hidden-layer nets; from the engine's l1perm)
   datatools net-info <file.nnue> ...          show a network's header
   datatools fens <count> <seed> <file.vf> ... sample undecided positions across game phases
+  datatools pgnmoves <in.pgn> ...          per move: game, ply, mover, FEN before, UCI move, comment (TSV)
                                               and search-stressing kinds (for the bench set)";
 
 fn main() {
@@ -78,6 +79,7 @@ fn main() {
         Some("net") if args.len() >= 5 => cmd_net(&args[2], &args[3], &args[4], &args[5..]),
         Some("net-info") if args.len() >= 3 => cmd_net_info(&args[2..]),
         Some("fens") if args.len() >= 5 => cmd_fens(&args[2], &args[3], &args[4..]),
+        Some("pgnmoves") if args.len() >= 3 => cmd_pgnmoves(&args[2..]),
         _ => Err(USAGE.to_string()),
     };
     if let Err(e) = result {
@@ -670,11 +672,11 @@ fn fen_category(pos: &crate::position::Position) -> usize {
     }
     let mut list = MoveList::new();
     pos.gen_moves(&mut list, true);
-    let captures = (0..list.len)
+    let captures = (0..list.len())
         .filter(|&k| {
-            is_capture(list.moves[k]) && {
+            is_capture(list[k]) && {
                 let mut c = *pos;
-                c.make_move(list.moves[k])
+                c.make_move(list[k])
             }
         })
         .count();
@@ -730,6 +732,29 @@ fn cmd_fens(count: &str, seed: &str, inputs: &[String]) -> Result<(), String> {
         println!("// {}", FEN_CATEGORIES[c].0);
         for fen in list {
             println!("{}", fen);
+        }
+    }
+    Ok(())
+}
+
+/// `pgnmoves <in.pgn> ...`: one tab-separated line per move - game number, ply,
+/// mover's name, FEN before the move, the move in UCI, the move's comment - for
+/// analysing time use (tm_difficulty.py).
+fn cmd_pgnmoves(inputs: &[String]) -> Result<(), String> {
+    let out = std::io::stdout();
+    let mut w = std::io::BufWriter::new(out.lock());
+    let mut gi = 0usize;
+    for path in inputs {
+        let f = File::open(path).map_err(|e| format!("{}: {}", path, e))?;
+        for g in pgn::Games::new(std::io::BufReader::new(f)) {
+            let g = g.map_err(|e| e.to_string())?;
+            gi += 1;
+            let names = [g.tag("White").unwrap_or("?").to_string(), g.tag("Black").unwrap_or("?").to_string()];
+            let Ok(moves) = pgn::moves_with_comments(&g) else { continue };
+            for (ply, (pos, m, c)) in moves.iter().enumerate() {
+                let _ =
+                    writeln!(w, "{}\t{}\t{}\t{}\t{}\t{}", gi, ply, names[pos.stm], pos.to_fen(), pos.move_uci(*m), c);
+            }
         }
     }
     Ok(())

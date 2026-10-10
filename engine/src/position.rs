@@ -1,5 +1,6 @@
 // Board representation, make move, move generation, SEE.
 use crate::attacks::*;
+use std::mem::MaybeUninit;
 
 pub type Move = u16;
 pub const NO_MOVE: Move = 0;
@@ -116,24 +117,55 @@ pub fn move_str(m: Move) -> String {
     s
 }
 
-pub struct MoveList {
-    pub moves: [Move; 256],
-    pub len: usize,
+/// Up to 256 values on the stack, left uninitialised until pushed (zeroing
+/// the move list and move scores at every node costs measurable speed).
+/// Only the pushed prefix is ever read: through as_slice, as_mut_slice or
+/// indexing, all bounded by len.
+pub struct Stack256<T: Copy> {
+    items: [MaybeUninit<T>; 256],
+    len: usize,
 }
-impl MoveList {
+
+pub type MoveList = Stack256<Move>;
+
+impl<T: Copy> Stack256<T> {
     #[inline(always)]
     pub fn new() -> Self {
-        #[allow(invalid_value)]
-        unsafe {
-            MoveList { moves: std::mem::MaybeUninit::uninit().assume_init(), len: 0 }
-        }
+        Stack256 { items: [const { MaybeUninit::uninit() }; 256], len: 0 }
     }
     #[inline(always)]
-    pub fn push(&mut self, m: Move) {
-        unsafe {
-            *self.moves.get_unchecked_mut(self.len) = m;
-        }
+    pub fn push(&mut self, v: T) {
+        self.items[self.len].write(v);
         self.len += 1;
+    }
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[T] {
+        // SAFETY: items[..len] were written by push.
+        unsafe { std::slice::from_raw_parts(self.items.as_ptr().cast(), self.len) }
+    }
+    #[inline(always)]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: items[..len] were written by push.
+        unsafe { std::slice::from_raw_parts_mut(self.items.as_mut_ptr().cast(), self.len) }
+    }
+}
+
+impl<T: Copy> std::ops::Index<usize> for Stack256<T> {
+    type Output = T;
+    #[inline(always)]
+    fn index(&self, i: usize) -> &T {
+        &self.as_slice()[i]
+    }
+}
+
+impl<T: Copy> std::ops::IndexMut<usize> for Stack256<T> {
+    #[inline(always)]
+    fn index_mut(&mut self, i: usize) -> &mut T {
+        &mut self.as_mut_slice()[i]
     }
 }
 
@@ -579,9 +611,9 @@ impl Position {
     pub fn has_legal_move(&self) -> bool {
         let mut list = MoveList::new();
         self.gen_moves(&mut list, false);
-        (0..list.len).any(|i| {
+        (0..list.len()).any(|i| {
             let mut c = *self;
-            c.make_move(list.moves[i])
+            c.make_move(list[i])
         })
     }
 
@@ -716,7 +748,7 @@ impl Position {
         if flag == F_KCASTLE || flag == F_QCASTLE || flag == F_EP || flag == 6 || flag == 7 {
             let mut list = MoveList::new();
             self.gen_moves(&mut list, false);
-            return list.moves[..list.len].contains(&m);
+            return list.as_slice().contains(&m);
         }
         if from == to {
             return false;
@@ -775,8 +807,8 @@ impl Position {
     pub fn parse_move(&self, s: &str) -> Option<Move> {
         let mut list = MoveList::new();
         self.gen_moves(&mut list, false);
-        for i in 0..list.len {
-            let m = list.moves[i];
+        for i in 0..list.len() {
+            let m = list[i];
             if self.move_uci(m) == s {
                 let mut c = *self;
                 if c.make_move(m) {
@@ -792,9 +824,9 @@ pub fn perft(pos: &Position, depth: u32) -> u64 {
     let mut list = MoveList::new();
     pos.gen_moves(&mut list, false);
     let mut n = 0;
-    for i in 0..list.len {
+    for i in 0..list.len() {
         let mut c = *pos;
-        if c.make_move(list.moves[i]) {
+        if c.make_move(list[i]) {
             n += if depth <= 1 { 1 } else { perft(&c, depth - 1) };
         }
     }
@@ -825,8 +857,8 @@ mod tests {
                     out.push(pos);
                     let mut list = MoveList::new();
                     pos.gen_moves(&mut list, false);
-                    let legal: Vec<Move> = (0..list.len)
-                        .map(|i| list.moves[i])
+                    let legal: Vec<Move> = (0..list.len())
+                        .map(|i| list[i])
                         .filter(|&m| {
                             let mut c = pos;
                             c.make_move(m)
@@ -854,13 +886,13 @@ mod tests {
             let mut list = MoveList::new();
             pos.gen_moves(&mut list, false);
             let mut generated = vec![false; 1 << 16];
-            for i in 0..list.len {
-                generated[list.moves[i] as usize] = true;
+            for i in 0..list.len() {
+                generated[list[i] as usize] = true;
             }
             let mut noisy = MoveList::new();
             pos.gen_moves(&mut noisy, true);
-            for i in 0..noisy.len {
-                assert!(generated[noisy.moves[i] as usize], "noisy move not in full list");
+            for i in 0..noisy.len() {
+                assert!(generated[noisy[i] as usize], "noisy move not in full list");
             }
             for m in 0..=u16::MAX {
                 assert_eq!(

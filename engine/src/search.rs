@@ -271,6 +271,7 @@ pub struct Searcher {
     corr: Box<[[i32; CORR_SIZE]; 2]>,
     corr_np: Box<[[[i32; CORR_SIZE]; 2]; 2]>,
     acc: Vec<Acc>,
+    eval_scratch: Box<nnue::Scratch>,
     pub hash_hist: Vec<u64>,
     tb_hits: u64,
     // Per ply.
@@ -292,24 +293,20 @@ pub struct Searcher {
 }
 
 #[inline(always)]
-fn pick(moves: &mut [Move; 256], scores: &mut [i32; 256], i: usize, n: usize) {
-    unsafe {
-        let mut bi = i;
-        let mut bs = *scores.get_unchecked(i);
-        for j in i + 1..n {
-            let s = *scores.get_unchecked(j);
-            if s > bs {
-                bs = s;
-                bi = j;
-            }
-        }
-        if bi != i {
-            let sp = scores.as_mut_ptr();
-            let mp = moves.as_mut_ptr();
-            std::ptr::swap(sp.add(i), sp.add(bi));
-            std::ptr::swap(mp.add(i), mp.add(bi));
+fn pick(moves: &mut [Move], scores: &mut [i32], i: usize, n: usize) {
+    // Slicing to n once lets the loop run without bounds checks.
+    let (moves, scores) = (&mut moves[..n], &mut scores[..n]);
+    let mut bi = i;
+    let mut bs = scores[i];
+    for j in i + 1..n {
+        let s = scores[j];
+        if s > bs {
+            bs = s;
+            bi = j;
         }
     }
+    scores.swap(i, bi);
+    moves.swap(i, bi);
 }
 
 #[inline(always)]
@@ -423,6 +420,7 @@ impl Searcher {
             corr: vec![[0i32; CORR_SIZE]; 2].into_boxed_slice().try_into().unwrap(),
             stats: Stats::default(),
             acc: vec![Acc::new(); MAX_PLY + 8],
+            eval_scratch: nnue::Scratch::new(),
             root_pos: Position::empty(),
             refresh_cache: nnue::RefreshCache::new(),
         }
@@ -568,7 +566,11 @@ impl Searcher {
             self.stats.eval_hits += 1;
             return *slot as u16 as i16 as i32;
         }
-        let e = if cfg!(feature = "hce") { crate::eval::evaluate(pos) } else { nnue::evaluate(&self.acc[ply], pos) };
+        let e = if cfg!(feature = "hce") {
+            crate::eval::evaluate(pos)
+        } else {
+            nnue::evaluate(&self.acc[ply], pos, &mut self.eval_scratch)
+        };
         let e = e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
         *slot = (pos.hash & !0xffff) | (e as i16 as u16 as u64);
         self.stats.evals += 1;
@@ -587,18 +589,20 @@ impl Searcher {
         if !on(P::UseCorrHist) {
             return Self::damp(pos, raw).clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
         }
-        let c = (2 * self.corr[pos.stm][(pos.pawn_key as usize) & m]
-            + self.corr_np[pos.stm][0][(pos.np_key[0] as usize) & m]
-            + self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m])
-            / (2 * CORR_GRAIN);
+        let c = (tp(P::CorrPawnWeight) * self.corr[pos.stm][(pos.pawn_key as usize) & m]
+            + tp(P::CorrNonPawnWeight)
+                * (self.corr_np[pos.stm][0][(pos.np_key[0] as usize) & m]
+                    + self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m]))
+            / (128 * CORR_GRAIN);
         Self::damp(pos, raw + c).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
     fn update_corr(&mut self, pos: &Position, depth: i32, diff: i32) {
-        let w = (depth + 1).min(16);
-        let target = diff.clamp(-400, 400) * CORR_GRAIN;
+        let w = (depth + 1).min(tp(P::CorrUpdateCap));
+        let target = diff.clamp(-tp(P::CorrDiffClamp), tp(P::CorrDiffClamp)) * CORR_GRAIN;
         let m = CORR_SIZE - 1;
-        let f = |e: &mut i32| *e = ((*e * (256 - w) + target * w) / 256).clamp(-CORR_GRAIN * 64, CORR_GRAIN * 64);
+        let lim = CORR_GRAIN * tp(P::CorrLimit);
+        let f = |e: &mut i32| *e = ((*e * (256 - w) + target * w) / 256).clamp(-lim, lim);
         f(&mut self.corr[pos.stm][(pos.pawn_key as usize) & m]);
         f(&mut self.corr_np[pos.stm][0][(pos.np_key[0] as usize) & m]);
         f(&mut self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m]);
@@ -651,10 +655,10 @@ impl Searcher {
         let mut list = MoveList::new();
         root.gen_moves(&mut list, false);
         let mut fallback = 0;
-        for i in 0..list.len {
+        for i in 0..list.len() {
             let mut c = *root;
-            if c.make_move(list.moves[i]) {
-                fallback = list.moves[i];
+            if c.make_move(list[i]) {
+                fallback = list[i];
                 break;
             }
         }
@@ -1094,8 +1098,8 @@ impl Searcher {
             {
                 let mut list = MoveList::new();
                 pos.gen_moves(&mut list, true);
-                for i in 0..list.len {
-                    let m = list.moves[i];
+                for i in 0..list.len() {
+                    let m = list[i];
                     if !pos.see_ge(m, pc_beta - static_eval) {
                         continue;
                     }
@@ -1141,8 +1145,7 @@ impl Searcher {
         }
 
         let mut list = MoveList::new();
-        #[allow(invalid_value)]
-        let mut scores: [i32; 256] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+        let mut scores = Stack256::<i32>::new();
         let us = pos.stm;
         let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
         let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
@@ -1151,11 +1154,11 @@ impl Searcher {
         let mut generated = false;
         if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
             list.push(tt_move);
-            scores[0] = 1 << 30;
+            scores.push(1 << 30);
         } else {
             generated = true;
             pos.gen_moves(&mut list, false);
-            self.score_moves(pos, &list.moves[..list.len], &mut scores[..list.len], 0, killers, prev1, prev2, prev4);
+            self.score_moves(pos, list.as_slice(), &mut scores, 0, killers, prev1, prev2, prev4);
         }
         let mut best_score = -INF;
         let mut best_move = 0;
@@ -1169,7 +1172,7 @@ impl Searcher {
         let tt_capture = tt_move != 0 && is_noisy(tt_move);
         let lmp_limit = (tp(P::LmpBase) + depth * depth) / (2 - improving as i32);
 
-        let mut n = list.len;
+        let mut n = list.len();
         let mut i = 0;
         let mut compacted = false;
         loop {
@@ -1180,13 +1183,15 @@ impl Searcher {
                 generated = true;
                 let mut tmp = MoveList::new();
                 pos.gen_moves(&mut tmp, false);
-                for k in 0..tmp.len {
-                    if tmp.moves[k] != tt_move {
-                        list.push(tmp.moves[k]);
+                for k in 0..tmp.len() {
+                    if tmp[k] != tt_move {
+                        list.push(tmp[k]);
                     }
                 }
-                n = list.len;
-                self.score_moves(pos, &list.moves[i..n], &mut scores[i..n], tt_move, killers, prev1, prev2, prev4);
+                n = list.len();
+                // Scored so far: the TT move, so the new scores line up with list[i..].
+                debug_assert_eq!(scores.len(), i);
+                self.score_moves(pos, &list.as_slice()[i..n], &mut scores, tt_move, killers, prev1, prev2, prev4);
                 compacted = false;
                 if i >= n {
                     break;
@@ -1196,8 +1201,8 @@ impl Searcher {
                 compacted = true;
                 let mut k = i;
                 for j in i..n {
-                    if is_noisy(list.moves[j]) {
-                        list.moves[k] = list.moves[j];
+                    if is_noisy(list[j]) {
+                        list[k] = list[j];
                         scores[k] = scores[j];
                         k += 1;
                     }
@@ -1207,8 +1212,8 @@ impl Searcher {
                     break;
                 }
             }
-            pick(&mut list.moves, &mut scores, i, n);
-            let m = list.moves[i];
+            pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+            let m = list[i];
             let mscore = scores[i];
             i += 1;
             if m == excluded {
@@ -1483,7 +1488,7 @@ impl Searcher {
         &self,
         pos: &Position,
         moves: &[Move],
-        scores: &mut [i32],
+        scores: &mut Stack256<i32>,
         tt_move: Move,
         killers: [Move; 2],
         prev1: usize,
@@ -1491,9 +1496,8 @@ impl Searcher {
         prev4: usize,
     ) {
         let us = pos.stm;
-        for i in 0..moves.len() {
-            let m = moves[i];
-            scores[i] = if m == tt_move {
+        for &m in moves {
+            let score = if m == tt_move {
                 1 << 30
             } else if is_noisy(m) {
                 let ct = pos.captured_type(m);
@@ -1518,6 +1522,7 @@ impl Searcher {
                     + self.cont[prev2][ci] as i32
                     + self.cont[prev4][ci] as i32 / 2
             };
+            scores.push(score);
         }
     }
 
@@ -1592,11 +1597,9 @@ impl Searcher {
         }
         let mut list = MoveList::new();
         pos.gen_moves(&mut list, !in_check);
-        #[allow(invalid_value)]
-        let mut scores: [i32; 256] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
-        for i in 0..list.len {
-            let m = list.moves[i];
-            scores[i] = if m == tt_move {
+        let mut scores = Stack256::<i32>::new();
+        for &m in list.as_slice() {
+            let score = if m == tt_move {
                 1 << 30
             } else if is_noisy(m) {
                 let ct = pos.captured_type(m);
@@ -1606,13 +1609,15 @@ impl Searcher {
             } else {
                 self.hist[pos.stm][mfrom(m)][mto(m)] as i32
             };
+            scores.push(score);
         }
         let mut best_move = 0;
         let mut legal = 0;
         let orig_alpha = alpha;
-        for i in 0..list.len {
-            pick(&mut list.moves, &mut scores, i, list.len);
-            let m = list.moves[i];
+        let n = list.len();
+        for i in 0..n {
+            pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+            let m = list[i];
             if !in_check {
                 if on(P::UseQsSee) && !pos.see_ge(m, 0) {
                     continue;
@@ -1647,9 +1652,9 @@ impl Searcher {
         if in_check && legal == 0 {
             // need to verify no legal moves at all (we may have skipped some)
             let mut any = false;
-            for i in 0..list.len {
+            for i in 0..list.len() {
                 let mut c = *pos;
-                if c.make_move(list.moves[i]) {
+                if c.make_move(list[i]) {
                     any = true;
                     break;
                 }

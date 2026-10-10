@@ -195,8 +195,8 @@ pub fn for_each_game(data: &[u8], mut f: impl FnMut(&[(Position, Move)], u8)) ->
             }
             let mut list = MoveList::new();
             pos.gen_moves(&mut list, false);
-            let m = (0..list.len)
-                .map(|k| list.moves[k])
+            let m = (0..list.len())
+                .map(|k| list[k])
                 .find(|&m| {
                     encode_move(&pos, m) == raw && {
                         let mut c = pos;
@@ -231,8 +231,8 @@ pub fn for_each_position(data: &[u8], mut f: impl FnMut(&Position, Move, i16, u8
             }
             let mut list = MoveList::new();
             pos.gen_moves(&mut list, false);
-            let m = (0..list.len)
-                .map(|k| list.moves[k])
+            let m = (0..list.len())
+                .map(|k| list[k])
                 .find(|&m| {
                     encode_move(&pos, m) == raw && {
                         let mut c = pos;

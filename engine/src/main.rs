@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
 
-const NAME: &str = "Incipit 0.1";
+const NAME: &str = concat!("Incipit ", env!("INCIPIT_VERSION"));
 const AUTHOR: &str = "Adam Twiss";
 
 // Bench positions: 50 positions sampled from Incipit's own self-play (clean
@@ -134,6 +134,12 @@ struct Uci {
     hist: Vec<u64>,
     searcher: Searcher,
     overhead: i64,
+    /// MoveReserve: in sudden death (increment below the move overhead),
+    /// budget as if this many further moves each cost the overhead, so very
+    /// long games don't run the clock down to where network lag flags us.
+    /// 0 (default) = off; set it where moves really cost the overhead (online
+    /// play), not in lag-free matches.
+    reserve_moves: i64,
 }
 
 impl Uci {
@@ -214,6 +220,7 @@ impl Uci {
             lim.hard_ms = Some((mt - self.overhead).max(1) as u64);
         } else if let Some(t) = time {
             let left = (t - self.overhead).max(1);
+            let left = if inc < self.overhead { (left - self.overhead * self.reserve_moves).max(1) } else { left };
             let soft = if mtg > 0 {
                 left / (mtg + 1).min(40) + inc * 3 / 4
             } else {
@@ -319,10 +326,10 @@ fn main() {
                         let mut list = MoveList::new();
                         pos.gen_moves(&mut list, false);
                         let mut legal = vec![];
-                        for i in 0..list.len {
+                        for i in 0..list.len() {
                             let mut c = pos;
-                            if c.make_move(list.moves[i]) {
-                                legal.push(list.moves[i]);
+                            if c.make_move(list[i]) {
+                                legal.push(list[i]);
                             }
                         }
                         if legal.is_empty() {
@@ -355,7 +362,8 @@ fn main() {
                             a.refresh(&Position::from_fen(START_FEN).unwrap());
                             a
                         },
-                        &Position::from_fen(START_FEN).unwrap()
+                        &Position::from_fen(START_FEN).unwrap(),
+                        &mut nnue::Scratch::new()
                     )
                 );
                 return;
@@ -369,6 +377,10 @@ fn main() {
                         if k.eq_ignore_ascii_case("EvalCacheKB") {
                             eval_cache_kb = v.parse().unwrap_or(eval_cache_kb);
                             continue;
+                        }
+                        if !cfg!(feature = "tune") {
+                            eprintln!("{a}: search parameters are constants in this build; build with --features tune (make TUNE=1)");
+                            std::process::exit(1);
                         }
                         if !v.parse().is_ok_and(|v| params::set(k, v)) {
                             eprintln!("unknown parameter {a}");
@@ -434,6 +446,7 @@ fn main() {
         hist: Vec::new(),
         searcher: Searcher::new(16, stop.clone()),
         overhead: 20,
+        reserve_moves: 0,
     };
     uci.searcher.pt.hit = ponder_hit;
     let mut hash_mb = 16usize;
@@ -450,6 +463,7 @@ fn main() {
                 println!("option name EvalCacheKB type spin default {} min 16 max 1048576", search::EVAL_CACHE_KB);
                 println!("option name Threads type spin default 1 min 1 max 1");
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
+                println!("option name MoveReserve type spin default 0 min 0 max 100");
                 println!("option name Ponder type check default false");
                 println!("option name UCI_Chess960 type check default false");
                 println!("option name UCI_ShowWDL type check default false");
@@ -510,8 +524,19 @@ fn main() {
                                 uci.overhead = v.clamp(0, 5000);
                             }
                         }
+                        "movereserve" => {
+                            if let Ok(v) = val.parse::<i64>() {
+                                uci.reserve_moves = v.clamp(0, 100);
+                            }
+                        }
                         other => {
-                            if let Ok(v) = val.parse::<i32>() {
+                            if !cfg!(feature = "tune") {
+                                // Not silently: a test setting a parameter would
+                                // otherwise measure the defaults.
+                                if let Some(name) = params::find(other) {
+                                    println!("info string {} ignored: search parameters are constants in this build (make TUNE=1)", name);
+                                }
+                            } else if let Ok(v) = val.parse::<i32>() {
                                 if params::set(other, v) {
                                     uci.searcher.init_lmr();
                                 }
@@ -530,9 +555,9 @@ fn main() {
             "legal" => {
                 let mut list = MoveList::new();
                 uci.pos.gen_moves(&mut list, false);
-                let mut v: Vec<String> = (0..list.len)
-                    .filter(|&i| uci.pos.clone().make_move(list.moves[i]))
-                    .map(|i| uci.pos.move_uci(list.moves[i]))
+                let mut v: Vec<String> = (0..list.len())
+                    .filter(|&i| uci.pos.clone().make_move(list[i]))
+                    .map(|i| uci.pos.move_uci(list[i]))
                     .collect();
                 v.sort();
                 println!("legal {}", v.join(" "));
@@ -541,7 +566,7 @@ fn main() {
             "eval" => {
                 let mut acc = nnue::Acc::new();
                 acc.refresh(&uci.pos);
-                println!("eval {} (side to move, cp)", nnue::evaluate(&acc, &uci.pos));
+                println!("eval {} (side to move, cp)", nnue::evaluate(&acc, &uci.pos, &mut nnue::Scratch::new()));
             }
             "genfens" => datagen::genfens(&toks),
             // Tablebase result of the current position: tbprobe [path]

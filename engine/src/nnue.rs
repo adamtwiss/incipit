@@ -677,33 +677,108 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
 }
 
 /// Rebuilds perspective p of `acc` for `pos` through the cache entry for p's
-/// king bucket and mirror state.
+/// king bucket and mirror state: the entry's rows plus the pieces added and
+/// minus those removed since it was last used, written back to the entry and
+/// to acc.
 #[inline(never)]
 fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Position, cache: &mut RefreshCache) {
     let h = hidden::<H>(n);
     let ki = kinfo(n, p, pos.king_sq(p));
     let idx = (p * n.nkb + ki.0 / 768) * 2 + (ki.1 != 0) as usize;
     let e = &mut cache.entries[idx];
-    let v = &mut e.acc[..h];
+    // Feature rows to add and subtract (at most 32 pieces each way).
+    let mut adds = [0usize; 32];
+    let mut subs = [0usize; 32];
+    let (mut na, mut ns) = (0, 0);
     for c in 0..2 {
         for pt in 0..6 {
             let pc = make_pc(pt, c);
             let cur = pos.pieces[pt] & pos.colors[c];
             let old = e.bb[pc as usize];
             for sq in Bits(cur & !old) {
-                for (x, &w) in v.iter_mut().zip(row(n, feat(p, ki, pc, sq), h)) {
-                    *x = x.wrapping_add(w);
-                }
+                adds[na] = feat(p, ki, pc, sq);
+                na += 1;
             }
             for sq in Bits(old & !cur) {
-                for (x, &w) in v.iter_mut().zip(row(n, feat(p, ki, pc, sq), h)) {
-                    *x = x.wrapping_sub(w);
-                }
+                subs[ns] = feat(p, ki, pc, sq);
+                ns += 1;
             }
             e.bb[pc as usize] = cur;
         }
     }
-    acc.side_mut(p, h).copy_from_slice(v);
+    apply_rows(&mut e.acc[..h], acc.side_mut(p, h), n, h, &adds[..na], &subs[..ns]);
+}
+
+/// v += the rows `adds` - the rows `subs`, then out = v. One pass per row.
+/// (Wrapping i16 arithmetic: the order of the rows doesn't matter.)
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn apply_rows(v: &mut [i16], out: &mut [i16], n: &Network, h: usize, adds: &[usize], subs: &[usize]) {
+    for &f in adds {
+        for (x, &w) in v.iter_mut().zip(row(n, f, h)) {
+            *x = x.wrapping_add(w);
+        }
+    }
+    for &f in subs {
+        for (x, &w) in v.iter_mut().zip(row(n, f, h)) {
+            *x = x.wrapping_sub(w);
+        }
+    }
+    out.copy_from_slice(v);
+}
+
+/// NEON version of apply_rows: one pass over v, 128 values at a time held in
+/// sixteen registers while every row is applied, so v is read and written
+/// once instead of once per row. h is a multiple of 32; a 32-value tail
+/// step handles sizes that aren't multiples of 128.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn apply_rows(v: &mut [i16], out: &mut [i16], n: &Network, h: usize, adds: &[usize], subs: &[usize]) {
+    #[inline(always)]
+    unsafe fn chunk<const K: usize>(
+        v: *mut i16,
+        out: *mut i16,
+        w: *const i16,
+        h: usize,
+        adds: &[usize],
+        subs: &[usize],
+    ) {
+        use std::arch::aarch64::*;
+        let mut x = [vdupq_n_s16(0); K];
+        for k in 0..K {
+            x[k] = vld1q_s16(v.add(8 * k));
+        }
+        for &f in adds {
+            let r = w.add(f * h);
+            for k in 0..K {
+                x[k] = vaddq_s16(x[k], vld1q_s16(r.add(8 * k)));
+            }
+        }
+        for &f in subs {
+            let r = w.add(f * h);
+            for k in 0..K {
+                x[k] = vsubq_s16(x[k], vld1q_s16(r.add(8 * k)));
+            }
+        }
+        for k in 0..K {
+            vst1q_s16(v.add(8 * k), x[k]);
+            vst1q_s16(out.add(8 * k), x[k]);
+        }
+    }
+    // Safe: v and out hold h values, and load() checks every feature row
+    // (f * h .. f * h + h) is inside ftw.
+    unsafe {
+        let w = n.ftw.as_ptr();
+        let mut o = 0;
+        while o + 128 <= h {
+            chunk::<16>(v.as_mut_ptr().add(o), out.as_mut_ptr().add(o), w.add(o), h, adds, subs);
+            o += 128;
+        }
+        while o < h {
+            chunk::<4>(v.as_mut_ptr().add(o), out.as_mut_ptr().add(o), w.add(o), h, adds, subs);
+            o += 32;
+        }
+    }
 }
 
 #[inline(never)]
@@ -785,22 +860,42 @@ fn add_sub<const NA: usize, const NS: usize>(dst: &mut [i16], src: &[i16], adds:
     }
 }
 
+/// Working memory for the hidden-layer evals, owned by the caller and reused:
+/// zeroing it per eval showed up in profiles, and leaving it uninitialised
+/// isn't sound.
+#[repr(C, align(64))]
+pub struct Scratch {
+    /// Hidden-layer inputs; to_u8 writes the 2h bytes used.
+    x: Inputs,
+    /// Indices of the 4-input groups with any non-zero input (+ 8 of slack).
+    nz: [u16; 2 * MAX_H / 4 + 8],
+}
+
+#[repr(C, align(64))]
+struct Inputs([u8; 2 * MAX_H]);
+
+impl Scratch {
+    pub fn new() -> Box<Scratch> {
+        Box::new(Scratch { x: Inputs([0; 2 * MAX_H]), nz: [0; 2 * MAX_H / 4 + 8] })
+    }
+}
+
 #[inline]
-pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
+pub fn evaluate(acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
     let n = net();
     match &n.l1 {
         None => with_h!(n.h, eval_n(n, acc, pos)),
-        Some(l1) if l1.pw && l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32d(n, l1, acc, pos)),
-        Some(l1) if l1.pw && l1.dual => with_h!(n.h, eval_hidden_pw16x16d(n, l1, acc, pos)),
-        Some(l1) if l1.pw && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32(n, l1, acc, pos)),
-        Some(l1) if l1.pw && l1.n2 == 16 => with_h!(n.h, eval_hidden_pw16x16(n, l1, acc, pos)),
-        Some(l1) if l1.pw => with_h!(n.h, eval_hidden_pw16(n, l1, acc, pos)),
-        Some(l1) if l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden16x32d(n, l1, acc, pos)),
-        Some(l1) if l1.dual => with_h!(n.h, eval_hidden16x16d(n, l1, acc, pos)),
-        Some(l1) if l1.n2 == 32 => with_h!(n.h, eval_hidden16x32(n, l1, acc, pos)),
-        Some(l1) if l1.n2 == 16 => with_h!(n.h, eval_hidden16x16(n, l1, acc, pos)),
-        Some(l1) if l1.n == 8 => with_h!(n.h, eval_hidden8(n, l1, acc, pos)),
-        Some(l1) => with_h!(n.h, eval_hidden16(n, l1, acc, pos)),
+        Some(l1) if l1.pw && l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32d(n, l1, acc, pos, s)),
+        Some(l1) if l1.pw && l1.dual => with_h!(n.h, eval_hidden_pw16x16d(n, l1, acc, pos, s)),
+        Some(l1) if l1.pw && l1.n2 == 32 => with_h!(n.h, eval_hidden_pw16x32(n, l1, acc, pos, s)),
+        Some(l1) if l1.pw && l1.n2 == 16 => with_h!(n.h, eval_hidden_pw16x16(n, l1, acc, pos, s)),
+        Some(l1) if l1.pw => with_h!(n.h, eval_hidden_pw16(n, l1, acc, pos, s)),
+        Some(l1) if l1.dual && l1.n2 == 32 => with_h!(n.h, eval_hidden16x32d(n, l1, acc, pos, s)),
+        Some(l1) if l1.dual => with_h!(n.h, eval_hidden16x16d(n, l1, acc, pos, s)),
+        Some(l1) if l1.n2 == 32 => with_h!(n.h, eval_hidden16x32(n, l1, acc, pos, s)),
+        Some(l1) if l1.n2 == 16 => with_h!(n.h, eval_hidden16x16(n, l1, acc, pos, s)),
+        Some(l1) if l1.n == 8 => with_h!(n.h, eval_hidden8(n, l1, acc, pos, s)),
+        Some(l1) => with_h!(n.h, eval_hidden16(n, l1, acc, pos, s)),
     }
 }
 
@@ -808,58 +903,58 @@ pub fn evaluate(acc: &Acc, pos: &Position) -> i32 {
 /// move first), an int8 matrix product per output bucket, then float SCReLU
 /// and the float output layer.
 #[inline(never)]
-fn eval_hidden16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 0, false, false>(n, l1, acc, pos)
+fn eval_hidden16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 0, false, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden8<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 8, 0, false, false>(n, l1, acc, pos)
+fn eval_hidden8<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 8, 0, false, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, false, true>(n, l1, acc, pos)
+fn eval_hidden16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 16, false, true>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, false, true>(n, l1, acc, pos)
+fn eval_hidden16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 32, false, true>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden_pw16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 0, true, false>(n, l1, acc, pos)
+fn eval_hidden_pw16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 0, true, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden_pw16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, true, false>(n, l1, acc, pos)
+fn eval_hidden_pw16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 16, true, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden_pw16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, true, false>(n, l1, acc, pos)
+fn eval_hidden_pw16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 32, true, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden_pw16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, true, true>(n, l1, acc, pos)
+fn eval_hidden_pw16x16d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 16, true, true>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden_pw16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, true, true>(n, l1, acc, pos)
+fn eval_hidden_pw16x32d<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 32, true, true>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 16, false, false>(n, l1, acc, pos)
+fn eval_hidden16x16<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 16, false, false>(n, l1, acc, pos, s)
 }
 
 #[inline(never)]
-fn eval_hidden16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position) -> i32 {
-    eval_hidden::<H, 16, 32, false, false>(n, l1, acc, pos)
+fn eval_hidden16x32<const H: usize>(n: &Network, l1: &Hidden, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    eval_hidden::<H, 16, 32, false, false>(n, l1, acc, pos, s)
 }
 
 #[inline(always)]
@@ -868,36 +963,30 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, 
     l1: &Hidden,
     acc: &Acc,
     pos: &Position,
+    s: &mut Scratch,
 ) -> i32 {
     let h = hidden::<H>(n);
     // Hidden-layer inputs: h per perspective (SCReLU) or h/2 (pairwise).
     let inl = if PW { h } else { 2 * h };
     let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
-    #[repr(C, align(64))]
-    struct Inputs([u8; 2 * MAX_H]);
-    // Left uninitialised: to_u8 writes the 2h bytes used (zeroing 4 KB per
-    // eval showed up in profiles).
-    #[allow(invalid_value, clippy::uninit_assumed_init)]
-    let mut x: Inputs = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
-    // Indices of the 4-input groups with any non-zero input (+ 8 of slack).
-    #[allow(invalid_value, clippy::uninit_assumed_init)]
-    let mut nz: [u16; 2 * MAX_H / 4 + 8] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+    let Scratch { x, nz } = s;
+    let nz = &mut nz[..];
     let count = if PW {
         let (us, them) = (acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h));
         if n.qa == 255 && l1.shift == 9 {
-            unsafe { to_u8_pw_nz_255_9(us, them, &mut x.0[..h], &mut nz) }
+            unsafe { to_u8_pw_nz_255_9(us, them, &mut x.0[..h], nz) }
         } else {
             to_u8_pw_scalar(us, &mut x.0[..h / 2], n.qa, l1.shift);
             to_u8_pw_scalar(them, &mut x.0[h / 2..h], n.qa, l1.shift);
-            unsafe { scan_nz(&x.0[..h], &mut nz) }
+            unsafe { scan_nz(&x.0[..h], nz) }
         }
     } else if n.qa == 255 && l1.shift == 9 {
         // Converts and lists the non-zero groups in one pass.
-        unsafe { to_u8_nz_255_9(acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h), &mut x.0[..2 * h], &mut nz) }
+        unsafe { to_u8_nz_255_9(acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h), &mut x.0[..2 * h], nz) }
     } else {
         to_u8_scalar(acc.side(pos.stm, h), &mut x.0[..h], n.qa, l1.shift);
         to_u8_scalar(acc.side(pos.stm ^ 1, h), &mut x.0[h..2 * h], n.qa, l1.shift);
-        unsafe { scan_nz(&x.0[..2 * h], &mut nz) }
+        unsafe { scan_nz(&x.0[..2 * h], nz) }
     };
     // A shared hidden layer has one block for all buckets (branch-free).
     let b1i = bucket & !(l1.shared as usize).wrapping_neg();
@@ -982,12 +1071,98 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(
     l1.b2[bucket] + ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5])) + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]))
 }
 
-/// Portable version of hidden_float with the same operations in the same
-/// order per lane (8 lanes; separate multiply and add; the same final
-/// reduction), so it gives the same result as the AVX2 version.
-#[cfg(not(target_arch = "x86_64"))]
+/// NEON version of hidden_float: the AVX2 version's 8 lanes as two 4-lane
+/// halves, with the same operations in the same order per lane (separate
+/// multiply and add, never fused) and the same final reduction. Vectors of 4
+/// outputs alternate between the two accumulator halves, so each lane sums
+/// the same outputs in the same order as in the 8-lane version. maxnm/minnm
+/// clamp as max/min do (finite inputs; -0 and +0 both clamp to +0).
+#[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(
+    l1: &Hidden,
+    z: &[i32; L1_SIZE],
+    k: f32,
+    b1i: usize,
+    bucket: usize,
+) -> f32 {
+    use std::arch::aarch64::*;
+    let (zero, one, kv) = (vdupq_n_f32(0.0), vdupq_n_f32(1.0), vdupq_n_f32(k));
+    let clamp = |v: float32x4_t| vminnmq_f32(vmaxnmq_f32(v, zero), one);
+    let screlu = |v: float32x4_t| {
+        let c = clamp(v);
+        vmulq_f32(c, c)
+    };
+    // First hidden layer activations, 4 at a time.
+    let b1 = &l1.b1[b1i];
+    let lin = &l1.lin[bucket];
+    let mut v1 = [zero; L1_SIZE / 4];
+    let mut c1 = [zero; L1_SIZE / 4]; // CReLU of the same pre-activations (dual)
+                                      // acc[0] is the 8-lane accumulator's lanes 0-3, acc[1] lanes 4-7. It
+                                      // starts with the pre-activation readout (zero weights for nets without one).
+    let mut acc = [zero; 2];
+    for c in 0..L / 4 {
+        let zi = vld1q_s32(z.as_ptr().add(4 * c));
+        let pre = vaddq_f32(vmulq_f32(vcvtq_f32_s32(zi), kv), vld1q_f32(b1.as_ptr().add(4 * c)));
+        acc[c % 2] = vaddq_f32(acc[c % 2], vmulq_f32(pre, vld1q_f32(lin.as_ptr().add(4 * c))));
+        v1[c] = screlu(pre);
+        if DUAL {
+            c1[c] = clamp(pre);
+        }
+    }
+    if L2 == 0 {
+        let w2 = &l1.w2[bucket];
+        for c in 0..L / 4 {
+            acc[c % 2] = vaddq_f32(acc[c % 2], vmulq_f32(v1[c], vld1q_f32(w2.as_ptr().add(4 * c))));
+        }
+    } else {
+        let (wm, bm, wo) = (&l1.wm[bucket], &l1.bm[bucket], &l1.wo[bucket]);
+        // Second-layer inputs: SCReLU (L), then CReLU (L) when dual.
+        let mut a1 = [0f32; 2 * L1_SIZE];
+        for c in 0..L / 4 {
+            vst1q_f32(a1.as_mut_ptr().add(4 * c), v1[c]);
+            if DUAL {
+                vst1q_f32(a1.as_mut_ptr().add(L + 4 * c), c1[c]);
+            }
+        }
+        let mut u = [zero; L2_MAX / 4];
+        for c in 0..L2 / 4 {
+            u[c] = vld1q_f32(bm.as_ptr().add(4 * c));
+        }
+        for i in 0..if DUAL { 2 * L } else { L } {
+            let x = vdupq_n_f32(a1[i]);
+            for c in 0..L2 / 4 {
+                u[c] = vaddq_f32(u[c], vmulq_f32(x, vld1q_f32(wm[i].as_ptr().add(4 * c))));
+            }
+        }
+        for c in 0..L2 / 4 {
+            acc[c % 2] = vaddq_f32(acc[c % 2], vmulq_f32(screlu(u[c]), vld1q_f32(wo.as_ptr().add(4 * c))));
+        }
+    }
+    // (l0 + l4, l1 + l5, l2 + l6, l3 + l7), then the same sums as the x86 version.
+    let s = vaddq_f32(acc[0], acc[1]);
+    let p = vpaddq_f32(s, s);
+    l1.b2[bucket] + vgetq_lane_f32(p, 0) + vgetq_lane_f32(p, 1)
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[inline(always)]
+unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(
+    l1: &Hidden,
+    z: &[i32; L1_SIZE],
+    k: f32,
+    b1i: usize,
+    bucket: usize,
+) -> f32 {
+    hidden_float_portable::<L, L2, DUAL>(l1, z, k, b1i, bucket)
+}
+
+/// Portable version of hidden_float with the same operations in the same
+/// order per lane (8 lanes; separate multiply and add; the same final
+/// reduction), so it gives the same result as the SIMD versions (l1check
+/// compares them).
+#[inline(always)]
+fn hidden_float_portable<const L: usize, const L2: usize, const DUAL: bool>(
     l1: &Hidden,
     z: &[i32; L1_SIZE],
     k: f32,
@@ -1034,15 +1209,15 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(
     l1.b2[bucket] + ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]))
 }
 
-/// Portable kernels (non-x86 targets; NEON versions to come): the same
-/// results as the SIMD ones.
-#[cfg(not(target_arch = "x86_64"))]
+/// Portable kernels (targets without SIMD versions): the same results as the
+/// SIMD ones.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
     to_u8_scalar(a, x, 255, 9)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
     let half = a0.len() / 2;
@@ -1051,7 +1226,7 @@ unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]
     scan_nz(&x[..2 * half], nz)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
     let h = a0.len();
@@ -1060,9 +1235,14 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
     scan_nz(&x[..2 * h], nz)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
+    scan_nz_scalar(x, nz)
+}
+
+/// Portable scan_nz (the reference l1check compares the SIMD scans against).
+fn scan_nz_scalar(x: &[u8], nz: &mut [u16]) -> usize {
     let mut count = 0;
     for (g, c) in x.chunks_exact(4).enumerate() {
         nz[count] = g as u16;
@@ -1071,7 +1251,7 @@ unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
     count
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn l1_product_portable(x: &[u8], nz: &[u16], count: usize, w: &[i8], l: usize) -> [i32; L1_SIZE] {
     let mut z = [0i32; L1_SIZE];
@@ -1087,13 +1267,13 @@ unsafe fn l1_product_portable(x: &[u8], nz: &[u16], count: usize, w: &[i8], l: u
     z
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     l1_product_portable(x, nz, count, w, 16)
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
 unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     l1_product_portable(x, nz, count, w, 8)
@@ -1293,7 +1473,7 @@ unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
 
 /// For each 8-bit mask, the positions of its set bits (unused slots 0): lets
 /// the kernels list non-zero input groups without a branch per group.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 static NZ_TABLE: [[u16; 8]; 256] = {
     let mut t = [[0u16; 8]; 256];
     let mut m = 0;
@@ -1331,8 +1511,7 @@ unsafe fn push_nz(nz: &mut [u16], count: usize, m: u32, base: u16) -> usize {
 /// product; eval_hidden fuses the scan into the u8 conversion instead.)
 #[inline(always)]
 fn l1_matmul<const L: usize>(x: &[u8], w: &[i8]) -> [i32; L1_SIZE] {
-    #[allow(invalid_value, clippy::uninit_assumed_init)]
-    let mut nz: [u16; 2 * MAX_H / 4 + 8] = unsafe { std::mem::MaybeUninit::uninit().assume_init() };
+    let mut nz = [0u16; 2 * MAX_H / 4 + 8];
     unsafe {
         let count = scan_nz(x, &mut nz);
         l1_product::<L>(x, &nz[..count + 8], count, w)
@@ -1689,8 +1868,13 @@ pub fn l1check(trials: usize) -> usize {
             let mut nz1 = vec![0u16; 2 * h / 4 + 8];
             let mut nz2 = vec![0u16; 2 * h / 4 + 8];
             let c1 = unsafe { to_u8_nz_255_9(&a[..h], &a[h..], &mut x3, &mut nz1) };
-            let c2 = unsafe { scan_nz(&x2, &mut nz2) };
+            let c2 = scan_nz_scalar(&x2, &mut nz2);
             if x3 != x2 || c1 != c2 || nz1[..c1] != nz2[..c2] {
+                bad += 1;
+                continue;
+            }
+            let c3 = unsafe { scan_nz(&x2, &mut nz1) };
+            if c3 != c2 || nz1[..c3] != nz2[..c2] {
                 bad += 1;
                 continue;
             }
@@ -1703,7 +1887,7 @@ pub fn l1check(trials: usize) -> usize {
                 let d1 = unsafe { to_u8_pw_nz_255_9(&a[..h], &a[h..], &mut p1, &mut pz1) };
                 to_u8_pw_scalar(&a[..h], &mut p2[..h / 2], 255, 9);
                 to_u8_pw_scalar(&a[h..], &mut p2[h / 2..], 255, 9);
-                let d2 = unsafe { scan_nz(&p2, &mut pz2) };
+                let d2 = scan_nz_scalar(&p2, &mut pz2);
                 if p1 != p2 || d1 != d2 || pz1[..d1] != pz2[..d2] {
                     bad += 1;
                     continue;
@@ -1719,7 +1903,69 @@ pub fn l1check(trials: usize) -> usize {
             if l1_matmul::<8>(&x1, &w[..8 * 2 * h]) != l1_matmul_scalar(&x1, &w[..8 * 2 * h], 8) {
                 bad += 1;
             }
+            // Sparse inputs, as in real positions (few non-zero groups, odd counts).
+            let keep = rnd() % 64;
+            let xs: Vec<u8> = x1.iter().map(|&v| if rnd() % 64 < keep { v } else { 0 }).collect();
+            if l1_matmul::<16>(&xs, &w) != l1_matmul_scalar(&xs, &w, 16) {
+                bad += 1;
+            }
+            if l1_matmul::<8>(&xs, &w[..8 * 2 * h]) != l1_matmul_scalar(&xs, &w[..8 * 2 * h], 8) {
+                bad += 1;
+            }
         }
+    }
+    // The float layers against the portable version, bit for bit, for each
+    // layer shape eval_hidden uses. Pre-activations span below 0, 0..1 and
+    // above 1, so every clamp region is used.
+    let mut rf = || ((rnd() % 2001) as f32 - 1000.0) / 1000.0;
+    for _ in 0..trials {
+        let l1 = Hidden {
+            n: L1_SIZE,
+            shift: 9,
+            in_scale: 1.0,
+            w_scale: 1.0,
+            w1: AlignedI8::zeroed(0),
+            b1: vec![std::array::from_fn(|_| rf())],
+            shared: false,
+            pw: false,
+            w2: vec![std::array::from_fn(|_| rf())],
+            b2: vec![rf()],
+            n2: 0,
+            wm: vec![std::array::from_fn(|_| std::array::from_fn(|_| rf()))],
+            dual: false,
+            bm: vec![std::array::from_fn(|_| rf())],
+            wo: vec![std::array::from_fn(|_| rf())],
+            skip_k: 0.0,
+            lin: vec![std::array::from_fn(|_| rf())],
+        };
+        let z: [i32; L1_SIZE] = std::array::from_fn(|_| (rf() * 40000.0) as i32);
+        let k = 1.0 / (12345.0 + rf() * 1000.0);
+        let pairs = unsafe {
+            [
+                (hidden_float::<8, 0, false>(&l1, &z, k, 0, 0), hidden_float_portable::<8, 0, false>(&l1, &z, k, 0, 0)),
+                (
+                    hidden_float::<16, 0, false>(&l1, &z, k, 0, 0),
+                    hidden_float_portable::<16, 0, false>(&l1, &z, k, 0, 0),
+                ),
+                (
+                    hidden_float::<16, 16, false>(&l1, &z, k, 0, 0),
+                    hidden_float_portable::<16, 16, false>(&l1, &z, k, 0, 0),
+                ),
+                (
+                    hidden_float::<16, 32, false>(&l1, &z, k, 0, 0),
+                    hidden_float_portable::<16, 32, false>(&l1, &z, k, 0, 0),
+                ),
+                (
+                    hidden_float::<16, 16, true>(&l1, &z, k, 0, 0),
+                    hidden_float_portable::<16, 16, true>(&l1, &z, k, 0, 0),
+                ),
+                (
+                    hidden_float::<16, 32, true>(&l1, &z, k, 0, 0),
+                    hidden_float_portable::<16, 32, true>(&l1, &z, k, 0, 0),
+                ),
+            ]
+        };
+        bad += pairs.iter().filter(|(a, b)| a.to_bits() != b.to_bits()).count();
     }
     bad
 }
@@ -1925,6 +2171,215 @@ pub fn l1perm(path: &str, fens: &str, out: &str) -> Result<(), String> {
     let s: Vec<String> = perm.iter().map(|i| i.to_string()).collect();
     std::fs::write(out, s.join(" ") + "\n").map_err(|e| format!("{}: {}", out, e))?;
     Ok(())
+}
+
+/// NEON: appends the indices (base + bit) of the set bits of mask mc (an
+/// nz_mask8 result: mask in bits 0-7, its count in bits 8-11) to nz at
+/// count, with one 16-byte store (as the x86 push_nz).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn push_nz(nz: &mut [u16], count: usize, mc: u32, base: u16) -> usize {
+    use std::arch::aarch64::*;
+    let idx = vaddq_u16(vld1q_u16(NZ_TABLE.get_unchecked((mc & 0xff) as usize).as_ptr()), vdupq_n_u16(base));
+    vst1q_u16(nz.as_mut_ptr().add(count), idx);
+    count + (mc >> 8) as usize
+}
+
+/// For the eight 4-byte groups of q0:q1 (32 bytes): bit k set if group k has
+/// a non-zero byte (bits 0-7), and the number of such groups (bits 8-11).
+/// Each group's all-ones/zero test, narrowed to 16 bits, is weighted by
+/// 0x100 | its bit and summed, so one addv gives both and the count needs no
+/// popcount (a slow vector-unit round trip on aarch64 without CSSC).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn nz_mask8(q0: std::arch::aarch64::uint8x16_t, q1: std::arch::aarch64::uint8x16_t) -> u32 {
+    use std::arch::aarch64::*;
+    const BITS: [u16; 8] = [0x101, 0x102, 0x104, 0x108, 0x110, 0x120, 0x140, 0x180];
+    let (g0, g1) = (vreinterpretq_u32_u8(q0), vreinterpretq_u32_u8(q1));
+    let t = vcombine_u16(vmovn_u32(vtstq_u32(g0, g0)), vmovn_u32(vtstq_u32(g1, g1)));
+    vaddvq_u16(vandq_u16(t, vld1q_u16(BITS.as_ptr()))) as u32
+}
+
+/// NEON: clamp(a[o..o + 16], 0, 255) as u8 (vqmovun saturates i16 to 0..255).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn clamp_u8(ap: *const i16) -> std::arch::aarch64::uint8x16_t {
+    use std::arch::aarch64::*;
+    vqmovun_high_s16(vqmovun_s16(vld1q_s16(ap)), vld1q_s16(ap.add(8)))
+}
+
+/// NEON: (c1 * c2) >> 9 per byte. The u8 x u8 product is exact in u16 (at
+/// most 65025); uzp2 takes the products' high bytes (>> 8) and a shift by 1
+/// completes the >> 9.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn mul_255_9(
+    c1: std::arch::aarch64::uint8x16_t,
+    c2: std::arch::aarch64::uint8x16_t,
+) -> std::arch::aarch64::uint8x16_t {
+    use std::arch::aarch64::*;
+    let (lo, hi) = (vmull_u8(vget_low_u8(c1), vget_low_u8(c2)), vmull_high_u8(c1, c2));
+    vshrq_n_u8(vuzp2q_u8(vreinterpretq_u8_u16(lo), vreinterpretq_u8_u16(hi)), 1)
+}
+
+/// NEON version of to_u8_pw_nz_255_9: per perspective, 32 outputs at a time,
+/// clamp(a[i]) * clamp(a[half + i]) >> 9. half is a multiple of 32.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
+    use std::arch::aarch64::*;
+    let half = a0.len() / 2;
+    let mut count = 0;
+    for (p, a) in [a0, a1].into_iter().enumerate() {
+        let base = p * half;
+        let ap = a.as_ptr();
+        let prod = |o: usize| mul_255_9(clamp_u8(ap.add(o)), clamp_u8(ap.add(half + o)));
+        for i in (0..half).step_by(32) {
+            let (q0, q1) = (prod(i), prod(i + 16));
+            let o = base + i;
+            vst1q_u8(x.as_mut_ptr().add(o), q0);
+            vst1q_u8(x.as_mut_ptr().add(o + 16), q1);
+            count = push_nz(nz, count, nz_mask8(q0, q1), (o / 4) as u16);
+        }
+    }
+    count
+}
+
+/// NEON version of to_u8_nz_255_9 (a.len() a multiple of 32).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
+    use std::arch::aarch64::*;
+    let mut count = 0;
+    for (half, a) in [a0, a1].into_iter().enumerate() {
+        let base = half * a0.len();
+        let sq = |o: usize| {
+            let c = clamp_u8(a.as_ptr().add(o));
+            mul_255_9(c, c)
+        };
+        for i in (0..a.len()).step_by(32) {
+            let (q0, q1) = (sq(i), sq(i + 16));
+            let o = base + i;
+            vst1q_u8(x.as_mut_ptr().add(o), q0);
+            vst1q_u8(x.as_mut_ptr().add(o + 16), q1);
+            count = push_nz(nz, count, nz_mask8(q0, q1), (o / 4) as u16);
+        }
+    }
+    count
+}
+
+/// NEON version of to_u8_255_9 (a.len() a multiple of 32).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
+    use std::arch::aarch64::*;
+    for i in (0..a.len()).step_by(16) {
+        let c = clamp_u8(a.as_ptr().add(i));
+        vst1q_u8(x.as_mut_ptr().add(i), mul_255_9(c, c));
+    }
+}
+
+/// NEON version of scan_nz (x.len() a multiple of 32).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
+    use std::arch::aarch64::*;
+    let mut count = 0;
+    for c in (0..x.len()).step_by(32) {
+        let (q0, q1) = (vld1q_u8(x.as_ptr().add(c)), vld1q_u8(x.as_ptr().add(c + 16)));
+        count = push_nz(nz, count, nz_mask8(q0, q1), (c / 4) as u16);
+    }
+    count
+}
+
+/// acc + Σ x · w over each 4-byte group, per 32-bit lane: one sdot with the
+/// dot-product extension (every Apple and recent Arm core), else widening
+/// multiplies and pairwise adds. The u8 inputs are at most 127, so they are
+/// exact as i8 and the signed dot product gives the u8 x i8 result.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn dot4(
+    acc: std::arch::aarch64::int32x4_t,
+    x: std::arch::aarch64::int8x16_t,
+    w: std::arch::aarch64::int8x16_t,
+) -> std::arch::aarch64::int32x4_t {
+    use std::arch::aarch64::*;
+    #[cfg(target_feature = "dotprod")]
+    {
+        vdotq_s32(acc, x, w)
+    }
+    #[cfg(not(target_feature = "dotprod"))]
+    {
+        // i8 x i8 products fit i16; pairs, then pairs of pairs, to i32.
+        let lo = vpaddlq_s16(vmull_s8(vget_low_s8(x), vget_low_s8(w)));
+        let hi = vpaddlq_s16(vmull_high_s8(x, w));
+        vaddq_s32(acc, vpaddq_s32(lo, hi))
+    }
+}
+
+/// NEON, 16 outputs: a group's 64-byte weight row is four vectors of 4
+/// outputs; per listed group, a broadcast of its 4 inputs and four dot4s.
+/// Two groups per step into separate accumulators (eight chains).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+    use std::arch::aarch64::*;
+    let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
+    let mut a = [vdupq_n_s32(0); 8];
+    let mut step = |k: usize, g: usize| {
+        let xb = vreinterpretq_s8_s32(vdupq_n_s32(xp.add(g).read_unaligned()));
+        let wv = vld1q_s8_x4(wp.add(g * 64));
+        a[4 * k] = dot4(a[4 * k], xb, wv.0);
+        a[4 * k + 1] = dot4(a[4 * k + 1], xb, wv.1);
+        a[4 * k + 2] = dot4(a[4 * k + 2], xb, wv.2);
+        a[4 * k + 3] = dot4(a[4 * k + 3], xb, wv.3);
+    };
+    let mut i = 0;
+    while i + 1 < count {
+        step(0, *nz.get_unchecked(i) as usize);
+        step(1, *nz.get_unchecked(i + 1) as usize);
+        i += 2;
+    }
+    if i < count {
+        step(0, *nz.get_unchecked(i) as usize);
+    }
+    let mut z = [0i32; L1_SIZE];
+    for j in 0..4 {
+        vst1q_s32(z.as_mut_ptr().add(4 * j), vaddq_s32(a[j], a[4 + j]));
+    }
+    z
+}
+
+/// NEON, 8 outputs: a group's 32-byte weight row is two vectors of 4
+/// outputs; four groups per step into separate accumulators (eight chains).
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+    use std::arch::aarch64::*;
+    let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
+    let mut a = [vdupq_n_s32(0); 8];
+    let mut step = |k: usize, g: usize| {
+        let xb = vreinterpretq_s8_s32(vdupq_n_s32(xp.add(g).read_unaligned()));
+        let wv = vld1q_s8_x2(wp.add(g * 32));
+        a[2 * k] = dot4(a[2 * k], xb, wv.0);
+        a[2 * k + 1] = dot4(a[2 * k + 1], xb, wv.1);
+    };
+    let mut i = 0;
+    while i + 3 < count {
+        for k in 0..4 {
+            step(k, *nz.get_unchecked(i + k) as usize);
+        }
+        i += 4;
+    }
+    while i < count {
+        step(0, *nz.get_unchecked(i) as usize);
+        i += 1;
+    }
+    let mut z = [0i32; L1_SIZE];
+    for j in 0..2 {
+        vst1q_s32(z.as_mut_ptr().add(4 * j), vaddq_s32(vaddq_s32(a[j], a[2 + j]), vaddq_s32(a[4 + j], a[6 + j])));
+    }
+    z
 }
 
 /// NEON version: four 8-lane vectors per 32-wide step, each with its own
