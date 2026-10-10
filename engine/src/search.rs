@@ -1019,8 +1019,12 @@ impl Searcher {
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
             static_eval = self.corrected(pos, raw_eval);
             eval = static_eval;
+            // The stored score replaces the eval only where the TT cutoff
+            // would trust it (the fifty-move guard), so it can't drive pruning
+            // that the cutoff refused.
             if tte.is_some()
                 && tt_score.abs() < MATE_BOUND
+                && (pos.halfmove < 90 || tt_score.abs() <= tp(P::HmGuard))
                 && (tt_bound == BOUND_EXACT
                     || (tt_bound == BOUND_LOWER && tt_score > eval)
                     || (tt_bound == BOUND_UPPER && tt_score < eval))
@@ -1576,11 +1580,18 @@ impl Searcher {
         if in_check {
             best = -INF;
         } else {
+            // Stand-pat assumes a legal quiet move exists. Check it where
+            // stalemate is a real possibility, with only king and pawns
+            // (with pieces it's rare and the check would cost every node).
+            if !pos.has_non_pawns(pos.stm) && !pos.has_legal_move() {
+                return 0;
+            }
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
             best = self.corrected(pos, raw_eval);
             if let Some(e) = tte {
                 let s = e.score as i32;
                 if s.abs() < MATE_BOUND
+                    && (pos.halfmove < 90 || s.abs() <= tp(P::HmGuard))
                     && (e.bound == BOUND_EXACT
                         || (e.bound == BOUND_LOWER && s > best)
                         || (e.bound == BOUND_UPPER && s < best))
@@ -1678,5 +1689,29 @@ impl Searcher {
         }
         self.tt.store(pos.hash, best_move, ss, raw_eval, 0, bound);
         best
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Quiescence scores a stalemate (side to move not in check, no legal
+    /// move) as a draw instead of standing pat.
+    #[test]
+    fn qsearch_sees_stalemate() {
+        // Searcher is too large for the default test-thread stack.
+        std::thread::Builder::new().stack_size(256 << 20).spawn(qsearch_stalemate_body).unwrap().join().unwrap();
+    }
+
+    fn qsearch_stalemate_body() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let mut s = Searcher::new(1, Arc::new(AtomicBool::new(false)));
+        for fen in ["7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", "k7/P7/1K6/8/8/8/8/8 b - - 0 1"] {
+            let pos = Position::from_fen(fen).unwrap();
+            assert!(!pos.has_legal_move() && pos.checkers == 0, "{}", fen);
+            assert_eq!(s.qsearch(&pos, -INF, INF, 1), 0, "{}", fen);
+        }
     }
 }
