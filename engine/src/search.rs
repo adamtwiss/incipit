@@ -3,7 +3,7 @@ use crate::nnue::{self, Acc};
 use crate::params::{on, tp, P};
 use crate::position::*;
 use crate::tt::*;
-use std::sync::atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -271,8 +271,9 @@ pub struct Searcher {
     /// it between searches (see `clear`).
     pub tt: Arc<TT>,
     hist: Box<[[[i16; 64]; 64]; 2]>,
-    /// Continuation and correction history: one set shared by all Lazy SMP
-    /// threads while they search (see SharedHist).
+    cont: Box<[[i16; 768]; 768]>,
+    /// Correction history: one set shared by all Lazy SMP threads while
+    /// they search (see SharedHist).
     pub sh: Arc<SharedHist>,
     capt: Box<[[[i16; 7]; 64]; 12]>,
     pv: Box<[[Move; MAX_PLY + 2]; MAX_PLY + 2]>,
@@ -324,18 +325,13 @@ fn upd(h: &mut i16, bonus: i32) {
 }
 
 /// `upd` on a shared entry: load then store (see `update_corr`).
-#[inline(always)]
-fn upd_shared(h: &AtomicI16, bonus: i32) {
-    let v = h.load(Ordering::Relaxed) as i32;
-    h.store((v + bonus - v * bonus.abs() / 16384) as i16, Ordering::Relaxed);
-}
-
-/// History tables shared by all threads of a search. Entries are atomics
+/// History tables shared by all threads of a search: correction history
+/// only. Continuation history stays per thread, like the other move-ordering
+/// histories. Entries are atomics
 /// used only with Relaxed loads and stores (plain moves on x86 and ARM):
 /// each entry is a heuristic score, read and written alone, so no ordering
 /// is needed and a lost concurrent update is harmless.
 pub struct SharedHist {
-    cont: Box<[[AtomicI16; 768]; 768]>,
     corr: Box<[[AtomicI32; CORR_SIZE]; 2]>,
     corr_np: Box<[[[AtomicI32; CORR_SIZE]; 2]; 2]>,
 }
@@ -349,25 +345,18 @@ impl SharedHist {
         }
         let corr = zeroed(2, || std::array::from_fn(|_| AtomicI32::new(0)));
         let corr_np = zeroed(2, || std::array::from_fn(|_| std::array::from_fn(|_| AtomicI32::new(0))));
-        SharedHist {
-            cont: zeroed(768, || std::array::from_fn(|_| AtomicI16::new(0))).try_into().ok().unwrap(),
-            corr: corr.try_into().ok().unwrap(),
-            corr_np: corr_np.try_into().ok().unwrap(),
-        }
+        SharedHist { corr: corr.try_into().ok().unwrap(), corr_np: corr_np.try_into().ok().unwrap() }
     }
-    /// Largest |entry| of the continuation and correction tables (tests).
+    /// Largest |entry| of the correction tables (tests).
     #[cfg(test)]
-    pub fn max_abs(&self) -> (i32, i32) {
-        let c = self.cont.iter().flatten().map(|x| (x.load(Ordering::Relaxed) as i32).abs()).max().unwrap();
-        let k = self
-            .corr
+    pub fn max_abs(&self) -> i32 {
+        self.corr
             .iter()
             .flatten()
             .chain(self.corr_np.iter().flatten().flatten())
             .map(|x| x.load(Ordering::Relaxed).abs())
             .max()
-            .unwrap();
-        (c, k)
+            .unwrap()
     }
     /// Zeroes every entry. `&mut self` means no other thread is using the
     /// tables, so they can be zeroed as plain memory (zero atomics).
@@ -375,7 +364,6 @@ impl SharedHist {
         fn zero<T>(b: &mut T) {
             unsafe { std::ptr::write_bytes(b as *mut T, 0, 1) }
         }
-        zero(&mut *self.cont);
         zero(&mut *self.corr);
         zero(&mut *self.corr_np);
     }
@@ -468,6 +456,7 @@ impl Searcher {
             hard_ms: None,
             node_limit: None,
             hist: Box::new([[[0; 64]; 64]; 2]),
+            cont: vec![[0i16; 768]; 768].into_boxed_slice().try_into().unwrap(),
             sh: Arc::new(SharedHist::new()),
             capt: Box::new([[[0; 7]; 64]; 12]),
             killers: Align64([[0; 2]; MAX_PLY + 4]),
@@ -534,6 +523,9 @@ impl Searcher {
         Arc::get_mut(&mut self.tt).expect("TT cleared during a search").clear();
         self.eval_cache.fill(0);
         *self.hist = [[[0; 64]; 64]; 2];
+        for r in self.cont.iter_mut() {
+            *r = [0; 768];
+        }
         Arc::get_mut(&mut self.sh).expect("histories cleared during a search").clear();
         *self.capt = [[[0; 7]; 64]; 12];
     }
@@ -1582,13 +1574,13 @@ impl Searcher {
         let ci = pc * 64 + mto(m);
         upd(&mut self.hist[pos.stm][mfrom(m)][mto(m)], bonus);
         if prev1 != 0 {
-            upd_shared(&self.sh.cont[prev1][ci], bonus);
+            upd(&mut self.cont[prev1][ci], bonus);
         }
         if prev2 != 0 {
-            upd_shared(&self.sh.cont[prev2][ci], bonus);
+            upd(&mut self.cont[prev2][ci], bonus);
         }
         if prev4 != 0 {
-            upd_shared(&self.sh.cont[prev4][ci], bonus);
+            upd(&mut self.cont[prev4][ci], bonus);
         }
     }
 
@@ -1628,9 +1620,9 @@ impl Searcher {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ci = pc * 64 + mto(m);
                 self.hist[us][mfrom(m)][mto(m)] as i32
-                    + self.sh.cont[prev1][ci].load(Ordering::Relaxed) as i32
-                    + self.sh.cont[prev2][ci].load(Ordering::Relaxed) as i32
-                    + self.sh.cont[prev4][ci].load(Ordering::Relaxed) as i32 / 2
+                    + self.cont[prev1][ci] as i32
+                    + self.cont[prev2][ci] as i32
+                    + self.cont[prev4][ci] as i32 / 2
             };
             scores.push(score);
         }
