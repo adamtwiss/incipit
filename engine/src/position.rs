@@ -558,8 +558,10 @@ impl Position {
         for to in Bits(push1 & rank8) {
             let from = (to as i32 - up) as usize;
             list.push(mk(from, to, F_PROMO + 3));
+            // The knight promotion counts as noisy too: it can mate or fork
+            // where the queen stalemates (8/5KP1/6Bk/5R2/8/8/8/8 w: g7g8n#).
+            list.push(mk(from, to, F_PROMO));
             if !noisy_only {
-                list.push(mk(from, to, F_PROMO));
                 list.push(mk(from, to, F_PROMO + 1));
                 list.push(mk(from, to, F_PROMO + 2));
             }
@@ -634,12 +636,15 @@ impl Position {
         }
     }
 
-    /// Neither side can mate: bare kings plus at most one minor piece.
+    /// Neither side can mate: bare kings plus at most one minor piece, or
+    /// only bishops, all on squares of one colour (a dead position).
     #[inline]
     pub fn insufficient_material(&self) -> bool {
+        const DARK: u64 = 0xAA55_AA55_AA55_AA55;
         let heavy = self.pieces[PAWN] | self.pieces[ROOK] | self.pieces[QUEEN];
         let minors = self.pieces[KNIGHT] | self.pieces[BISHOP];
-        heavy == 0 && minors.count_ones() <= 1
+        let b = self.pieces[BISHOP];
+        heavy == 0 && (minors.count_ones() <= 1 || (self.pieces[KNIGHT] == 0 && (b & DARK == 0 || b & !DARK == 0)))
     }
 
     /// Whether the side to move has any legal move (slow; for rare cases).
@@ -931,6 +936,22 @@ mod tests {
         ] {
             assert!(Position::from_fen(bad).is_none(), "accepted {}", bad);
         }
+    }
+
+    /// Same-coloured bishops only is a dead position; noisy generation
+    /// includes the knight promotion.
+    #[test]
+    fn dead_bishops_and_knight_promotion() {
+        crate::attacks::init();
+        let dead = |f: &str| Position::from_fen(f).unwrap().insufficient_material();
+        assert!(dead("7k/8/8/8/8/8/1b6/2B3K1 w - - 0 1"));
+        assert!(dead("7k/8/8/8/8/8/8/2B3K1 w - - 0 1"));
+        assert!(!dead("7k/8/8/8/8/8/2b5/2B3K1 w - - 0 1"));
+        assert!(!dead("7k/8/8/8/8/8/1n6/2B3K1 w - - 0 1"));
+        let p = Position::from_fen("8/5KP1/6Bk/5R2/8/8/8/8 w - - 0 1").unwrap();
+        let mut l = MoveList::new();
+        p.gen_moves(&mut l, true);
+        assert!((0..l.len()).any(|i| p.move_uci(l[i]) == "g7g8n"));
     }
 
     /// is_pseudo_legal (used on TT and other stored moves) must accept exactly
