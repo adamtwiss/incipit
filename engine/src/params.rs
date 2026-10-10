@@ -92,6 +92,17 @@ params! {
     HistPruneDepth = "HistPruneDepth", 4, 2, 8, 1;
     SeeNoisyDepth = "SeeNoisyDepth", 7, 3, 10, 1;
     SeDepth = "SeDepth", 6, 4, 10, 1;
+    // Correction history. The eval correction is (CorrPawnWeight * pawn entry +
+    // CorrNonPawnWeight * (white + black non-pawn entries)) / 128; the defaults are the
+    // original 2:1:1 weighting, as separate weights so SPSA can move each one.
+    CorrPawnWeight = "CorrPawnWeight", 128, 0, 256, 13;
+    CorrNonPawnWeight = "CorrNonPawnWeight", 64, 0, 256, 13;
+    // Update: an entry moves toward the search's eval error (clamped to
+    // +-CorrDiffClamp cp) by min(depth + 1, CorrUpdateCap) / 256; entries are
+    // kept within +-CorrLimit cp.
+    CorrUpdateCap = "CorrUpdateCap", 16, 4, 64, 3;
+    CorrDiffClamp = "CorrDiffClamp", 400, 100, 1000, 45;
+    CorrLimit = "CorrLimit", 64, 16, 256, 12;
     // Feature switches for ablation tests (1 = on, 0 = off). Step 0 keeps them out of
     // tune-spec; OpenBench builds advertise them, so a test can set e.g. UseProbcut=0.
     UseTtCut = "UseTtCut", 1, 0, 1, 0;
