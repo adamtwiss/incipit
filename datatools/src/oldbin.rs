@@ -107,8 +107,8 @@ fn search(pos: &Position, target: &Record, depth: usize, first: bool, path: &mut
     let mut list = MoveList::new();
     // A skipped position not in check played a noisy move.
     pos.gen_moves(&mut list, !first && pos.checkers == 0);
-    for i in 0..list.len {
-        let m = list.moves[i];
+    for i in 0..list.len() {
+        let m = list[i];
         if first && is_noisy(m) {
             continue;
         }

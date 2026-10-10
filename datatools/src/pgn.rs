@@ -102,11 +102,11 @@ const TB_SCORE_MIN: f64 = 19000.0;
 fn legal_moves(pos: &Position) -> Vec<Move> {
     let mut list = MoveList::new();
     pos.gen_moves(&mut list, false);
-    let mut v = Vec::with_capacity(list.len);
-    for i in 0..list.len {
+    let mut v = Vec::with_capacity(list.len());
+    for i in 0..list.len() {
         let mut c = *pos;
-        if c.make_move(list.moves[i]) {
-            v.push(list.moves[i]);
+        if c.make_move(list[i]) {
+            v.push(list[i]);
         }
     }
     v

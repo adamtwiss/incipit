@@ -662,11 +662,11 @@ fn fen_category(pos: &crate::position::Position) -> usize {
     }
     let mut list = MoveList::new();
     pos.gen_moves(&mut list, true);
-    let captures = (0..list.len)
+    let captures = (0..list.len())
         .filter(|&k| {
-            is_capture(list.moves[k]) && {
+            is_capture(list[k]) && {
                 let mut c = *pos;
-                c.make_move(list.moves[k])
+                c.make_move(list[k])
             }
         })
         .count();

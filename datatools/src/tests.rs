@@ -19,10 +19,10 @@ fn legal(pos: &Position) -> Vec<Move> {
     let mut list = MoveList::new();
     pos.gen_moves(&mut list, false);
     let mut v = Vec::new();
-    for i in 0..list.len {
+    for i in 0..list.len() {
         let mut c = *pos;
-        if c.make_move(list.moves[i]) {
-            v.push(list.moves[i]);
+        if c.make_move(list[i]) {
+            v.push(list[i]);
         }
     }
     v
