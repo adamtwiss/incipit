@@ -35,6 +35,10 @@ struct Frame {
     cont_idx: usize, // piece*64+to of the move made at this ply
     excluded: Move,
     mv: Move,
+    /// The score returned from this ply depends on the path to it (a
+    /// repetition or fifty-move draw below decided it), so it isn't stored in
+    /// the TT: the same position reached another way may score differently.
+    path_dep: bool,
 }
 
 /// Search statistics, cumulative until reset (bench sums them over its
@@ -916,12 +920,18 @@ impl Searcher {
             self.seldepth = ply;
         }
         let in_check = pos.checkers != 0;
+        self.stack[ply].path_dep = false;
         if !root {
-            if self.is_repetition(pos) || pos.insufficient_material() {
+            if pos.insufficient_material() {
+                return 0;
+            }
+            if self.is_repetition(pos) {
+                self.stack[ply].path_dep = true;
                 return 0;
             }
             // Fifty-move rule, unless the side to move is checkmated.
             if pos.halfmove >= 100 {
+                self.stack[ply].path_dep = true;
                 return if in_check && !pos.has_legal_move() { -MATE + ply as i32 } else { 0 };
             }
             if ply >= MAX_PLY - 2 {
@@ -1161,6 +1171,8 @@ impl Searcher {
             self.score_moves(pos, list.as_slice(), &mut scores, 0, killers, prev1, prev2, prev4);
         }
         let mut best_score = -INF;
+        let mut best_dep = false;
+        let mut any_dep = false;
         let mut best_move = 0;
         let mut legal = 0;
         let mut quiets: [Move; 64] = [0; 64];
@@ -1366,7 +1378,10 @@ impl Searcher {
             if root {
                 self.root_node_counts[mfrom(m)][mto(m)] += self.nodes - nodes_before;
             }
+            let child_dep = self.stack[ply + 1].path_dep;
+            any_dep |= child_dep;
             if score > best_score {
+                best_dep = child_dep;
                 best_score = score;
                 if score > alpha {
                     best_move = m;
@@ -1440,7 +1455,11 @@ impl Searcher {
             }
         }
 
-        if excluded == 0 {
+        // A fail-low bound rests on every move, a cutoff or exact score on the
+        // best one.
+        let path_dep = if best_score >= beta || alpha > orig_alpha { best_dep } else { any_dep };
+        self.stack[ply].path_dep = path_dep;
+        if excluded == 0 && !path_dep {
             let bound = if best_score >= beta {
                 BOUND_LOWER
             } else if alpha > orig_alpha {
@@ -1539,6 +1558,7 @@ impl Searcher {
             self.seldepth = ply;
         }
         let in_check = pos.checkers != 0;
+        self.stack[ply].path_dep = false;
         if ply >= MAX_PLY - 2 {
             return if in_check { 0 } else { Self::damp(pos, self.evaluate(pos, ply)) };
         }
@@ -1546,6 +1566,7 @@ impl Searcher {
             return 0;
         }
         if pos.halfmove >= 100 {
+            self.stack[ply].path_dep = true;
             return if in_check && !pos.has_legal_move() { -MATE + ply as i32 } else { 0 };
         }
         let pv_node = beta - alpha > 1;
@@ -1678,5 +1699,46 @@ impl Searcher {
         }
         self.tt.store(pos.hash, best_move, ss, raw_eval, 0, bound);
         best
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A draw that depends on the path (a repetition or the fifty-move count
+    /// below a node) isn't stored in the TT for that node: the same position
+    /// reached another way would reuse it.
+    #[test]
+    fn path_dependent_draws_not_stored() {
+        // Searcher is too large for the default test-thread stack.
+        std::thread::Builder::new().stack_size(256 << 20).spawn(path_dep_body).unwrap().join().unwrap();
+    }
+
+    fn path_dep_body() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let lim = Limits { soft_ms: None, hard_ms: None, depth: 4, nodes: None };
+        let stored_draw = |s: &Searcher, p: &Position| s.tt.probe(p.hash).is_some_and(|e| e.score == 0);
+        // Repetition: after these moves Black's only move h8g8 repeats the
+        // start position a third time, so the search scores this position a
+        // draw that the same position without the history doesn't have.
+        let mut s = Searcher::new(1, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        let mut pos = Position::from_fen("6k1/8/5K2/8/8/8/8/7R w - - 0 1").unwrap();
+        for m in ["h1g1", "g8h8", "g1h1", "h8g8", "h1g1", "g8h8", "g1h1"] {
+            s.hash_hist.push(pos.hash);
+            let mv = pos.parse_move(m).unwrap();
+            pos.make_move(mv);
+        }
+        s.search(&pos, &lim);
+        assert!(!stored_draw(&s, &pos), "repetition draw stored");
+        // Fifty-move: at halfmove 99 Black's only move h8g8 is the 100th
+        // half-move, so the search scores this position a draw.
+        let mut s = Searcher::new(1, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        let pos = Position::from_fen("7k/8/5K2/8/8/8/8/7R b - - 99 1").unwrap();
+        s.search(&pos, &lim);
+        assert!(!stored_draw(&s, &pos), "fifty-move draw stored");
     }
 }
