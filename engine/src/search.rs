@@ -254,6 +254,8 @@ pub struct Searcher {
     pub nodes: u64,
     stopped: bool,
     pub silent: bool,
+    /// UCI searchmoves: the root moves to consider (empty = all).
+    pub search_moves: Vec<Move>,
     root_best: Move,
     root_depth: i32,
     seldepth: usize,
@@ -413,6 +415,7 @@ impl Searcher {
             tb_hits: 0,
             root_depth: 0,
             root_best: 0,
+            search_moves: Vec::new(),
             lmr,
             silent: false,
             root_node_counts: Box::new([[0; 64]; 64]),
@@ -668,7 +671,7 @@ impl Searcher {
         let mut fallback = 0;
         for i in 0..list.len() {
             let mut c = *root;
-            if c.make_move(list[i]) {
+            if (self.search_moves.is_empty() || self.search_moves.contains(&list[i])) && c.make_move(list[i]) {
                 fallback = list[i];
                 break;
             }
@@ -681,7 +684,7 @@ impl Searcher {
         }
         // Root in the tablebases: play the move that keeps the result, with the
         // fifty-move counter taken into account (DTZ).
-        if crate::tb::largest() > 0 {
+        if crate::tb::largest() > 0 && self.search_moves.is_empty() {
             if let Some((w, m)) = crate::tb::probe_root(root).filter(|&(_, m)| !self.repeats_after(root, m)) {
                 let s = match w {
                     crate::tb::Wdl::Win => TB_WIN - 1,
@@ -1243,7 +1246,7 @@ impl Searcher {
             let m = list[i];
             let mscore = scores[i];
             i += 1;
-            if m == excluded {
+            if m == excluded || (root && !self.search_moves.is_empty() && !self.search_moves.contains(&m)) {
                 continue;
             }
             let quiet = !is_noisy(m);

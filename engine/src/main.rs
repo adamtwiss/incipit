@@ -192,10 +192,21 @@ impl Uci {
         let mut nodes = None;
         let mut ponder = false;
         let mut infinite = false;
+        let mut search_moves = Vec::new();
         let mut i = 1;
         while i < toks.len() {
             let v = toks.get(i + 1).and_then(|s| s.parse::<i64>().ok());
             match toks[i] {
+                // searchmoves <move> ...: every following token that is a
+                // legal move here (it ends at the next keyword).
+                "searchmoves" => {
+                    i += 1;
+                    while let Some(m) = toks.get(i).and_then(|t| self.pos.parse_move(t)) {
+                        search_moves.push(m);
+                        i += 1;
+                    }
+                    continue;
+                }
                 "wtime" => wtime = v,
                 "btime" => btime = v,
                 "winc" => winc = v.unwrap_or(0),
@@ -247,6 +258,7 @@ impl Uci {
         self.searcher.hash_hist.extend_from_slice(&self.hist);
         self.searcher.pt.pondering = ponder;
         self.searcher.pt.ponder_seen |= ponder;
+        self.searcher.search_moves = search_moves;
         let (m, _) = self.searcher.search(&self.pos, &lim);
         // UCI: no bestmove while pondering, until ponderhit or stop, nor in
         // an infinite search (which can end early: max depth, a mate, a
@@ -441,7 +453,12 @@ fn main() {
                         // The previous search may still be running (e.g. a
                         // stop it hasn't seen yet, then this go): resetting the
                         // flags now would lose that stop, so wait for its
-                        // bestmove first.
+                        // bestmove first. A go during a search that wasn't
+                        // stopped (out of protocol, e.g. during go infinite)
+                        // stops it, so this reader never waits forever.
+                        if searching.load(Ordering::SeqCst) {
+                            stop.store(true, Ordering::SeqCst);
+                        }
                         while searching.load(Ordering::SeqCst) {
                             std::thread::sleep(std::time::Duration::from_millis(1));
                         }

@@ -341,3 +341,19 @@ fn score_parsing() {
     assert_eq!(pgn::parse_score("+199.99/1 0.000s"), None);
     assert_eq!(pgn::parse_score("-199.80/14 0.010s"), None);
 }
+
+/// Readers reject a buffer with a partial board after the last game, as
+/// count() does.
+#[test]
+fn viri_readers_reject_trailing_bytes() {
+    crate::attacks::init();
+    let games = pgn::split_games("[Result \"1/2-1/2\"]\n\n1. e4 {+0.30/10 0.004s} e5 {-0.25/10 0.004s} 1/2-1/2\n");
+    let mut buf = Vec::new();
+    pgn::to_game(&games[0]).unwrap().write(&mut buf).unwrap();
+    assert!(viri::for_each_game(&buf, |_, _| {}).is_ok());
+    assert!(viri::for_each_position(&buf, |_, _, _, _| {}).is_ok());
+    buf.extend_from_slice(&[1, 2, 3]);
+    assert!(viri::count(&buf).is_err());
+    assert!(viri::for_each_game(&buf, |_, _| {}).is_err());
+    assert!(viri::for_each_position(&buf, |_, _, _, _| {}).is_err());
+}

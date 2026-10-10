@@ -183,7 +183,10 @@ pub fn unpack_board(b: &[u8]) -> Option<(Position, i16, u8)> {
 pub fn for_each_game(data: &[u8], mut f: impl FnMut(&[(Position, Move)], u8)) -> Result<(), String> {
     let mut i = 0;
     let mut moves = Vec::new();
-    while i + 32 <= data.len() {
+    while i < data.len() {
+        if i + 32 > data.len() {
+            return Err(format!("truncated board at byte {}", i));
+        }
         let (mut pos, _, wdl) = unpack_board(&data[i..i + 32]).ok_or_else(|| format!("bad board at byte {}", i))?;
         i += 32;
         moves.clear();
@@ -220,7 +223,10 @@ pub fn for_each_game(data: &[u8], mut f: impl FnMut(&[(Position, Move)], u8)) ->
 /// game with the engine's move generator. Stops at the first undecodable game.
 pub fn for_each_position(data: &[u8], mut f: impl FnMut(&Position, Move, i16, u8)) -> Result<(), String> {
     let mut i = 0;
-    while i + 32 <= data.len() {
+    while i < data.len() {
+        if i + 32 > data.len() {
+            return Err(format!("truncated board at byte {}", i));
+        }
         let (mut pos, _, wdl) = unpack_board(&data[i..i + 32]).ok_or_else(|| format!("bad board at byte {}", i))?;
         i += 32;
         loop {
