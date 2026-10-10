@@ -64,9 +64,18 @@ impl Layout {
     }
 }
 
-/// A record decode can handle: at most 32 pieces (the packed board holds 32).
+/// A record decode can handle: 2 to 32 pieces (the packed board holds 32),
+/// piece codes 0-11 with exactly one king of each colour, result 0-2 and
+/// side to move 0-1.
 fn valid(r: &[u8; 32]) -> bool {
-    u64::from_le_bytes(r[0..8].try_into().unwrap()).count_ones() <= 32
+    let n = u64::from_le_bytes(r[0..8].try_into().unwrap()).count_ones() as usize;
+    if !(2..=32).contains(&n) || r[26] > 2 || r[27] > 1 {
+        return false;
+    }
+    let pc = |i: usize| (r[8 + i / 2] >> ((i & 1) * 4)) & 15;
+    (0..n).all(|i| pc(i) < 12)
+        && (0..n).filter(|&i| pc(i) == 10).count() == 1
+        && (0..n).filter(|&i| pc(i) == 11).count() == 1
 }
 
 #[inline(always)]

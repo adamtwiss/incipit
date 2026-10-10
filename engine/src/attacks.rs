@@ -250,7 +250,15 @@ unsafe fn init_slider(sq: usize, dirs: &[(i32, i32)], off: usize, magic: u64) ->
     }
 }
 
+/// Builds the attack tables once; later calls (e.g. from tests running in
+/// parallel) wait for the first to finish and then do nothing, so the tables
+/// are never written while another thread reads them.
 pub fn init() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(init_tables);
+}
+
+fn init_tables() {
     unsafe {
         for sq in 0..64usize {
             let (r, f) = ((sq / 8) as i32, (sq % 8) as i32);
