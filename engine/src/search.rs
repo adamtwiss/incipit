@@ -47,6 +47,8 @@ pub struct Stats {
     pub eval_hits: u64,
     pub tt_probes: u64,
     pub tt_hits: u64,
+    /// Lazy SMP: iterations where the vote changed the main thread's move.
+    pub smp_vote_changes: u64,
     pub tt_cutoffs: u64,
     pub asp_fail_low: u64,
     pub asp_fail_high: u64,
@@ -259,7 +261,7 @@ pub struct Searcher {
     /// 0 for the main thread, 1.. for Lazy SMP helpers (see smp.rs).
     pub thread_id: usize,
     /// Helpers' node counts (helper i at i - 1), for the main thread's totals.
-    pub pool_nodes: Arc<[crate::smp::NodeSlot]>,
+    pub helper_slots: Arc<[crate::smp::HelperSlot]>,
     root_best: Move,
     root_depth: i32,
     seldepth: usize,
@@ -483,7 +485,7 @@ impl Searcher {
             lmr,
             silent: false,
             thread_id: 0,
-            pool_nodes: Arc::new([]),
+            helper_slots: Arc::new([]),
             root_node_counts: Box::new([[0; 64]; 64]),
             stats: Stats::default(),
             acc: vec![Acc::new(); MAX_PLY + 8],
@@ -591,9 +593,63 @@ impl Searcher {
         self.ponder_done(pondered, since, target).then_some(f64::INFINITY)
     }
 
+    /// Lazy SMP, after each completed iteration `d` with score `s` and the
+    /// PV in pv[0]: a helper publishes its result; the main thread votes
+    /// over its own and the helpers' latest results, weighting each thread
+    /// by (score - lowest + VoteBase) * depth, and adopts the winning
+    /// move with the score and PV of the deepest (then best-scoring) thread
+    /// that chose it. Only threads at depth d - 1 or deeper vote. With no
+    /// helpers this does nothing.
+    fn smp_iteration(&mut self, d: i32, s: &mut i32) {
+        if self.helper_slots.is_empty() {
+            return;
+        }
+        let len = self.pv_len[0];
+        if self.thread_id > 0 {
+            let mut r = self.helper_slots[self.thread_id - 1].result.lock().unwrap();
+            r.depth = d + (self.thread_id & 1) as i32;
+            r.score = *s;
+            r.len = len;
+            r.pv[..len].copy_from_slice(&self.pv[0][..len]);
+            return;
+        }
+        if len == 0 {
+            return;
+        }
+        // Candidates: (depth, score, PV); the main thread's first.
+        let mut cands = vec![crate::smp::IterResult { depth: d, score: *s, pv: [0; MAX_PLY + 2], len }];
+        cands[0].pv[..len].copy_from_slice(&self.pv[0][..len]);
+        for slot in self.helper_slots.iter() {
+            let r = *slot.result.lock().unwrap();
+            if r.depth >= d - 1 && r.len > 0 {
+                cands.push(r);
+            }
+        }
+        let low = cands.iter().map(|c| c.score).min().unwrap();
+        let weight = |c: &crate::smp::IterResult| (c.score - low + tp(P::VoteBase)) as i64 * c.depth as i64;
+        let votes = |m: Move| cands.iter().filter(|c| c.pv[0] == m).map(weight).sum::<i64>();
+        // Strictly more votes to override the main thread's move.
+        let mut win = cands[0].pv[0];
+        let mut win_votes = votes(win);
+        for c in &cands[1..] {
+            let v = votes(c.pv[0]);
+            if v > win_votes {
+                (win, win_votes) = (c.pv[0], v);
+            }
+        }
+        if win == cands[0].pv[0] {
+            return;
+        }
+        let c = cands.iter().filter(|c| c.pv[0] == win).max_by_key(|c| (c.depth, c.score)).unwrap();
+        self.stats.smp_vote_changes += 1;
+        *s = c.score;
+        self.pv_len[0] = c.len;
+        self.pv[0][..c.len].copy_from_slice(&c.pv[..c.len]);
+    }
+
     /// Nodes searched by all threads (helpers' counts lag by up to 1024 nodes each).
     pub fn total_nodes(&self) -> u64 {
-        self.nodes + self.pool_nodes.iter().map(|c| c.0.load(Ordering::Relaxed)).sum::<u64>()
+        self.nodes + self.helper_slots.iter().map(|c| c.nodes.load(Ordering::Relaxed)).sum::<u64>()
     }
 
     #[inline(always)]
@@ -620,7 +676,7 @@ impl Searcher {
             }
         }
         if self.thread_id > 0 {
-            self.pool_nodes[self.thread_id - 1].0.store(self.nodes, Ordering::Relaxed);
+            self.helper_slots[self.thread_id - 1].nodes.store(self.nodes, Ordering::Relaxed);
         }
         if let Some(n) = self.node_limit {
             if self.total_nodes() >= n {
@@ -740,7 +796,7 @@ impl Searcher {
         self.pt.soft_ms = lim.soft_ms.unwrap_or(0) as f64;
         // One generation per search: with helpers, Pool::start advances it
         // before any thread starts.
-        if self.pool_nodes.is_empty() {
+        if self.helper_slots.is_empty() {
             self.tt.new_search();
         }
         self.nodes = 0;
@@ -905,6 +961,7 @@ impl Searcher {
                 self.stats.ebf_count += 1;
             }
             prev_iter_nodes = iter_nodes;
+            self.smp_iteration(d, &mut s);
             if self.pv_len[0] >= 2 {
                 self.pt.last_pv2 = (self.pv[0][0], self.pv[0][1]);
             }

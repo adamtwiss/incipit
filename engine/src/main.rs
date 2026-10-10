@@ -589,7 +589,7 @@ fn main() {
                                     // Replacing the pool joins the old helpers first.
                                     uci.pool = smp::Pool::new(0);
                                     uci.pool = smp::Pool::new(n - 1);
-                                    uci.searcher.pool_nodes = uci.pool.nodes();
+                                    uci.searcher.helper_slots = uci.pool.slots();
                                     uci.pool.each(move |s| {
                                         let _ = s.set_eval_cache_kb(eval_cache_kb);
                                     });
