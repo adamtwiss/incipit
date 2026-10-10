@@ -260,6 +260,7 @@ impl Uci {
         self.searcher.pt.ponder_seen |= ponder;
         self.searcher.search_moves = search_moves;
         let (m, _) = self.searcher.search(&self.pos, &lim);
+        let hit_at_return = self.searcher.pt.hit.load(Ordering::SeqCst);
         // UCI: no bestmove while pondering, until ponderhit or stop, nor in
         // an infinite search (which can end early: max depth, a mate, a
         // tablebase root), until stop.
@@ -267,6 +268,19 @@ impl Uci {
             && !self.searcher.stop_flag.load(Ordering::SeqCst)
         {
             std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // A ponder search that finished before the hit: its last info line
+        // went out while pondering, and GUIs attribute this move only to
+        // output after the hit, so repeat it now (the search itself does this
+        // when the hit comes first).
+        if ponder
+            && hit_at_return == 0
+            && self.searcher.pt.hit.load(Ordering::SeqCst) != 0
+            && !self.searcher.stop_flag.load(Ordering::SeqCst)
+            && !self.searcher.silent
+            && self.searcher.pt.last_info.0 > 0
+        {
+            self.searcher.print_last_info();
         }
         self.searcher.pt.pondering = false;
         // Budget feedback: our own clock time for this move (from the hit when

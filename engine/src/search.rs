@@ -218,7 +218,7 @@ pub struct PonderTm {
     last_pv2: (Move, Move),
     /// Last printed info line: depth, seldepth, score, PV (repeated before
     /// bestmove after a ponder hit, so GUIs record this move's search).
-    last_info: (i32, usize, i32, String),
+    pub last_info: (i32, usize, i32, String),
     /// Running average of our own clock spend / base soft limit this game
     /// (budget feedback; 1.0 at the start of a game).
     pub spend_avg: f64,
@@ -776,6 +776,13 @@ impl Searcher {
                 if self.root_best != 0 {
                     best = self.root_best;
                 }
+                // Return the score that goes with the move: a stopped
+                // aspiration fail-high's move carries its lower bound (as the
+                // info line below reports), not the last completed depth's
+                // score.
+                if best == fh_move && fh_move != 0 {
+                    score = fh_score;
+                }
                 if !self.silent && best != reported {
                     let sc = if best == fh_move {
                         format!("{} lowerbound{}", score_str(fh_score), wdl_str(fh_score, root))
@@ -896,7 +903,7 @@ impl Searcher {
     }
 
     /// Prints the last completed depth's info line (current nodes and time).
-    fn print_last_info(&self) {
+    pub fn print_last_info(&self) {
         let (d, seldepth, score, ref pv) = self.pt.last_info;
         let el = self.elapsed_ms();
         let nps = self.nodes * 1000 / el.max(1);
