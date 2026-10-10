@@ -1022,7 +1022,7 @@ impl Searcher {
             {
                 if tt_score >= beta && tt_move != 0 && !is_noisy(tt_move) {
                     // reward quiet tt move causing cutoff
-                    let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).min(tp(P::HistMax));
+                    let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
                     upd(&mut self.hist[pos.stm][mfrom(tt_move)][mto(tt_move)], bonus);
                 }
                 self.stats.tt_cutoffs += 1;
@@ -1099,6 +1099,7 @@ impl Searcher {
             if on(P::UseRfp)
                 && depth <= tp(P::RfpDepth)
                 && eval.abs() < MATE_BOUND
+                && beta.abs() < MATE_BOUND
                 && eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta
             {
                 self.stats.rfp += 1;
@@ -1470,7 +1471,9 @@ impl Searcher {
 
         if best_score >= beta {
             let bdepth = depth + (best_score > beta + 80) as i32;
-            let bonus = (tp(P::HistMul) * bdepth - tp(P::HistOff)).min(tp(P::HistMax));
+            // Never negative, whatever the tuned values: a cutoff must not
+            // lower its move's history (nor raise the failed ones').
+            let bonus = (tp(P::HistMul) * bdepth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
             let m = best_move;
             if !is_noisy(m) {
                 if self.killers[ply][0] != m {
@@ -1616,6 +1619,7 @@ impl Searcher {
             }
             tt_move = e.mv;
             if !pv_node
+                && on(P::UseTtCut)
                 && (pos.halfmove < 90 || s.abs() <= tp(P::HmGuard))
                 && (e.bound == BOUND_EXACT
                     || (e.bound == BOUND_LOWER && s >= beta)
