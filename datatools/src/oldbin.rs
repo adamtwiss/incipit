@@ -33,7 +33,9 @@ pub struct Record {
 pub fn decode(r: &[u8]) -> Record {
     let occ = u64::from_le_bytes(r[0..8].try_into().unwrap());
     let mut board = [NONE_PC; 64];
-    let mut bits = occ;
+    // More than 32 pieces would read past the packed board: a corrupt record.
+    // Left empty (no kings), so it never becomes a position.
+    let mut bits = if occ.count_ones() <= 32 { occ } else { 0 };
     let mut i = 0;
     while bits != 0 {
         let sq = bits.trailing_zeros() as usize;

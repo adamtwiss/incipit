@@ -276,7 +276,21 @@ pub fn genfens(toks: &[&str]) {
     let mut seen = std::collections::HashSet::new();
     let stdout = std::io::stdout();
     let mut done = 0;
+    // Rejected attempts in a row. Past STUCK, the book can't give n distinct
+    // positions (small book, few random moves), so repeats are allowed; past
+    // 2 * STUCK nothing passes the eval filter either: give up rather than hang.
+    const STUCK: usize = 1000;
+    let mut fails = 0;
+    let mut repeats = false;
     while done < n {
+        if fails == STUCK && !repeats {
+            eprintln!("genfens: fewer than {} distinct positions found; allowing repeats", n);
+            repeats = true;
+        } else if fails == 2 * STUCK {
+            eprintln!("genfens: no position passes maxeval {} after {} tries; giving up", maxeval, fails);
+            std::process::exit(1);
+        }
+        fails += 1;
         let mut pos = if dfrc { dfrc_start(&mut rng) } else { book[(rng.next() % book.len() as u64) as usize] };
         let nrand = base + (rng.next() % 2) as usize;
         let mut ok = true;
@@ -288,7 +302,7 @@ pub fn genfens(toks: &[&str]) {
             }
             pos.make_move(mv[(rng.next() % mv.len() as u64) as usize]);
         }
-        if !ok || pos.checkers != 0 || legal_moves(&pos).is_empty() || !seen.insert(pos.hash) {
+        if !ok || pos.checkers != 0 || legal_moves(&pos).is_empty() || (!seen.insert(pos.hash) && !repeats) {
             continue;
         }
         s.clear();
@@ -301,6 +315,7 @@ pub fn genfens(toks: &[&str]) {
         let _ = writeln!(out, "info string genfens {}", pos.to_fen());
         let _ = out.flush();
         done += 1;
+        fails = 0;
     }
 }
 

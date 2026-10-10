@@ -252,6 +252,18 @@ impl Position {
         if p.pieces[KING].count_ones() != 2 || (p.pieces[KING] & p.colors[WHITE]).count_ones() != 1 {
             return None;
         }
+        // Reject what can't arise in a game and that move generation and the
+        // NNUE rely on: more than 16 pieces a side (the material bucket table
+        // stops at 32 pieces), pawns on the back ranks, and the side not to
+        // move in check (its king could be captured).
+        const BACK_RANKS: u64 = 0xFF00_0000_0000_00FF;
+        if p.colors[WHITE].count_ones() > 16
+            || p.colors[BLACK].count_ones() > 16
+            || p.pieces[PAWN] & BACK_RANKS != 0
+            || p.attackers_to(p.king_sq(p.stm ^ 1), p.occ()) & p.colors[p.stm] != 0
+        {
+            return None;
+        }
         // Castling: KQkq means the outermost rook on that side of the king
         // (X-FEN); a file letter names the rook (Shredder-FEN, Chess960).
         // A right needs the king and that rook on the back rank.
@@ -275,11 +287,18 @@ impl Position {
                 p.rook_sq[r] = rsq as u8;
             }
         }
-        if parts[3] != "-" {
-            let b = parts[3].as_bytes();
-            if b.len() >= 2 {
-                let sq = (b[1] - b'1') as usize * 8 + (b[0] - b'a') as usize;
-                if sq < 64 && pawn_attacks(p.stm ^ 1, sq) & p.pieces[PAWN] & p.colors[p.stm] != 0 {
+        // En passant: kept only if it matches a double push just played (the
+        // square and the one the pawn left are empty, the pushed pawn is
+        // there) and a pawn can capture; otherwise ignored.
+        if let &[f @ b'a'..=b'h', r @ b'1'..=b'8', ..] = parts[3].as_bytes() {
+            let sq = (r - b'1') as usize * 8 + (f - b'a') as usize;
+            let ep_rank = if p.stm == WHITE { 5 } else { 2 };
+            if sq / 8 == ep_rank {
+                let (from, pushed) = if p.stm == WHITE { (sq + 8, sq - 8) } else { (sq - 8, sq + 8) };
+                if p.occ() & (1 << sq | 1 << from) == 0
+                    && p.pcs(p.stm ^ 1, PAWN) & 1 << pushed != 0
+                    && pawn_attacks(p.stm ^ 1, sq) & p.pcs(p.stm, PAWN) != 0
+                {
                     p.ep = sq as u8;
                 }
             }
