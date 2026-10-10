@@ -253,7 +253,7 @@ impl Uci {
         self.searcher.hash_hist.extend_from_slice(&self.hist);
         self.searcher.pt.pondering = ponder;
         self.searcher.pt.ponder_seen |= ponder;
-        self.pool.start(&self.pos, &self.hist, &self.searcher.tt);
+        self.pool.start(&self.pos, &self.hist, &self.searcher);
         let (m, _) = self.searcher.search(&self.pos, &lim);
         self.pool.finish();
         // UCI: no bestmove while pondering, until ponderhit or stop, nor in

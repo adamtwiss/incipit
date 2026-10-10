@@ -4,7 +4,7 @@
 // main thread searches as with one thread, then stops the helpers and waits
 // for all of them before it answers.
 use crate::position::Position;
-use crate::search::{Limits, Searcher, MAX_PLY};
+use crate::search::{Limits, Searcher, SharedHist, MAX_PLY};
 use crate::tt::TT;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -20,7 +20,7 @@ pub struct NodeSlot(pub AtomicU64);
 type Task = Box<dyn FnOnce(&mut Searcher) + Send>;
 
 enum Msg {
-    Search { pos: Position, hist: Vec<u64>, tt: Arc<TT> },
+    Search { pos: Position, hist: Vec<u64>, tt: Arc<TT>, sh: Arc<SharedHist> },
     Run(Task),
 }
 
@@ -47,16 +47,17 @@ impl Pool {
                     // The main thread's default stack size, which search fits in.
                     .stack_size(8 << 20)
                     .spawn(move || {
-                        // Its own TT is 1 MB and unused: during a search it's
-                        // swapped for the shared one.
+                        // Its own TT (1 MB) and SharedHist are unused: during a
+                        // search they're swapped for the main thread's.
                         let mut s = Searcher::new(1, stop);
                         s.silent = true;
                         s.thread_id = i + 1;
                         s.pool_nodes = nodes;
                         while let Ok(msg) = rx.recv() {
                             match msg {
-                                Msg::Search { pos, hist, tt } => {
+                                Msg::Search { pos, hist, tt, sh } => {
                                     let own = std::mem::replace(&mut s.tt, tt);
+                                    let own_sh = std::mem::replace(&mut s.sh, sh);
                                     s.hash_hist = hist;
                                     let lim =
                                         Limits { soft_ms: None, hard_ms: None, depth: MAX_PLY as i32, nodes: None };
@@ -65,6 +66,7 @@ impl Pool {
                                     // Drop the shared TT before reporting done, so the
                                     // main thread holds it alone between searches.
                                     s.tt = own;
+                                    s.sh = own_sh;
                                 }
                                 Msg::Run(f) => f(&mut s),
                             }
@@ -89,9 +91,10 @@ impl Pool {
         self.nodes.clone()
     }
 
-    /// Starts every helper searching `pos` (game history `hist`) with `tt`.
-    /// They run until `finish`.
-    pub fn start(&self, pos: &Position, hist: &[u64], tt: &Arc<TT>) {
+    /// Starts every helper searching `pos` (game history `hist`) with the
+    /// main Searcher's TT and shared histories. They run until `finish`.
+    pub fn start(&self, pos: &Position, hist: &[u64], main: &Searcher) {
+        let (tt, sh) = (&main.tt, &main.sh);
         // Helpers are idle here (after `finish`), so these stores happen
         // before their searches start: the channel send orders them.
         self.stop.store(false, Ordering::Relaxed);
@@ -105,7 +108,7 @@ impl Pool {
             c.0.store(0, Ordering::Relaxed);
         }
         for (tx, _) in &self.helpers {
-            let _ = tx.send(Msg::Search { pos: *pos, hist: hist.to_vec(), tt: tt.clone() });
+            let _ = tx.send(Msg::Search { pos: *pos, hist: hist.to_vec(), tt: tt.clone(), sh: sh.clone() });
         }
     }
 
@@ -141,5 +144,50 @@ impl Drop for Pool {
             drop(tx);
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::params::{tp, P};
+    use crate::search::CORR_GRAIN;
+    use std::sync::atomic::AtomicBool;
+
+    /// Four threads search together, sharing the TT and histories, over
+    /// several positions: no panic, every search returns a legal move, and
+    /// the shared tables stay within the bounds their updates keep (lost
+    /// concurrent updates must not break them).
+    #[test]
+    fn helpers_share_tables() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let pool = Pool::new(3);
+        let mut main = Searcher::new(8, Arc::new(AtomicBool::new(false)));
+        main.silent = true;
+        main.pool_nodes = pool.nodes();
+        let fens = [
+            crate::position::START_FEN,
+            "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        ];
+        for _ in 0..3 {
+            for f in fens {
+                let pos = Position::from_fen(f).unwrap();
+                pool.start(&pos, &[], &main);
+                let lim = Limits { soft_ms: None, hard_ms: None, depth: 9, nodes: None };
+                let (m, _) = main.search(&pos, &lim);
+                pool.finish();
+                let mut c = pos;
+                assert!(m != 0 && pos.is_pseudo_legal(m) && c.make_move(m), "{f}");
+                assert!(main.total_nodes() > main.nodes, "helpers searched");
+            }
+        }
+        let (c, k) = main.sh.max_abs();
+        assert!(c <= 16384, "continuation history out of range: {c}");
+        assert!(k <= CORR_GRAIN * tp(P::CorrLimit), "correction history out of range: {k}");
+        // Between searches the main thread holds the tables alone again.
+        main.clear();
     }
 }
