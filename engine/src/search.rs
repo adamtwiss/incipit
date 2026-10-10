@@ -608,6 +608,17 @@ impl Searcher {
         f(&mut self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m]);
     }
 
+    /// Whether playing `m` at the root reaches a position already in the game
+    /// history (a repetition the tablebases don't know about).
+    fn repeats_after(&self, root: &Position, m: Move) -> bool {
+        let mut c = *root;
+        c.make_move(m);
+        let n = self.hash_hist.len();
+        let lim = (c.halfmove as usize).min(n + 1);
+        // c's ancestors: root (1 ply back), then hash_hist from the end.
+        (2..=lim).step_by(2).any(|k| self.hash_hist.get(n + 1 - k) == Some(&c.hash))
+    }
+
     fn is_repetition(&self, pos: &Position) -> bool {
         let n = self.hash_hist.len();
         let lim = (pos.halfmove as usize).min(n);
@@ -671,17 +682,28 @@ impl Searcher {
         // Root in the tablebases: play the move that keeps the result, with the
         // fifty-move counter taken into account (DTZ).
         if crate::tb::largest() > 0 {
-            if let Some((w, m)) = crate::tb::probe_root(root) {
+            if let Some((w, m)) = crate::tb::probe_root(root).filter(|&(_, m)| !self.repeats_after(root, m)) {
                 let s = match w {
                     crate::tb::Wdl::Win => TB_WIN - 1,
                     crate::tb::Wdl::Loss => -TB_WIN + 1,
                     crate::tb::Wdl::Draw => 0,
                 };
                 if !self.silent {
+                    // A tablebase result is certain: report it as such, not
+                    // through the eval-based WDL model (a draw is 0 1000 0).
+                    let wdl = if SHOW_WDL.load(Ordering::Relaxed) {
+                        match w {
+                            crate::tb::Wdl::Win => " wdl 1000 0 0",
+                            crate::tb::Wdl::Loss => " wdl 0 0 1000",
+                            crate::tb::Wdl::Draw => " wdl 0 1000 0",
+                        }
+                    } else {
+                        ""
+                    };
                     println!(
                         "info depth 1 score {}{} nodes 0 tbhits 1 time 0 pv {}",
                         score_str(s),
-                        wdl_str(s, root),
+                        wdl,
                         root.move_uci(m)
                     );
                 }
