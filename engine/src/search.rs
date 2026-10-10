@@ -254,6 +254,10 @@ pub struct Searcher {
     pub nodes: u64,
     stopped: bool,
     pub silent: bool,
+    /// 0 for the main thread, 1.. for Lazy SMP helpers (see smp.rs).
+    pub thread_id: usize,
+    /// Helpers' node counts (helper i at i - 1), for the main thread's totals.
+    pub pool_nodes: Arc<[crate::smp::NodeSlot]>,
     root_best: Move,
     root_depth: i32,
     seldepth: usize,
@@ -261,7 +265,9 @@ pub struct Searcher {
     /// 0..16 hold the eval (i16). Direct-mapped, indexed by the low hash bits.
     eval_cache: Box<[u64]>,
     eval_mask: usize,
-    pub tt: TT,
+    /// Shared with helper threads while they search; only the owner holds
+    /// it between searches (see `clear`).
+    pub tt: Arc<TT>,
     hist: Box<[[[i16; 64]; 64]; 2]>,
     cont: Box<[[i16; 768]; 768]>,
     capt: Box<[[[i16; 7]; 64]; 12]>,
@@ -380,7 +386,7 @@ impl Searcher {
             }
         }
         Searcher {
-            tt: TT::new(hash_mb),
+            tt: Arc::new(TT::new(hash_mb)),
             eval_cache: vec![0u64; eval_cache_entries(EVAL_CACHE_KB)].into_boxed_slice(),
             eval_mask: eval_cache_entries(EVAL_CACHE_KB) - 1,
             nodes: 0,
@@ -415,6 +421,8 @@ impl Searcher {
             root_best: 0,
             lmr,
             silent: false,
+            thread_id: 0,
+            pool_nodes: Arc::new([]),
             root_node_counts: Box::new([[0; 64]; 64]),
             corr_np: vec![[[0i32; CORR_SIZE]; 2]; 2].into_boxed_slice().try_into().unwrap(),
             corr: vec![[0i32; CORR_SIZE]; 2].into_boxed_slice().try_into().unwrap(),
@@ -462,7 +470,9 @@ impl Searcher {
     pub fn clear(&mut self) {
         self.pt.spend_avg = 1.0;
         self.pt.ponder_seen = false;
-        self.tt.clear();
+        // Helpers drop their handles when a search ends, so between searches
+        // this is the only one.
+        Arc::get_mut(&mut self.tt).expect("TT cleared during a search").clear();
         self.eval_cache.fill(0);
         *self.hist = [[[0; 64]; 64]; 2];
         for r in self.cont.iter_mut() {
@@ -515,6 +525,11 @@ impl Searcher {
         self.ponder_done(pondered, since, target).then_some(f64::INFINITY)
     }
 
+    /// Nodes searched by all threads (helpers' counts lag by up to 1024 nodes each).
+    pub fn total_nodes(&self) -> u64 {
+        self.nodes + self.pool_nodes.iter().map(|c| c.0.load(Ordering::Relaxed)).sum::<u64>()
+    }
+
     #[inline(always)]
     fn check_time(&mut self) {
         if self.root_depth <= 1 {
@@ -538,8 +553,11 @@ impl Searcher {
                 self.stopped = true;
             }
         }
+        if self.thread_id > 0 {
+            self.pool_nodes[self.thread_id - 1].0.store(self.nodes, Ordering::Relaxed);
+        }
         if let Some(n) = self.node_limit {
-            if self.nodes >= n {
+            if self.total_nodes() >= n {
                 self.stopped = true;
             }
         }
@@ -636,7 +654,11 @@ impl Searcher {
         self.pt.start_ms = now_ms();
         self.pt.target_ms = lim.soft_ms.map_or(f64::INFINITY, |s| s as f64);
         self.pt.soft_ms = lim.soft_ms.unwrap_or(0) as f64;
-        self.tt.new_search();
+        // One generation per search: with helpers, Pool::start advances it
+        // before any thread starts.
+        if self.pool_nodes.is_empty() {
+            self.tt.new_search();
+        }
         self.nodes = 0;
         self.tb_hits = 0;
         self.stopped = false;
@@ -741,7 +763,7 @@ impl Searcher {
             if self.stopped {
                 tm_stop = if self.stop_flag.load(Ordering::Relaxed) {
                     "stop"
-                } else if lim.nodes.is_some_and(|n| self.nodes >= n) {
+                } else if lim.nodes.is_some_and(|n| self.total_nodes() >= n) {
                     "nodes"
                 } else if self.pt.pondering {
                     "ponder"
@@ -762,8 +784,8 @@ impl Searcher {
                         "info depth {} score {} nodes {} nps {} time {} pv {}",
                         d,
                         sc,
-                        self.nodes,
-                        self.nodes * 1000 / el.max(1),
+                        self.total_nodes(),
+                        self.total_nodes() * 1000 / el.max(1),
                         el,
                         root.move_uci(best)
                     );
@@ -833,7 +855,7 @@ impl Searcher {
                 }
             }
             if let Some(n) = lim.nodes {
-                if self.nodes >= n {
+                if self.total_nodes() >= n {
                     tm_stop = "nodes";
                     break;
                 }
@@ -874,14 +896,15 @@ impl Searcher {
     fn print_last_info(&self) {
         let (d, seldepth, score, ref pv) = self.pt.last_info;
         let el = self.elapsed_ms();
-        let nps = self.nodes * 1000 / el.max(1);
+        let nodes = self.total_nodes();
+        let nps = nodes * 1000 / el.max(1);
         println!(
             "info depth {} seldepth {} score {}{} nodes {} nps {} hashfull {} tbhits {} time {} pv{}",
             d,
             seldepth,
             score_str(score),
             wdl_str(score, &self.root_pos),
-            self.nodes,
+            nodes,
             nps,
             self.tt.hashfull(),
             self.tb_hits,
