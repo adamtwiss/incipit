@@ -468,6 +468,11 @@ fn load_hidden(
         }
     }
     o += nb1 * ln * inl;
+    // Everything from here is f32: a NaN or infinity (a corrupt file or a
+    // diverged training run) would load and silently produce nonsense evals.
+    if let Some(k) = d[o..].chunks_exact(4).position(|c| !f32::from_le_bytes([c[0], c[1], c[2], c[3]]).is_finite()) {
+        return Err(format!("non-finite float weight at byte {}", o + 4 * k));
+    }
     let mut f32s = |n: usize| {
         let v: Vec<f32> =
             d[o..o + 4 * n].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();

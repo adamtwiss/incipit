@@ -40,6 +40,14 @@ impl TT {
         let n = ((mb.max(1) * 1024 * 1024) / std::mem::size_of::<Bucket>()).max(1);
         TT { table: vec![Bucket::default(); n], gen: 0 }
     }
+    /// As `new`, but None instead of aborting when the memory isn't there.
+    pub fn try_new(mb: usize) -> Option<TT> {
+        let n = ((mb.max(1) * 1024 * 1024) / std::mem::size_of::<Bucket>()).max(1);
+        let mut table = Vec::new();
+        table.try_reserve_exact(n).ok()?;
+        table.resize(n, Bucket::default());
+        Some(TT { table, gen: 0 })
+    }
     pub fn clear(&mut self) {
         for b in self.table.iter_mut() {
             *b = Bucket::default();

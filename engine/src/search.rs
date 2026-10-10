@@ -456,10 +456,26 @@ impl Searcher {
 
     /// Resizes (and clears) the eval cache to the largest power-of-two
     /// number of entries that fits in `kb` kilobytes.
-    pub fn set_eval_cache_kb(&mut self, kb: usize) {
-        let n = eval_cache_entries(kb);
-        self.eval_cache = vec![0u64; n].into_boxed_slice();
-        self.eval_mask = n - 1;
+    /// The old cache is freed first, so the peak is the new size, not both;
+    /// if the memory isn't there it falls back to smaller sizes (Err with
+    /// the size it got) instead of aborting.
+    pub fn set_eval_cache_kb(&mut self, kb: usize) -> Result<(), usize> {
+        self.eval_cache = vec![0u64; 1].into_boxed_slice();
+        self.eval_mask = 0;
+        let mut n = eval_cache_entries(kb);
+        loop {
+            let mut v: Vec<u64> = Vec::new();
+            if v.try_reserve_exact(n).is_ok() {
+                v.resize(n, 0);
+                self.eval_cache = v.into_boxed_slice();
+                self.eval_mask = n - 1;
+                return if n == eval_cache_entries(kb) { Ok(()) } else { Err(n * 8 / 1024) };
+            }
+            if n == 1 {
+                return Err(0);
+            }
+            n /= 2;
+        }
     }
 
     pub fn clear(&mut self) {
@@ -472,6 +488,7 @@ impl Searcher {
             *r = [0; 768];
         }
         *self.capt = [[[0; 7]; 64]; 12];
+        self.killers = Align64([[0; 2]; MAX_PLY + 4]);
         for c in self.corr.iter_mut() {
             c.iter_mut().for_each(|x| *x = 0);
         }

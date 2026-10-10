@@ -110,7 +110,7 @@ fn perft_suite(path: &str, maxd: usize) {
 
 fn bench(depth: i32, eval_cache_kb: usize) {
     let mut s = Searcher::new(16, Arc::new(AtomicBool::new(false)));
-    s.set_eval_cache_kb(eval_cache_kb);
+    let _ = s.set_eval_cache_kb(eval_cache_kb);
     s.silent = true;
     let t = Instant::now();
     let mut nodes = 0;
@@ -338,12 +338,14 @@ fn main() {
             "l1perm" if args.len() >= 5 => {
                 if let Err(e) = nnue::l1perm(&args[2], &args[3], &args[4]) {
                     eprintln!("error: {}", e);
+                    std::process::exit(1);
                 }
                 return;
             }
             "l1stats" if args.len() >= 4 => {
                 if let Err(e) = nnue::l1stats(&args[2], &args[3]) {
                     eprintln!("error: {}", e);
+                    std::process::exit(1);
                 }
                 return;
             }
@@ -536,15 +538,29 @@ fn main() {
                     match name.as_str() {
                         "evalcachekb" => {
                             if let Ok(kb) = val.parse::<usize>() {
-                                uci.searcher.set_eval_cache_kb(kb.clamp(16, 1 << 20));
+                                if let Err(got) = uci.searcher.set_eval_cache_kb(kb.clamp(16, 1 << 20)) {
+                                    println!("info string EvalCacheKB {} not available, using {} KB", kb, got);
+                                }
                             }
                         }
                         "hash" => {
                             if let Ok(mb) = val.parse::<usize>() {
                                 let mb = mb.clamp(1, 65536);
                                 if mb != hash_mb {
-                                    hash_mb = mb;
-                                    uci.searcher.tt = tt::TT::new(mb);
+                                    // Free the old table first so the peak is the new size,
+                                    // and halve rather than abort if the memory isn't there.
+                                    uci.searcher.tt = tt::TT::new(1);
+                                    let mut got = mb;
+                                    while got > 1 && tt::TT::try_new(got).is_none() {
+                                        got /= 2;
+                                    }
+                                    if let Some(t) = tt::TT::try_new(got) {
+                                        uci.searcher.tt = t;
+                                    }
+                                    if got != mb {
+                                        println!("info string Hash {} MB not available, using {} MB", mb, got);
+                                    }
+                                    hash_mb = got;
                                 }
                             }
                         }
