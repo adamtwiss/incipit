@@ -96,7 +96,7 @@ params! {
     // CorrNonPawnWeight * (white + black non-pawn entries)) / 128; the defaults are the
     // original 2:1:1 weighting, as separate weights so SPSA can move each one.
     CorrPawnWeight = "CorrPawnWeight", 128, 0, 256, 13;
-    CorrNonPawnWeight = "CorrNonPawnWeight", 64, 0, 256, 13;
+    CorrNonPawnWeight = "CorrNonPawnWeight", 75, 0, 256, 13;
     // Update: an entry moves toward the search's eval error (clamped to
     // +-CorrDiffClamp cp) by min(depth + 1, CorrUpdateCap) / 256; entries are
     // kept within +-CorrLimit cp.
