@@ -5,6 +5,7 @@ mod nnue;
 mod params;
 mod position;
 mod search;
+mod smp;
 mod tb;
 mod tt;
 mod uci;
@@ -129,10 +130,15 @@ fn bench(depth: i32, eval_cache_kb: usize) {
     println!("{} nodes {} nps", nodes, (nodes as f64 / el) as u64);
 }
 
+/// Threads option maximum: a round number above today's core counts.
+const MAX_THREADS: usize = 256;
+
 struct Uci {
     pos: Position,
     hist: Vec<u64>,
     searcher: Searcher,
+    /// Lazy SMP helper threads (Threads - 1).
+    pool: smp::Pool,
     overhead: i64,
     /// MoveReserve: in sudden death (increment below the move overhead),
     /// budget as if this many further moves each cost the overhead, so very
@@ -259,7 +265,9 @@ impl Uci {
         self.searcher.pt.pondering = ponder;
         self.searcher.pt.ponder_seen |= ponder;
         self.searcher.search_moves = search_moves;
+        self.pool.start(&self.pos, &self.hist, &self.searcher);
         let (m, _) = self.searcher.search(&self.pos, &lim);
+        self.pool.finish();
         // UCI: no bestmove while pondering, until ponderhit or stop, nor in
         // an infinite search (which can end early: max depth, a mate, a
         // tablebase root), until stop.
@@ -480,11 +488,13 @@ fn main() {
         pos: Position::from_fen(START_FEN).unwrap(),
         hist: Vec::new(),
         searcher: Searcher::new(16, stop.clone()),
+        pool: smp::Pool::new(0),
         overhead: 20,
         reserve_moves: 0,
     };
     uci.searcher.pt.hit = ponder_hit;
     let mut hash_mb = 16usize;
+    let mut eval_cache_kb = search::EVAL_CACHE_KB;
     while let Ok(cmd) = rx.recv() {
         let toks: Vec<&str> = cmd.split_whitespace().collect();
         if toks.is_empty() {
@@ -496,7 +506,7 @@ fn main() {
                 println!("id author {}", AUTHOR);
                 println!("option name Hash type spin default 16 min 1 max 65536");
                 println!("option name EvalCacheKB type spin default {} min 16 max 1048576", search::EVAL_CACHE_KB);
-                println!("option name Threads type spin default 1 min 1 max 1");
+                println!("option name Threads type spin default 1 min 1 max {}", MAX_THREADS);
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
                 println!("option name MoveReserve type spin default 0 min 0 max 100");
                 println!("option name Ponder type check default false");
@@ -510,7 +520,10 @@ fn main() {
                 println!("uciok");
             }
             "isready" => println!("readyok"),
-            "ucinewgame" => uci.searcher.clear(),
+            "ucinewgame" => {
+                uci.searcher.clear();
+                uci.pool.each(|s| s.clear());
+            }
             "setoption" => {
                 // setoption name <id> value <x>
                 let lower: Vec<String> = toks.iter().map(|s| s.to_lowercase()).collect();
@@ -522,7 +535,9 @@ fn main() {
                     match name.as_str() {
                         "evalcachekb" => {
                             if let Ok(kb) = val.parse::<usize>() {
-                                uci.searcher.set_eval_cache_kb(kb.clamp(16, 1 << 20));
+                                eval_cache_kb = kb.clamp(16, 1 << 20);
+                                uci.searcher.set_eval_cache_kb(eval_cache_kb);
+                                uci.pool.each(move |s| s.set_eval_cache_kb(eval_cache_kb));
                             }
                         }
                         "hash" => {
@@ -530,7 +545,19 @@ fn main() {
                                 let mb = mb.clamp(1, 65536);
                                 if mb != hash_mb {
                                     hash_mb = mb;
-                                    uci.searcher.tt = tt::TT::new(mb);
+                                    uci.searcher.tt = Arc::new(tt::TT::new(mb));
+                                }
+                            }
+                        }
+                        "threads" => {
+                            if let Ok(n) = val.parse::<usize>() {
+                                let n = n.clamp(1, MAX_THREADS);
+                                if n != uci.pool.len() + 1 {
+                                    // Replacing the pool joins the old helpers first.
+                                    uci.pool = smp::Pool::new(0);
+                                    uci.pool = smp::Pool::new(n - 1);
+                                    uci.searcher.pool_nodes = uci.pool.nodes();
+                                    uci.pool.each(move |s| s.set_eval_cache_kb(eval_cache_kb));
                                 }
                             }
                         }
@@ -574,6 +601,7 @@ fn main() {
                             } else if let Ok(v) = val.parse::<i32>() {
                                 if params::set(other, v) {
                                     uci.searcher.init_lmr();
+                                    uci.pool.each(|s| s.init_lmr());
                                 }
                             }
                         }
