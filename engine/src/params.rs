@@ -103,6 +103,10 @@ params! {
     CorrUpdateCap = "CorrUpdateCap", 16, 4, 64, 3;
     CorrDiffClamp = "CorrDiffClamp", 400, 100, 1000, 45;
     CorrLimit = "CorrLimit", 64, 16, 256, 12;
+    // Lazy SMP vote: a thread's weight is (score - lowest score + VoteBase)
+    // * depth. Starting value: 10 cp, a tenth of a pawn, so the lowest-
+    // scored thread still counts a little.
+    VoteBase = "VoteBase", 10, 1, 100, 5;
     // Feature switches for ablation tests (1 = on, 0 = off). Step 0 keeps them out of
     // tune-spec; OpenBench builds advertise them, so a test can set e.g. UseProbcut=0.
     UseTtCut = "UseTtCut", 1, 0, 1, 0;
