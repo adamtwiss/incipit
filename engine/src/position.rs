@@ -225,10 +225,19 @@ impl Position {
         for ch in parts[0].chars() {
             match ch {
                 '/' => {
+                    // Every rank must describe exactly 8 squares.
+                    if file != 8 || rank == 0 {
+                        return None;
+                    }
                     rank -= 1;
                     file = 0;
                 }
-                '1'..='8' => file += ch as i32 - '0' as i32,
+                '1'..='8' => {
+                    file += ch as i32 - '0' as i32;
+                    if file > 8 {
+                        return None;
+                    }
+                }
                 _ => {
                     let c = if ch.is_ascii_uppercase() { WHITE } else { BLACK };
                     let pt = match ch.to_ascii_lowercase() {
@@ -248,7 +257,14 @@ impl Position {
                 }
             }
         }
-        p.stm = if parts[1] == "b" { BLACK } else { WHITE };
+        if rank != 0 || file != 8 {
+            return None;
+        }
+        p.stm = match parts[1] {
+            "w" => WHITE,
+            "b" => BLACK,
+            _ => return None,
+        };
         if p.pieces[KING].count_ones() != 2 || (p.pieces[KING] & p.colors[WHITE]).count_ones() != 1 {
             return None;
         }
@@ -840,6 +856,9 @@ impl Position {
 }
 
 pub fn perft(pos: &Position, depth: u32) -> u64 {
+    if depth == 0 {
+        return 1;
+    }
     let mut list = MoveList::new();
     pos.gen_moves(&mut list, false);
     let mut n = 0;
@@ -892,6 +911,26 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Malformed FENs are rejected; perft at depth 0 counts the position.
+    #[test]
+    fn fen_layout_and_perft_zero() {
+        crate::attacks::init();
+        let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let p = Position::from_fen(start).unwrap();
+        assert_eq!(perft(&p, 0), 1);
+        assert_eq!(perft(&p, 1), 20);
+        for bad in [
+            "4k3/8/8/8/8/8/8/8/4K3 w - - 0 1", // nine ranks
+            "4k3/8/8/8/8/8/4K3 w - - 0 1",     // seven ranks
+            "4k3/8/8/8/8/8/8/4K2 w - - 0 1",   // short rank
+            "4k3/8/8/8/8/8/8/4K4 w - - 0 1",   // long rank
+            "4k3/8/8/8/8/8/8/4K3 x - - 0 1",   // side to move
+            "4k3/8/8/8/8/8/8/4K3/ w - - 0 1",  // trailing slash
+        ] {
+            assert!(Position::from_fen(bad).is_none(), "accepted {}", bad);
+        }
     }
 
     /// is_pseudo_legal (used on TT and other stored moves) must accept exactly

@@ -423,16 +423,26 @@ fn cmd_tbstats(tb_path: &str, inputs: &[String]) -> Result<(), String> {
     // m[game result][tablebase result], both white-relative (viri WDL codes).
     let mut m = [[0u64; 3]; 3];
     let (mut games, mut positions, mut reach_pos, mut flip_pos, mut failed) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let mut running_clock = 0u64;
     for input in inputs {
         let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
         viri::for_each_game(&data, |moves, wdl| {
             games += 1;
             positions += moves.len() as u64;
-            let Some(k) = moves.iter().position(|(p, _)| p.occ().count_ones() <= largest && p.castling == 0) else {
+            // The WDL tables answer for a fresh fifty-move count, so use the
+            // first table position with its clock at zero (entered by a
+            // capture or pawn move); one with a running clock may already be
+            // drawn by the fifty-move rule, and resetting it asks a different
+            // question.
+            let in_tb = |p: &position::Position| p.occ().count_ones() <= largest && p.castling == 0;
+            if !moves.iter().any(|(p, _)| in_tb(p)) {
+                return;
+            }
+            let Some(k) = moves.iter().position(|(p, _)| in_tb(p) && p.halfmove == 0) else {
+                running_clock += 1;
                 return;
             };
-            let mut p = moves[k].0;
-            p.halfmove = 0;
+            let p = moves[k].0;
             let Some(r) = tb::probe_wdl(&p) else {
                 failed += 1;
                 return;
@@ -462,6 +472,10 @@ fn cmd_tbstats(tb_path: &str, inputs: &[String]) -> Result<(), String> {
         failed,
         reach_pos,
         100.0 * reach_pos as f64 / positions.max(1) as f64
+    );
+    println!(
+        "games entering the tables with a running fifty-move clock and no later reset (not counted): {}",
+        running_clock
     );
     println!(
         "result differs from the tables: {} games ({:.1}% of those reaching them), {} positions ({:.2}% of all)",

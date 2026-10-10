@@ -170,7 +170,14 @@ pub struct Acc {
 
 static mut NET: *const Network = std::ptr::null();
 
+/// Loads the embedded network once (repeat calls, e.g. from parallel tests,
+/// do nothing).
 pub fn init() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(init_net);
+}
+
+fn init_net() {
     match load(NET_BYTES) {
         Ok(net) => unsafe { NET = Box::into_raw(Box::new(net)) },
         Err(e) => {

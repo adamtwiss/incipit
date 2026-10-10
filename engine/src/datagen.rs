@@ -98,7 +98,7 @@ pub fn run(threads: usize, prefix: &str, nodes: u64, seconds: u64) {
                 }
                 let mut recs: Vec<(Position, i16)> = Vec::new();
                 let result: u8;
-                let mut win_cnt = 0;
+                let mut win_cnt = 0i32;
                 let mut draw_cnt = 0;
                 let mut ply = 0;
                 loop {
@@ -119,7 +119,8 @@ pub fn run(threads: usize, prefix: &str, nodes: u64, seconds: u64) {
                         result = 1;
                         break;
                     }
-                    // threefold (approx: one prior occurrence within reversible window counts twice)
+                    // Threefold: two earlier occurrences, same side to move, since
+                    // the last irreversible move.
                     let mut reps = 0;
                     let n = hist.len();
                     let mut k = 2;
@@ -140,13 +141,17 @@ pub fn run(threads: usize, prefix: &str, nodes: u64, seconds: u64) {
                         break;
                     }
                     let ws = if pos.stm == WHITE { sc } else { -sc };
-                    if sc.abs() >= 2000 {
-                        win_cnt += 1;
+                    // Adjudicate a win after 4 consecutive scores >= 2000 for the
+                    // same side (White-relative sign kept in win_cnt's sign).
+                    if ws >= 2000 {
+                        win_cnt = win_cnt.max(0) + 1;
+                    } else if ws <= -2000 {
+                        win_cnt = win_cnt.min(0) - 1;
                     } else {
                         win_cnt = 0;
                     }
-                    if win_cnt >= 4 {
-                        result = if ws > 0 { 2 } else { 0 };
+                    if win_cnt.abs() >= 4 {
+                        result = if win_cnt > 0 { 2 } else { 0 };
                         break;
                     }
                     if ply >= 80 && sc.abs() <= 8 {
