@@ -1172,7 +1172,6 @@ impl Searcher {
         }
         let mut best_score = -INF;
         let mut best_dep = false;
-        let mut any_dep = false;
         let mut best_move = 0;
         let mut legal = 0;
         let mut quiets: [Move; 64] = [0; 64];
@@ -1379,7 +1378,6 @@ impl Searcher {
                 self.root_node_counts[mfrom(m)][mto(m)] += self.nodes - nodes_before;
             }
             let child_dep = self.stack[ply + 1].path_dep;
-            any_dep |= child_dep;
             if score > best_score {
                 best_dep = child_dep;
                 best_score = score;
@@ -1455,9 +1453,11 @@ impl Searcher {
             }
         }
 
-        // A fail-low bound rests on every move, a cutoff or exact score on the
-        // best one.
-        let path_dep = if best_score >= beta || alpha > orig_alpha { best_dep } else { any_dep };
+        // Only a draw score that came from the best move's path-dependent draw
+        // is withheld. (Strictly, a fail-low bound rests on every move, but
+        // withholding every node with any repeating child cost ~30 Elo,
+        // #4173: in shuffling positions most all-nodes have one.)
+        let path_dep = best_dep && best_score == 0;
         self.stack[ply].path_dep = path_dep;
         if excluded == 0 && !path_dep {
             let bound = if best_score >= beta {
