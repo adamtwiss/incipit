@@ -534,7 +534,10 @@ impl Position {
         }
         self.stm ^= 1;
         self.hash ^= zob_stm();
-        self.halfmove += 1;
+        // A pass isn't a game move: restart the fifty-move count, which also
+        // keeps repetition detection (bounded by halfmove) from matching
+        // positions across it.
+        self.halfmove = 0;
         self.checkers = 0;
     }
 
@@ -931,6 +934,16 @@ mod tests {
         ] {
             assert!(Position::from_fen(bad).is_none(), "accepted {}", bad);
         }
+    }
+
+    /// A null move restarts the fifty-move count, so a pass can't make a
+    /// fifty-move draw or a repetition with positions before it.
+    #[test]
+    fn null_move_resets_halfmove() {
+        crate::attacks::init();
+        let mut p = Position::from_fen("R5nk/5K1P/6R1/8/8/8/8/8 b - - 99 1").unwrap();
+        p.make_null();
+        assert_eq!(p.halfmove, 0);
     }
 
     /// is_pseudo_legal (used on TT and other stored moves) must accept exactly

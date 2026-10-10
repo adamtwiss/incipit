@@ -319,6 +319,15 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
     let ftw = i16s(nkb * 768 * h);
     let ftb = i16s(h);
     let ow = i16s(buckets * 2 * h);
+    // SCReLU multiplies clamp(a, 0, QA) by the weight in i16 (see dot), so
+    // QA * |w| must fit, or the eval silently wraps.
+    if act == ACT_SCRELU && ow.iter().any(|&w| i32::from(w).abs() * qa > i32::from(i16::MAX)) {
+        return Err(format!(
+            "output weights exceed {} (QA {}): the SCReLU product would overflow i16",
+            i16::MAX as i32 / qa,
+            qa
+        ));
+    }
     let ob = if bias_size == 2 {
         i16s(buckets).iter().map(|&b| i32::from(b)).collect()
     } else {

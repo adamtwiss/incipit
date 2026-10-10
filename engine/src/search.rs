@@ -694,6 +694,8 @@ impl Searcher {
         let mut stability = 0;
         // first move of the last PV printed, so bestmove always matches the reported PV
         let mut reported: Move = 0;
+        // The last info line was a stopped iteration's new best move.
+        let mut partial_line = false;
         let max_depth = lim.depth.min(MAX_PLY as i32 - 4);
         let mut prev_iter_nodes = 0u64;
         // TmLog: final soft target, its factors, the last completed depth and why we stopped.
@@ -767,6 +769,9 @@ impl Searcher {
                         el,
                         root.move_uci(best)
                     );
+                    // This line, not the last completed depth's, is the one the
+                    // GUI must see last: don't repeat the older info below.
+                    partial_line = true;
                 }
                 break;
             }
@@ -821,7 +826,9 @@ impl Searcher {
                 }
                 // The next depth costs about this one times the branching factor;
                 // elapsed so far approximates this depth plus all earlier ones.
-                if on(P::UseTmFinish) && d >= 6 && last_ebf > 0.0 {
+                // Not while pondering: elapsed includes the ponder time, which
+                // isn't charged to our clock.
+                if on(P::UseTmFinish) && !self.pt.pondering && d >= 6 && last_ebf > 0.0 {
                     if let Some(h) = self.hard_ms {
                         let ebf = last_ebf.clamp(1.2, 4.0);
                         let iter_ms = el * iter_nodes as f64 / self.nodes.max(1) as f64;
@@ -841,7 +848,12 @@ impl Searcher {
         }
         // After a ponder hit the last info line went out while pondering; GUIs
         // attribute this move only to output after the hit, so repeat it.
-        if self.pt.pondering && self.pt.hit.load(Ordering::Relaxed) != 0 && !self.silent && self.pt.last_info.0 > 0 {
+        if self.pt.pondering
+            && self.pt.hit.load(Ordering::Relaxed) != 0
+            && !self.silent
+            && self.pt.last_info.0 > 0
+            && !partial_line
+        {
             self.print_last_info();
         }
         if TM_LOG.load(Ordering::Relaxed) && !self.silent {
@@ -1571,6 +1583,7 @@ impl Searcher {
                 return s;
             }
         }
+        let orig_alpha = alpha;
         let mut best;
         let mut raw_eval = -INF;
         if in_check {
@@ -1613,7 +1626,6 @@ impl Searcher {
         }
         let mut best_move = 0;
         let mut legal = 0;
-        let orig_alpha = alpha;
         let n = list.len();
         for i in 0..n {
             pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
