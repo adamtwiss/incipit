@@ -3,7 +3,7 @@ use crate::nnue::{self, Acc};
 use crate::params::{on, tp, P};
 use crate::position::*;
 use crate::tt::*;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -27,7 +27,7 @@ pub const EVAL_CACHE_KB: usize = 256;
 /// that treats |score| >= MATE_BOUND as decisive handles them like mates.
 pub const TB_WIN: i32 = MATE - 2 * MAX_PLY as i32;
 const CORR_SIZE: usize = 16384;
-const CORR_GRAIN: i32 = 256;
+pub const CORR_GRAIN: i32 = 256;
 
 #[derive(Clone, Copy, Default)]
 struct Frame {
@@ -271,13 +271,13 @@ pub struct Searcher {
     /// it between searches (see `clear`).
     pub tt: Arc<TT>,
     hist: Box<[[[i16; 64]; 64]; 2]>,
-    cont: Box<[[i16; 768]; 768]>,
+    /// Continuation and correction history: one set shared by all Lazy SMP
+    /// threads while they search (see SharedHist).
+    pub sh: Arc<SharedHist>,
     capt: Box<[[[i16; 7]; 64]; 12]>,
     pv: Box<[[Move; MAX_PLY + 2]; MAX_PLY + 2]>,
     lmr: Box<[[i32; 64]; 64]>,
     root_node_counts: Box<[[u64; 64]; 64]>,
-    corr: Box<[[i32; CORR_SIZE]; 2]>,
-    corr_np: Box<[[[i32; CORR_SIZE]; 2]; 2]>,
     acc: Vec<Acc>,
     eval_scratch: Box<nnue::Scratch>,
     pub hash_hist: Vec<u64>,
@@ -321,6 +321,64 @@ fn pick(moves: &mut [Move], scores: &mut [i32], i: usize, n: usize) {
 fn upd(h: &mut i16, bonus: i32) {
     let v = *h as i32;
     *h = (v + bonus - v * bonus.abs() / 16384) as i16;
+}
+
+/// `upd` on a shared entry: load then store (see `update_corr`).
+#[inline(always)]
+fn upd_shared(h: &AtomicI16, bonus: i32) {
+    let v = h.load(Ordering::Relaxed) as i32;
+    h.store((v + bonus - v * bonus.abs() / 16384) as i16, Ordering::Relaxed);
+}
+
+/// History tables shared by all threads of a search. Entries are atomics
+/// used only with Relaxed loads and stores (plain moves on x86 and ARM):
+/// each entry is a heuristic score, read and written alone, so no ordering
+/// is needed and a lost concurrent update is harmless.
+pub struct SharedHist {
+    cont: Box<[[AtomicI16; 768]; 768]>,
+    corr: Box<[[AtomicI32; CORR_SIZE]; 2]>,
+    corr_np: Box<[[[AtomicI32; CORR_SIZE]; 2]; 2]>,
+}
+
+impl SharedHist {
+    fn new() -> SharedHist {
+        // Built on the heap (the correction tables are 384 KB): from_fn on
+        // a Box<[_]> slice, then converted to the fixed-size box.
+        fn zeroed<T>(n: usize, f: impl Fn() -> T) -> Box<[T]> {
+            (0..n).map(|_| f()).collect()
+        }
+        let corr = zeroed(2, || std::array::from_fn(|_| AtomicI32::new(0)));
+        let corr_np = zeroed(2, || std::array::from_fn(|_| std::array::from_fn(|_| AtomicI32::new(0))));
+        SharedHist {
+            cont: zeroed(768, || std::array::from_fn(|_| AtomicI16::new(0))).try_into().ok().unwrap(),
+            corr: corr.try_into().ok().unwrap(),
+            corr_np: corr_np.try_into().ok().unwrap(),
+        }
+    }
+    /// Largest |entry| of the continuation and correction tables (tests).
+    #[cfg(test)]
+    pub fn max_abs(&self) -> (i32, i32) {
+        let c = self.cont.iter().flatten().map(|x| (x.load(Ordering::Relaxed) as i32).abs()).max().unwrap();
+        let k = self
+            .corr
+            .iter()
+            .flatten()
+            .chain(self.corr_np.iter().flatten().flatten())
+            .map(|x| x.load(Ordering::Relaxed).abs())
+            .max()
+            .unwrap();
+        (c, k)
+    }
+    /// Zeroes every entry. `&mut self` means no other thread is using the
+    /// tables, so they can be zeroed as plain memory (zero atomics).
+    pub fn clear(&mut self) {
+        fn zero<T>(b: &mut T) {
+            unsafe { std::ptr::write_bytes(b as *mut T, 0, 1) }
+        }
+        zero(&mut *self.cont);
+        zero(&mut *self.corr);
+        zero(&mut *self.corr_np);
+    }
 }
 
 /// UCI_ShowWDL: append win/draw/loss permille to info lines.
@@ -410,7 +468,7 @@ impl Searcher {
             hard_ms: None,
             node_limit: None,
             hist: Box::new([[[0; 64]; 64]; 2]),
-            cont: vec![[0i16; 768]; 768].into_boxed_slice().try_into().unwrap(),
+            sh: Arc::new(SharedHist::new()),
             capt: Box::new([[[0; 7]; 64]; 12]),
             killers: Align64([[0; 2]; MAX_PLY + 4]),
             stack: Align64([Frame::default(); MAX_PLY + 8]),
@@ -427,8 +485,6 @@ impl Searcher {
             thread_id: 0,
             pool_nodes: Arc::new([]),
             root_node_counts: Box::new([[0; 64]; 64]),
-            corr_np: vec![[[0i32; CORR_SIZE]; 2]; 2].into_boxed_slice().try_into().unwrap(),
-            corr: vec![[0i32; CORR_SIZE]; 2].into_boxed_slice().try_into().unwrap(),
             stats: Stats::default(),
             acc: vec![Acc::new(); MAX_PLY + 8],
             eval_scratch: nnue::Scratch::new(),
@@ -494,19 +550,9 @@ impl Searcher {
         Arc::get_mut(&mut self.tt).expect("TT cleared during a search").clear();
         self.eval_cache.fill(0);
         *self.hist = [[[0; 64]; 64]; 2];
-        for r in self.cont.iter_mut() {
-            *r = [0; 768];
-        }
+        Arc::get_mut(&mut self.sh).expect("histories cleared during a search").clear();
         *self.capt = [[[0; 7]; 64]; 12];
         self.killers = Align64([[0; 2]; MAX_PLY + 4]);
-        for c in self.corr.iter_mut() {
-            c.iter_mut().for_each(|x| *x = 0);
-        }
-        for a in self.corr_np.iter_mut() {
-            for c in a.iter_mut() {
-                c.iter_mut().for_each(|x| *x = 0);
-            }
-        }
     }
 
     #[inline(always)]
@@ -627,10 +673,11 @@ impl Searcher {
         if !on(P::UseCorrHist) {
             return Self::damp(pos, raw).clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
         }
-        let c = (tp(P::CorrPawnWeight) * self.corr[pos.stm][(pos.pawn_key as usize) & m]
+        let (corr, corr_np) = (&self.sh.corr[pos.stm], &self.sh.corr_np[pos.stm]);
+        let c = (tp(P::CorrPawnWeight) * corr[(pos.pawn_key as usize) & m].load(Ordering::Relaxed)
             + tp(P::CorrNonPawnWeight)
-                * (self.corr_np[pos.stm][0][(pos.np_key[0] as usize) & m]
-                    + self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m]))
+                * (corr_np[0][(pos.np_key[0] as usize) & m].load(Ordering::Relaxed)
+                    + corr_np[1][(pos.np_key[1] as usize) & m].load(Ordering::Relaxed)))
             / (128 * CORR_GRAIN);
         Self::damp(pos, raw + c).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
@@ -640,10 +687,16 @@ impl Searcher {
         let target = diff.clamp(-tp(P::CorrDiffClamp), tp(P::CorrDiffClamp)) * CORR_GRAIN;
         let m = CORR_SIZE - 1;
         let lim = CORR_GRAIN * tp(P::CorrLimit);
-        let f = |e: &mut i32| *e = ((*e * (256 - w) + target * w) / 256).clamp(-lim, lim);
-        f(&mut self.corr[pos.stm][(pos.pawn_key as usize) & m]);
-        f(&mut self.corr_np[pos.stm][0][(pos.np_key[0] as usize) & m]);
-        f(&mut self.corr_np[pos.stm][1][(pos.np_key[1] as usize) & m]);
+        // Load then store, not an atomic read-modify-write: when two threads
+        // update an entry at once one update is lost, which costs less.
+        let f = |e: &AtomicI32| {
+            let v = e.load(Ordering::Relaxed);
+            e.store(((v * (256 - w) + target * w) / 256).clamp(-lim, lim), Ordering::Relaxed)
+        };
+        let (corr, corr_np) = (&self.sh.corr[pos.stm], &self.sh.corr_np[pos.stm]);
+        f(&corr[(pos.pawn_key as usize) & m]);
+        f(&corr_np[0][(pos.np_key[0] as usize) & m]);
+        f(&corr_np[1][(pos.np_key[1] as usize) & m]);
     }
 
     /// Whether playing `m` at the root reaches a position already in the game
@@ -1553,13 +1606,13 @@ impl Searcher {
         let ci = pc * 64 + mto(m);
         upd(&mut self.hist[pos.stm][mfrom(m)][mto(m)], bonus);
         if prev1 != 0 {
-            upd(&mut self.cont[prev1][ci], bonus);
+            upd_shared(&self.sh.cont[prev1][ci], bonus);
         }
         if prev2 != 0 {
-            upd(&mut self.cont[prev2][ci], bonus);
+            upd_shared(&self.sh.cont[prev2][ci], bonus);
         }
         if prev4 != 0 {
-            upd(&mut self.cont[prev4][ci], bonus);
+            upd_shared(&self.sh.cont[prev4][ci], bonus);
         }
     }
 
@@ -1599,9 +1652,9 @@ impl Searcher {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ci = pc * 64 + mto(m);
                 self.hist[us][mfrom(m)][mto(m)] as i32
-                    + self.cont[prev1][ci] as i32
-                    + self.cont[prev2][ci] as i32
-                    + self.cont[prev4][ci] as i32 / 2
+                    + self.sh.cont[prev1][ci].load(Ordering::Relaxed) as i32
+                    + self.sh.cont[prev2][ci].load(Ordering::Relaxed) as i32
+                    + self.sh.cont[prev4][ci].load(Ordering::Relaxed) as i32 / 2
             };
             scores.push(score);
         }
