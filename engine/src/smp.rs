@@ -3,19 +3,46 @@
 // results there. Helpers never print, keep time or choose the move: the
 // main thread searches as with one thread, then stops the helpers and waits
 // for all of them before it answers.
-use crate::position::Position;
+use crate::position::{Move, Position};
 use crate::search::{Limits, Searcher, SharedHist, MAX_PLY};
 use crate::tt::TT;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-/// One helper's node count, on its own cache line (128 bytes: Apple's line
-/// size, two of x86's) so helpers publishing don't contend.
+/// A helper's latest completed iteration, for the main thread's vote.
+#[derive(Clone, Copy)]
+pub struct IterResult {
+    /// Depth searched (0: none yet this search).
+    pub depth: i32,
+    pub score: i32,
+    pub pv: [Move; MAX_PLY + 2],
+    pub len: usize,
+}
+
+/// What one helper publishes, on its own cache lines (128 bytes: Apple's
+/// line size, two of x86's) so helpers publishing don't contend: its node
+/// count every 1024 nodes, and each completed iteration's result.
 #[repr(align(128))]
-#[derive(Default)]
-pub struct NodeSlot(pub AtomicU64);
+pub struct HelperSlot {
+    pub nodes: AtomicU64,
+    pub result: Mutex<IterResult>,
+}
+
+impl Default for HelperSlot {
+    fn default() -> HelperSlot {
+        let r = IterResult { depth: 0, score: 0, pv: [0; MAX_PLY + 2], len: 0 };
+        HelperSlot { nodes: AtomicU64::new(0), result: Mutex::new(r) }
+    }
+}
+
+impl HelperSlot {
+    fn reset(&self) {
+        self.nodes.store(0, Ordering::Relaxed);
+        self.result.lock().unwrap().depth = 0;
+    }
+}
 
 type Task = Box<dyn FnOnce(&mut Searcher) + Send>;
 
@@ -28,7 +55,7 @@ pub struct Pool {
     helpers: Vec<(Sender<Msg>, JoinHandle<()>)>,
     done: Receiver<()>,
     stop: Arc<AtomicBool>,
-    nodes: Arc<[NodeSlot]>,
+    nodes: Arc<[HelperSlot]>,
 }
 
 impl Pool {
@@ -36,7 +63,7 @@ impl Pool {
     /// Searcher (histories, stack, eval caches); only the TT is shared.
     pub fn new(n: usize) -> Pool {
         let stop = Arc::new(AtomicBool::new(false));
-        let nodes: Arc<[NodeSlot]> = (0..n).map(|_| NodeSlot::default()).collect();
+        let nodes: Arc<[HelperSlot]> = (0..n).map(|_| HelperSlot::default()).collect();
         let (done_tx, done) = channel();
         let helpers = (0..n)
             .map(|i| {
@@ -52,7 +79,7 @@ impl Pool {
                         let mut s = Searcher::new(1, stop);
                         s.silent = true;
                         s.thread_id = i + 1;
-                        s.pool_nodes = nodes;
+                        s.helper_slots = nodes;
                         while let Ok(msg) = rx.recv() {
                             match msg {
                                 Msg::Search { pos, hist, tt, sh } => {
@@ -62,7 +89,7 @@ impl Pool {
                                     let lim =
                                         Limits { soft_ms: None, hard_ms: None, depth: MAX_PLY as i32, nodes: None };
                                     s.search(&pos, &lim);
-                                    s.pool_nodes[i].0.store(s.nodes, Ordering::Relaxed);
+                                    s.helper_slots[i].nodes.store(s.nodes, Ordering::Relaxed);
                                     // Drop the shared TT before reporting done, so the
                                     // main thread holds it alone between searches.
                                     s.tt = own;
@@ -87,7 +114,7 @@ impl Pool {
     }
 
     /// The node slots to give the main thread's Searcher.
-    pub fn nodes(&self) -> Arc<[NodeSlot]> {
+    pub fn slots(&self) -> Arc<[HelperSlot]> {
         self.nodes.clone()
     }
 
@@ -105,7 +132,7 @@ impl Pool {
         // Searcher::search).
         tt.new_search();
         for c in self.nodes.iter() {
-            c.0.store(0, Ordering::Relaxed);
+            c.reset();
         }
         for (tx, _) in &self.helpers {
             let _ = tx.send(Msg::Search { pos: *pos, hist: hist.to_vec(), tt: tt.clone(), sh: sh.clone() });
@@ -165,7 +192,7 @@ mod tests {
         let pool = Pool::new(3);
         let mut main = Searcher::new(8, Arc::new(AtomicBool::new(false)));
         main.silent = true;
-        main.pool_nodes = pool.nodes();
+        main.helper_slots = pool.slots();
         let fens = [
             crate::position::START_FEN,
             "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
@@ -187,6 +214,7 @@ mod tests {
         let (c, k) = main.sh.max_abs();
         assert!(c <= 16384, "continuation history out of range: {c}");
         assert!(k <= CORR_GRAIN * tp(P::CorrLimit), "correction history out of range: {k}");
+        eprintln!("vote changed the move in {} iterations", main.stats.smp_vote_changes);
         // Between searches the main thread holds the tables alone again.
         main.clear();
     }
