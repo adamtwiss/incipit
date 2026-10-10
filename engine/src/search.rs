@@ -1254,6 +1254,7 @@ impl Searcher {
                         continue;
                     }
                 } else if on(P::UseSeeNoisy)
+                    && !in_check
                     && depth <= tp(P::SeeNoisyDepth)
                     && !pos.see_ge(m, -tp(P::SeeNoisy) * depth)
                 {
