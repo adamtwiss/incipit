@@ -733,7 +733,11 @@ impl Searcher {
             let mut s;
             loop {
                 self.seldepth = 0;
-                s = self.negamax(root, a, b, d, 0, false);
+                // Lazy SMP diversity: odd helpers search one ply deeper than
+                // the iteration, so threads spread over two depths and the
+                // deeper ones fill the TT ahead of the main thread.
+                let ds = d + (self.thread_id & 1) as i32;
+                s = self.negamax(root, a, b, ds, 0, false);
                 if self.stopped {
                     break;
                 }
