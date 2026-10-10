@@ -33,7 +33,8 @@ pub struct Pool {
 
 impl Pool {
     /// `n` helper threads (0: single-threaded search), each with its own
-    /// Searcher (histories, stack, eval caches); only the TT is shared.
+    /// Searcher (move-ordering histories, stack, eval caches); only the TT
+    /// and correction history are shared.
     pub fn new(n: usize) -> Pool {
         let stop = Arc::new(AtomicBool::new(false));
         let nodes: Arc<[NodeSlot]> = (0..n).map(|_| NodeSlot::default()).collect();
@@ -184,8 +185,7 @@ mod tests {
                 assert!(main.total_nodes() > main.nodes, "helpers searched");
             }
         }
-        let (c, k) = main.sh.max_abs();
-        assert!(c <= 16384, "continuation history out of range: {c}");
+        let k = main.sh.max_abs();
         assert!(k <= CORR_GRAIN * tp(P::CorrLimit), "correction history out of range: {k}");
         // Between searches the main thread holds the tables alone again.
         main.clear();
