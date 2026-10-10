@@ -1019,12 +1019,8 @@ impl Searcher {
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
             static_eval = self.corrected(pos, raw_eval);
             eval = static_eval;
-            // The stored score replaces the eval only where the TT cutoff
-            // would trust it (the fifty-move guard), so it can't drive pruning
-            // that the cutoff refused.
             if tte.is_some()
                 && tt_score.abs() < MATE_BOUND
-                && (pos.halfmove < 90 || tt_score.abs() <= tp(P::HmGuard))
                 && (tt_bound == BOUND_EXACT
                     || (tt_bound == BOUND_LOWER && tt_score > eval)
                     || (tt_bound == BOUND_UPPER && tt_score < eval))
@@ -1591,7 +1587,6 @@ impl Searcher {
             if let Some(e) = tte {
                 let s = e.score as i32;
                 if s.abs() < MATE_BOUND
-                    && (pos.halfmove < 90 || s.abs() <= tp(P::HmGuard))
                     && (e.bound == BOUND_EXACT
                         || (e.bound == BOUND_LOWER && s > best)
                         || (e.bound == BOUND_UPPER && s < best))
