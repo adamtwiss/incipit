@@ -1282,6 +1282,12 @@ impl Searcher {
         let tt_capture = tt_move != 0 && is_noisy(tt_move);
         let lmp_limit = (tp(P::LmpBase) + depth * depth) / (2 - improving as i32);
 
+        // Build this node's accumulator before its children: a child that
+        // evaluates would walk back to it anyway, and from here each child
+        // is one step from a freshly used parent, as with eager updates.
+        if !cfg!(feature = "hce") && !self.acc_ok[ply] {
+            self.materialise_acc(ply);
+        }
         let mut n = list.len();
         let mut i = 0;
         let mut compacted = false;
