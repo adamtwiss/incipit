@@ -654,6 +654,10 @@ impl Searcher {
         *s = c.score;
         self.pv_len[0] = c.len;
         self.pv[0][..c.len].copy_from_slice(&c.pv[..c.len]);
+        // The adopted move is also what a stopped next iteration falls back
+        // to; otherwise a hard stop would revert to the main thread's own move
+        // while the PV just reported names the adopted one.
+        self.root_best = win;
     }
 
     /// Nodes searched by all threads (helpers' counts lag by up to 1024 nodes each).
