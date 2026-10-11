@@ -1373,8 +1373,13 @@ impl Searcher {
                 score = -self.negamax(&child, -beta, -alpha, new_depth, ply + 1, !pv_node && !cut_node);
             } else {
                 let mut r = 0;
-                if on(P::UseLmr) && depth >= 3 && legal > 1 + root as i32 && (quiet || mscore < 0) {
+                if on(P::UseLmr) && depth >= 3 && legal > 1 + root as i32 {
                     r = self.lmr[depth.min(63) as usize][legal.min(63) as usize];
+                    // Good captures are reduced too, one ply less than quiets
+                    // and losing captures; capture history then adjusts.
+                    if !quiet && mscore >= 0 {
+                        r -= 1;
+                    }
                     if !pv_node {
                         r += 1;
                     }
