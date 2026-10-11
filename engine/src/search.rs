@@ -1658,8 +1658,10 @@ impl Searcher {
             } else if is_noisy(m) {
                 let ct = pos.captured_type(m);
                 let pc = pos.board[mfrom(m)] as usize;
+                // MVV-LVA plus capture history, as in the main search.
                 (1 << 20) + SEE_VAL[ct.min(5)] * 16 * (ct < 6) as i32 - SEE_VAL[pc_type(pc as u8)]
                     + if is_promo(m) { 8000 } else { 0 }
+                    + self.capt[pc][mto(m)][ct] as i32 / 16
             } else {
                 self.hist[pos.stm][mfrom(m)][mto(m)] as i32
             };
