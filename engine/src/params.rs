@@ -114,10 +114,14 @@ params! {
     // (which the pruning margins and other cp thresholds are tuned to) without
     // retuning them. Step 0 keeps it out of tune-spec; set it per test.
     EvalScale = "EvalScale", 100, 25, 400, 0;
-    // Lazy SMP vote: a thread's weight is (score - lowest score + VoteBase)
-    // * depth. Starting value: 10 cp, a tenth of a pawn, so the lowest-
-    // scored thread still counts a little.
-    VoteBase = "VoteBase", 10, 1, 100, 5;
+    // Lazy SMP vote: a thread's weight is rel * VoteBase + min(score - lowest
+    // score, VoteCap), with rel its depth relative to the iteration (1 for
+    // d - 1, 2 for d, 3 for d + 1). VoteBase is one unit per ply of relative
+    // depth (a round number; only ratios matter). VoteCap 50: optimism
+    // beyond half a pawn adds nothing, and the score term is worth at most
+    // half a ply, so depth decides and the score only breaks near-ties.
+    VoteBase = "VoteBase", 100, 20, 300, 10;
+    VoteCap = "VoteCap", 50, 0, 200, 10;
     // Feature switches for ablation tests (1 = on, 0 = off). Step 0 keeps them out of
     // tune-spec; OpenBench builds advertise them, so a test can set e.g. UseProbcut=0.
     UseTtCut = "UseTtCut", 1, 0, 1, 0;

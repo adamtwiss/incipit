@@ -605,10 +605,11 @@ impl Searcher {
     /// Lazy SMP, after each completed iteration `d` with score `s` and the
     /// PV in pv[0]: a helper publishes its result; the main thread votes
     /// over its own and the helpers' latest results, weighting each thread
-    /// by (score - lowest + VoteBase) * depth, and adopts the winning
-    /// move with the score and PV of the deepest (then best-scoring) thread
-    /// that chose it. Only threads at depth d - 1 or deeper vote. With no
-    /// helpers this does nothing.
+    /// by its depth relative to the iteration plus a capped score term (see
+    /// VoteBase and VoteCap in params.rs), and adopts the winning move with
+    /// the score and PV of the deepest (then best-scoring) thread that chose
+    /// it. Only threads at depth d - 1 or deeper vote. With no helpers this
+    /// does nothing.
     fn smp_iteration(&mut self, d: i32, s: &mut i32) {
         if self.helper_slots.is_empty() {
             return;
@@ -634,8 +635,15 @@ impl Searcher {
                 cands.push(r);
             }
         }
+        // Depth first: a thread one ply shallower than the iteration never
+        // outvotes the main thread alone, one ply deeper always does, and at
+        // equal depth the score breaks the tie only up to VoteCap (see
+        // params.rs).
         let low = cands.iter().map(|c| c.score).min().unwrap();
-        let weight = |c: &crate::smp::IterResult| (c.score - low + tp(P::VoteBase)) as i64 * c.depth as i64;
+        let weight = |c: &crate::smp::IterResult| {
+            let rel = (c.depth - d + 2) as i64;
+            rel * tp(P::VoteBase) as i64 + (c.score - low).clamp(0, tp(P::VoteCap)) as i64
+        };
         let votes = |m: Move| cands.iter().filter(|c| c.pv[0] == m).map(weight).sum::<i64>();
         // Strictly more votes to override the main thread's move.
         let mut win = cands[0].pv[0];
