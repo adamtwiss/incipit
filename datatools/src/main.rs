@@ -51,7 +51,8 @@ usage:
       --output-buckets N   material-count output buckets (default 8)
       --activation A       screlu (default), crelu or pairwise (with --l1: pairwise FT)
       --qa N --qb N --scale N   quantisation (defaults 255, 64, 400); with --l1,
-                           QB is the hidden layer's int8 weight scale
+                           QB is the hidden layer's int8 weight scale, which
+                           the trainer always saves at 128 (the default then)
       --l1 N               one hidden layer of N neurons after the FT (bullet only)
       --l1-shared          the hidden layer is shared by all output buckets
       --l1-dual            the second hidden layer takes SCReLU and CReLU of the first (needs --l2)
@@ -512,6 +513,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         l1_shift: 0,
         l2: 0,
     };
+    let mut qb_set = false;
     let mut i = 0;
     while i < opts.len() {
         let flag = opts[i].as_str();
@@ -545,7 +547,10 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
             "--l2" => arch.l2 = num()? as usize,
             "--output-buckets" => arch.output_buckets = num()? as usize,
             "--qa" => arch.qa = num()? as i32,
-            "--qb" => arch.qb = num()? as i32,
+            "--qb" => {
+                arch.qb = num()? as i32;
+                qb_set = true;
+            }
             "--scale" => arch.scale = num()? as i32,
             "--description" => arch.description = val.clone(),
             "--permute" => {
@@ -584,6 +589,12 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
     }
     if arch.hidden == 0 {
         return Err("--hidden is required".into());
+    }
+    // The trainer quantises hidden-layer weights at 128, not the FT-only
+    // default of 64; a forgotten --qb would give a self-consistent-looking
+    // net whose hidden pre-activations are twice too large.
+    if arch.l1 > 0 && !qb_set {
+        arch.qb = 128;
     }
     let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
     let net = netfmt::convert(&arch, source, &data)?;
