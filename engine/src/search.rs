@@ -988,6 +988,9 @@ impl Searcher {
             }
         }
         let excluded = self.stack[ply].excluded;
+        let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
+        let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
+        let prev4 = if ply >= 4 { self.stack[ply - 4].cont_idx } else { 0 };
         let tte = if excluded == 0 {
             self.stats.tt_probes += 1;
             self.tt.probe(pos.hash)
@@ -1021,9 +1024,10 @@ impl Searcher {
                     || (tt_bound == BOUND_UPPER && tt_score <= alpha))
             {
                 if tt_score >= beta && tt_move != 0 && !is_noisy(tt_move) {
-                    // reward quiet tt move causing cutoff
+                    // Reward the quiet TT move causing the cutoff, in the
+                    // continuation histories too, as a searched cutoff does.
                     let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).min(tp(P::HistMax));
-                    upd(&mut self.hist[pos.stm][mfrom(tt_move)][mto(tt_move)], bonus);
+                    self.update_quiet(pos, tt_move, bonus, prev1, prev2, prev4);
                 }
                 self.stats.tt_cutoffs += 1;
                 return tt_score;
@@ -1201,9 +1205,6 @@ impl Searcher {
         let mut list = MoveList::new();
         let mut scores = Stack256::<i32>::new();
         let us = pos.stm;
-        let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
-        let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
-        let prev4 = if ply >= 4 { self.stack[ply - 4].cont_idx } else { 0 };
         let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
         let mut generated = false;
         if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
