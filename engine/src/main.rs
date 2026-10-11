@@ -249,7 +249,14 @@ impl Uci {
             };
             base_soft = soft.max(1) as u64;
             let soft = (soft as f64 * self.searcher.pt.feed_scale()) as i64;
-            let hard = (left * 2 / 5).min(soft * params::tp(params::P::TmHardMul) as i64).max(1);
+            // Hard cap: 2/5 of what's left, except just before a time control,
+            // when the clock refills after the move: at movestogo 1 this move
+            // may use 4/5 of it (the rest covers the overhead and the time
+            // check's lag), falling linearly to 2/5 at movestogo 4. Otherwise
+            // the soft target (left / 2 at movestogo 1) exceeded the cap, and
+            // the last move before the control was always cut mid-iteration.
+            let hard_num = if (1..=3).contains(&mtg) { 12 - 2 * (mtg - 1) } else { 6 };
+            let hard = (left * hard_num / 15).min(soft * params::tp(params::P::TmHardMul) as i64).max(1);
             let soft = soft.min(hard);
             lim.soft_ms = Some(soft as u64);
             lim.hard_ms = Some(hard as u64);
