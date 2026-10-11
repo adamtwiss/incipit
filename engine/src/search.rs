@@ -29,6 +29,12 @@ pub const TB_WIN: i32 = MATE - 2 * MAX_PLY as i32;
 const CORR_SIZE: usize = 16384;
 const CORR_GRAIN: i32 = 256;
 
+/// A position on the search's call stack (see `Searcher::push_acc`).
+#[derive(Clone, Copy)]
+struct PosRef(*const Position);
+// Only dereferenced on the thread that set it, within the frames' lifetime.
+unsafe impl Send for PosRef {}
+
 #[derive(Clone, Copy, Default)]
 struct Frame {
     static_eval: i32,
@@ -273,6 +279,16 @@ pub struct Searcher {
     corr: Box<[[i32; CORR_SIZE]; 2]>,
     corr_np: Box<[[[i32; CORR_SIZE]; 2]; 2]>,
     acc: Vec<Acc>,
+    /// Lazy accumulators: the position at each ply, the move that led to it
+    /// (0 for a null move) and whether acc[ply] has been computed for it.
+    /// An accumulator is only built when an evaluation needs it, walking
+    /// back to the nearest computed ply; nodes that return without
+    /// evaluating (TT cutoffs, draws, cache hits) never pay for one. The
+    /// positions are pointers into the search's own stack frames, not
+    /// copies: see `push_acc`.
+    acc_pos: Vec<PosRef>,
+    acc_mv: Vec<Move>,
+    acc_ok: Vec<bool>,
     eval_scratch: Box<nnue::Scratch>,
     pub hash_hist: Vec<u64>,
     tb_hits: u64,
@@ -416,6 +432,9 @@ impl Searcher {
             corr: vec![[0i32; CORR_SIZE]; 2].into_boxed_slice().try_into().unwrap(),
             stats: Stats::default(),
             acc: vec![Acc::new(); MAX_PLY + 8],
+            acc_pos: vec![PosRef(std::ptr::null()); MAX_PLY + 8],
+            acc_mv: vec![0; MAX_PLY + 8],
+            acc_ok: vec![false; MAX_PLY + 8],
             eval_scratch: nnue::Scratch::new(),
             root_pos: Position::empty(),
             refresh_cache: nnue::RefreshCache::new(),
@@ -560,13 +579,40 @@ impl Searcher {
         }
     }
 
+    /// Records that `child` at ply + 1 follows `m` (0: a null move) from
+    /// the position at `ply`; its accumulator is built on demand.
+    ///
+    /// `child` is the caller's local for the move being searched, which
+    /// outlives every node of its subtree, and only those nodes (and the
+    /// caller, through the same local) can read the entry: the next sibling
+    /// overwrites it before its own subtree is entered.
     #[inline(always)]
-    fn push_acc(&mut self, ply: usize, pos: &Position, child: &Position, m: Move) {
-        if cfg!(feature = "hce") {
-            return; // bootstrap build: no NNUE, skip accumulator updates
+    fn push_acc(&mut self, ply: usize, child: &Position, m: Move) {
+        self.acc_pos[ply + 1] = PosRef(child);
+        self.acc_mv[ply + 1] = m;
+        self.acc_ok[ply + 1] = false;
+    }
+
+    /// Builds acc[ply] from the nearest computed ancestor.
+    #[inline(never)]
+    fn materialise_acc(&mut self, ply: usize) {
+        let mut p = ply;
+        while !self.acc_ok[p] {
+            p -= 1; // acc_ok[0] is set when the search starts
         }
-        let (a, b) = self.acc.split_at_mut(ply + 1);
-        b[0].update_from(&a[ply], pos, child, m, &mut self.refresh_cache);
+        for q in p + 1..=ply {
+            let (a, b) = self.acc.split_at_mut(q);
+            if self.acc_mv[q] == 0 {
+                b[0].copy_from(&a[q - 1]);
+            } else {
+                // SAFETY: plies p + 1..=ply are ancestors of the node being
+                // evaluated, so the frames holding their positions are live
+                // (see push_acc); ply 0 is the root held by `search`.
+                let (parent, child) = unsafe { (&*self.acc_pos[q - 1].0, &*self.acc_pos[q].0) };
+                b[0].update_from(&a[q - 1], parent, child, self.acc_mv[q], &mut self.refresh_cache);
+            }
+            self.acc_ok[q] = true;
+        }
     }
 
     /// The network's eval (side to move), without the fifty-move damping: the
@@ -576,18 +622,22 @@ impl Searcher {
         // Positions repeat within a search (transpositions, re-searches,
         // nodes that returned before storing to the TT): about 30% of
         // evaluations on bench.
-        let slot = unsafe { self.eval_cache.get_unchecked_mut(pos.hash as usize & self.eval_mask) };
-        if *slot & !0xffff == pos.hash & !0xffff && *slot != 0 {
+        let idx = pos.hash as usize & self.eval_mask;
+        let slot = unsafe { *self.eval_cache.get_unchecked(idx) };
+        if slot & !0xffff == pos.hash & !0xffff && slot != 0 {
             self.stats.eval_hits += 1;
-            return *slot as u16 as i16 as i32;
+            return slot as u16 as i16 as i32;
         }
         let e = if cfg!(feature = "hce") {
             crate::eval::evaluate(pos)
         } else {
+            if !self.acc_ok[ply] {
+                self.materialise_acc(ply);
+            }
             nnue::evaluate(&self.acc[ply], pos, &mut self.eval_scratch)
         };
         let e = e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
-        *slot = (pos.hash & !0xffff) | (e as i16 as u16 as u64);
+        unsafe { *self.eval_cache.get_unchecked_mut(idx) = (pos.hash & !0xffff) | (e as i16 as u16 as u64) };
         self.stats.evals += 1;
         e
     }
@@ -672,6 +722,8 @@ impl Searcher {
         self.pt.last_pv2 = (0, 0);
         self.seldepth = 0;
         self.acc[0].refresh(root);
+        self.acc_pos[0] = PosRef(root);
+        self.acc_ok[0] = true;
         self.pt.last_info.0 = 0;
         self.root_pos = *root;
         for r in self.root_node_counts.iter_mut() {
@@ -1140,8 +1192,7 @@ impl Searcher {
                 child.make_null();
                 self.tt.prefetch(child.hash);
                 self.prefetch_eval(child.hash);
-                let (a, b) = self.acc.split_at_mut(ply + 1);
-                b[0].copy_from(&a[ply]);
+                self.push_acc(ply, &child, 0);
                 self.stack[ply].mv = 0;
                 self.stack[ply].cont_idx = 0;
                 self.hash_hist.push(pos.hash);
@@ -1175,7 +1226,7 @@ impl Searcher {
                     }
                     self.tt.prefetch(child.hash);
                     self.prefetch_eval(child.hash);
-                    self.push_acc(ply, pos, &child, m);
+                    self.push_acc(ply, &child, m);
                     let pc = pos.board[mfrom(m)] as usize;
                     self.stack[ply].mv = m;
                     self.stack[ply].cont_idx = pc * 64 + mto(m);
@@ -1373,7 +1424,7 @@ impl Searcher {
                 }
             }
 
-            self.push_acc(ply, pos, &child, m);
+            self.push_acc(ply, &child, m);
             let pc = pos.board[mfrom(m)] as usize;
             self.stack[ply].mv = m;
             self.stack[ply].cont_idx = pc * 64 + mto(m);
@@ -1709,7 +1760,7 @@ impl Searcher {
             self.tt.prefetch(child.hash);
             self.prefetch_eval(child.hash);
             legal += 1;
-            self.push_acc(ply, pos, &child, m);
+            self.push_acc(ply, &child, m);
             let score = -self.qsearch(&child, -beta, -alpha, ply + 1);
             if self.stopped {
                 return 0;
