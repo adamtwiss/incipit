@@ -40,7 +40,11 @@ impl Default for HelperSlot {
 impl HelperSlot {
     fn reset(&self) {
         self.nodes.store(0, Ordering::Relaxed);
-        self.result.lock().unwrap().depth = 0;
+        // Clear the whole result: a stale PV from the previous search is a
+        // different position's move, and must not vote (even at weight 0 its
+        // score would set the vote floor).
+        let mut r = self.result.lock().unwrap();
+        (r.depth, r.score, r.len) = (0, 0, 0);
     }
 }
 
