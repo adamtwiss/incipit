@@ -1192,8 +1192,10 @@ impl Searcher {
                 }
             }
         }
-        // internal iterative reduction
-        if on(P::UseIir) && depth >= tp(P::IirDepth) && tt_move == 0 && (pv_node || cut_node) {
+        // Internal iterative reduction. Not in a singular verification search:
+        // it has no TT move by construction, and reducing it only in cut nodes
+        // made the verification depth depend on the node type.
+        if on(P::UseIir) && depth >= tp(P::IirDepth) && tt_move == 0 && excluded == 0 && (pv_node || cut_node) {
             self.stats.iir += 1;
             depth -= 1;
         }
