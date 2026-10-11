@@ -1559,7 +1559,12 @@ impl Searcher {
                 let base = SEE_VAL[ct.min(5)] * 16 * (ct < 6) as i32
                     + if is_promo(m) && promo_pt(m) == QUEEN { 8000 } else { 0 }
                     + self.capt[pc][mto(m)][ct] as i32 / 16;
-                if pos.see_ge(m, -50) {
+                if is_promo(m) && promo_pt(m) != QUEEN {
+                    // Underpromotions last: the queen promotion of the same
+                    // pawn is nearly always at least as good, and a negative
+                    // score lets them be reduced like losing captures.
+                    -(1 << 29) + base
+                } else if pos.see_ge(m, -50) {
                     (1 << 28) + base
                 } else {
                     -(1 << 28) + base
