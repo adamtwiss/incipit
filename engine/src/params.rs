@@ -85,6 +85,10 @@ params! {
     TmFeedMax = "TmFeedMax", 250, 100, 400, 20;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 3, 2, 6, 1;
+    // Verify a null-move cutoff with a reduced real search from this depth on
+    // (null move stays off at that ply). Start: 12, where a null-move cut
+    // prunes a subtree deep enough for a zugzwang to matter.
+    NmpVerifyDepth = "NmpVerifyDepth", 12, 6, 30, 2;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
     ProbcutRed = "ProbcutRed", 5, 2, 6, 1;
     IirDepth = "IirDepth", 3, 2, 8, 1;

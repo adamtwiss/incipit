@@ -55,6 +55,8 @@ pub struct Stats {
     pub razor_cuts: u64,
     pub nmp_tries: u64,
     pub nmp_cuts: u64,
+    pub nmp_verify: u64,
+    pub nmp_verify_fail: u64,
     pub probcut_cuts: u64,
     pub iir: u64,
     pub lmp: u64,
@@ -132,6 +134,15 @@ impl Stats {
         line(
             "Null move:",
             format!("{} tries, {} cutoffs ({:.0}%)", self.nmp_tries, self.nmp_cuts, pct(self.nmp_cuts, self.nmp_tries)),
+        );
+        line(
+            "NMP verify:",
+            format!(
+                "{} searches, {} refuted ({:.0}%)",
+                self.nmp_verify,
+                self.nmp_verify_fail,
+                pct(self.nmp_verify_fail, self.nmp_verify)
+            ),
         );
         line("ProbCut:", format!("{} cutoffs ({:.1}/Kn)", self.probcut_cuts, kn(self.probcut_cuts)));
         line("IIR:", format!("{} reductions", self.iir));
@@ -257,6 +268,8 @@ pub struct Searcher {
     /// UCI searchmoves: the root moves to consider (empty = all).
     pub search_moves: Vec<Move>,
     root_best: Move,
+    /// Ply at which null move is disabled (a null-move verification search).
+    no_nmp_ply: usize,
     root_depth: i32,
     seldepth: usize,
     /// Raw static evals by position: hash bits 16..64 check the entry, bits
@@ -415,6 +428,7 @@ impl Searcher {
             tb_hits: 0,
             root_depth: 0,
             root_best: 0,
+            no_nmp_ply: usize::MAX,
             search_moves: Vec::new(),
             lmr,
             silent: false,
@@ -1120,6 +1134,7 @@ impl Searcher {
                 && static_eval >= beta - tp(P::NmpDepthMul) * depth + tp(P::NmpMarginBase)
                 && ply >= 1
                 && self.stack[ply - 1].mv != 0
+                && ply != self.no_nmp_ply
                 && pos.has_non_pawns(pos.stm)
             {
                 self.stats.nmp_tries += 1;
@@ -1139,8 +1154,30 @@ impl Searcher {
                     return 0;
                 }
                 if v >= beta {
-                    self.stats.nmp_cuts += 1;
-                    return if v >= MATE_BOUND { beta } else { v };
+                    // At high depth, confirm with a reduced search of the real
+                    // position, null move disabled at this ply (zugzwang guard).
+                    let v = if depth >= tp(P::NmpVerifyDepth) {
+                        let saved = self.no_nmp_ply;
+                        self.no_nmp_ply = ply;
+                        let w = self.negamax(pos, beta - 1, beta, depth - r, ply, cut_node);
+                        self.no_nmp_ply = saved;
+                        if self.stopped {
+                            return 0;
+                        }
+                        self.stats.nmp_verify += 1;
+                        if w >= beta {
+                            v
+                        } else {
+                            self.stats.nmp_verify_fail += 1;
+                            w
+                        }
+                    } else {
+                        v
+                    };
+                    if v >= beta {
+                        self.stats.nmp_cuts += 1;
+                        return if v >= MATE_BOUND { beta } else { v };
+                    }
                 }
             }
             // probcut
