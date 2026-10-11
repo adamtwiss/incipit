@@ -1200,7 +1200,6 @@ impl Searcher {
 
         let mut list = MoveList::new();
         let mut scores = Stack256::<i32>::new();
-        let us = pos.stm;
         let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
         let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
         let prev4 = if ply >= 4 { self.stack[ply - 4].cont_idx } else { 0 };
@@ -1278,7 +1277,9 @@ impl Searcher {
                 continue;
             }
             let hist_score = if quiet && mscore < (1 << 27) { mscore } else { 0 };
-            if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
+            // Pawn-only positions are not exempt: the zugzwang guard belongs
+            // to null move, not to move-loop pruning.
+            if !root && best_score > -MATE_BOUND {
                 if quiet {
                     if on(P::UseLmp) && legal >= lmp_limit && !in_check {
                         self.stats.lmp += 1;
