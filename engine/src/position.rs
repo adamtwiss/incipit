@@ -541,6 +541,63 @@ impl Position {
         self.checkers = 0;
     }
 
+    /// The hash `make_move(m)` would produce, without making the move: the
+    /// search uses it to start loading a child's table entries while an
+    /// earlier child is searched. Mirrors make_move's hash updates exactly
+    /// (tested against it). For a move that isn't pseudo-legal (a TT move
+    /// from a key collision) the result is meaningless but harmless.
+    pub fn hash_after(&self, m: Move) -> u64 {
+        let us = self.stm;
+        let from = mfrom(m);
+        let to = mto(m);
+        let flag = mflag(m);
+        let pc = self.board[from];
+        if pc == NONE_PC {
+            return self.hash;
+        }
+        let mut h = self.hash ^ zob_stm();
+        if self.ep != NO_SQ {
+            h ^= zob_ep(self.ep as usize & 7);
+        }
+        if is_castle(m) {
+            let q = flag == F_QCASTLE;
+            let rsq = self.rook_sq[castle_right(us, q)] as usize;
+            let rook = make_pc(ROOK, us) as usize;
+            h ^= zob_piece(pc as usize, from)
+                ^ zob_piece(pc as usize, to)
+                ^ zob_piece(rook, rsq)
+                ^ zob_piece(rook, if q { to + 1 } else { to - 1 });
+        } else {
+            if flag == F_EP {
+                h ^= zob_piece(self.board[to ^ 8] as usize, to ^ 8);
+            } else if self.board[to] != NONE_PC {
+                h ^= zob_piece(self.board[to] as usize, to);
+            }
+            let put = if flag & 8 != 0 { make_pc(promo_pt(m), us) } else { pc };
+            h ^= zob_piece(pc as usize, from) ^ zob_piece(put as usize, to);
+        }
+        if pc_type(pc) == PAWN && flag == F_DOUBLE {
+            let e = (from + to) / 2;
+            if pawn_attacks(us, e) & self.pcs(us ^ 1, PAWN) != 0 {
+                h ^= zob_ep(e & 7);
+            }
+        }
+        if ((1u64 << from) | (1u64 << to)) & self.castle_touch != 0 {
+            let mut c = self.castling;
+            if pc_type(pc) == KING {
+                c &= if us == WHITE { !3 } else { !12 };
+            }
+            for r in 0..4 {
+                let rs = self.rook_sq[r] as usize;
+                if rs == from || rs == to {
+                    c &= !(1 << r);
+                }
+            }
+            h ^= zob_castle(self.castling) ^ zob_castle(c);
+        }
+        h
+    }
+
     pub fn gen_moves(&self, list: &mut MoveList, noisy_only: bool) {
         let us = self.stm;
         let them = us ^ 1;
@@ -947,6 +1004,27 @@ mod tests {
         ] {
             assert!(Position::from_fen(bad).is_none(), "accepted {}", bad);
         }
+    }
+
+    /// hash_after must agree with make_move for every legal move: castling
+    /// (classical and 960), en passant, promotions, captures of castling
+    /// rooks and double pushes that do or don't set an ep square.
+    #[test]
+    fn hash_after_matches_make_move() {
+        crate::attacks::init();
+        let mut checked = 0;
+        for pos in random_positions(3, 40) {
+            let mut list = MoveList::new();
+            pos.gen_moves(&mut list, false);
+            for i in 0..list.len() {
+                let mut c = pos;
+                if c.make_move(list[i]) {
+                    assert_eq!(pos.hash_after(list[i]), c.hash, "{} {}", pos.to_fen(), pos.move_uci(list[i]));
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10000, "only {} moves checked", checked);
     }
 
     /// Same-coloured bishops only is a dead position; noisy generation

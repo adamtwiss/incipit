@@ -310,8 +310,10 @@ pub struct Searcher {
     pub pt: Box<PonderTm>,
 }
 
+/// Moves the best-scored of moves[i..n] to i (the first one on ties) and
+/// returns where it came from, so the swap can be undone.
 #[inline(always)]
-fn pick(moves: &mut [Move], scores: &mut [i32], i: usize, n: usize) {
+fn pick(moves: &mut [Move], scores: &mut [i32], i: usize, n: usize) -> usize {
     // Slicing to n once lets the loop run without bounds checks.
     let (moves, scores) = (&mut moves[..n], &mut scores[..n]);
     let mut bi = i;
@@ -325,6 +327,7 @@ fn pick(moves: &mut [Move], scores: &mut [i32], i: usize, n: usize) {
     }
     scores.swap(i, bi);
     moves.swap(i, bi);
+    bi
 }
 
 #[inline(always)]
@@ -1088,6 +1091,13 @@ impl Searcher {
                 return tt_score;
             }
         }
+        if tt_move != 0 && tt_move != excluded {
+            // Start loading the TT move's child entries now: the work up to
+            // the move loop covers some of the latency (see the move loop).
+            let h = pos.hash_after(tt_move);
+            self.tt.prefetch(h);
+            self.prefetch_eval(h);
+        }
 
         // Tablebase WDL probe: valid right after a capture or pawn move
         // (halfmove 0) without castling rights.
@@ -1292,6 +1302,11 @@ impl Searcher {
         let mut n = list.len();
         let mut i = 0;
         let mut compacted = false;
+        // The next move is picked while this one is still to be searched, so
+        // its child's table entries can start loading (see the loop body);
+        // pick_from is where it came from.
+        let mut picked = false;
+        let mut pick_from = 0;
         loop {
             if i >= n {
                 if generated {
@@ -1316,6 +1331,13 @@ impl Searcher {
             }
             if skip_quiets && !compacted {
                 compacted = true;
+                if picked {
+                    // Undo the pick-ahead so the noisy moves keep the order
+                    // they had, and with it the tie-breaking of later picks.
+                    list.as_mut_slice().swap(i, pick_from);
+                    scores.as_mut_slice().swap(i, pick_from);
+                    picked = false;
+                }
                 let mut k = i;
                 for j in i..n {
                     if is_noisy(list[j]) {
@@ -1329,10 +1351,25 @@ impl Searcher {
                     break;
                 }
             }
-            pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+            if !picked {
+                pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+            }
             let m = list[i];
             let mscore = scores[i];
             i += 1;
+            // Pick the next move now and start loading its child's TT and
+            // eval-cache entries: this move's subtree then covers the memory
+            // latency, which the accumulator update no longer does since it
+            // became lazy (push_acc). Picking is order-independent within a
+            // stage (scores don't change until a cutoff), and a move the
+            // pruning below skips only wastes the prefetch.
+            picked = i < n;
+            if picked {
+                pick_from = pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+                let h = pos.hash_after(list[i]);
+                self.tt.prefetch(h);
+                self.prefetch_eval(h);
+            }
             if m == excluded || (root && !self.search_moves.is_empty() && !self.search_moves.contains(&m)) {
                 continue;
             }
@@ -1742,9 +1779,20 @@ impl Searcher {
         let mut best_move = 0;
         let mut legal = 0;
         let n = list.len();
+        let mut picked = false;
         for i in 0..n {
-            pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+            if !picked {
+                pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+            }
             let m = list[i];
+            // Pick ahead and prefetch, as in negamax's move loop.
+            picked = i + 1 < n;
+            if picked {
+                pick(list.as_mut_slice(), scores.as_mut_slice(), i + 1, n);
+                let h = pos.hash_after(list[i + 1]);
+                self.tt.prefetch(h);
+                self.prefetch_eval(h);
+            }
             if !in_check {
                 if on(P::UseQsSee) && !pos.see_ge(m, 0) {
                     continue;
