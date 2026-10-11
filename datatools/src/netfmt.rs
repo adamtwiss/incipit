@@ -61,8 +61,8 @@ pub struct Arch {
     /// engine's sparse product is faster when rarely active neurons share
     /// 4-neuron groups.
     pub perm: Vec<usize>,
-    /// Hidden-layer input shift: u8 input = clamp(a, 0, QA)^2 >> shift
-    /// (0 = the smallest shift that fits 0..127).
+    /// Hidden-layer input shift: u8 input = clamp(a, 0, QA)^2 >> shift,
+    /// rounded to nearest (0 = the smallest shift that fits 0..127).
     pub l1_shift: u32,
     /// Neurons in a second hidden layer (f32, SCReLU, per bucket; 0 = none).
     pub l2: usize,
@@ -101,10 +101,10 @@ pub fn write(arch: &Arch, ftw: &[i16], ftb: &[i16], ow: &[i16], ob: &[i32]) -> V
 }
 
 /// Input shift for the hidden layer's u8 inputs: the smallest s with
-/// QA^2 >> s <= 127, so the int8 kernels can't overflow.
+/// (QA^2 >> s, rounded) <= 127, so the int8 kernels can't overflow.
 pub fn hidden_shift(qa: i32) -> u32 {
     let sq = qa as i64 * qa as i64;
-    (0..32).find(|&s| (sq >> s) <= 127).unwrap()
+    (0..32).find(|&s| ((sq + ((1i64 << s) >> 1)) >> s) <= 127).unwrap()
 }
 
 /// Serialises a network with one hidden layer: FT -> l1 (SCReLU, i8 weights

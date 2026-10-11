@@ -58,7 +58,7 @@ pub struct Network {
 }
 
 /// One hidden layer between the feature transformer and the output: the FT
-/// outputs become u8 inputs (clamp(a, 0, QA)^2 >> shift), times int8 weights,
+/// outputs become u8 inputs (clamp(a, 0, QA)^2 >> shift, rounded), times int8 weights,
 /// then a float SCReLU and a float output layer, all per output bucket.
 struct Hidden {
     n: usize, // neurons: 8 or 16 (b1 and w2 rows padded to L1_SIZE with zeros)
@@ -435,7 +435,7 @@ fn load_hidden(
     let &[(shift, w_scale), ..] = layer_quant else {
         return Err("a hidden layer needs a LAYER_QUANT field".into());
     };
-    if shift > 30 || w_scale <= 0 || ((qa as i64 * qa as i64) >> shift) > 127 {
+    if shift > 30 || w_scale <= 0 || ((qa as i64 * qa as i64 + ((1i64 << shift) >> 1)) >> shift) > 127 {
         return Err(format!(
             "hidden layer quantisation (shift {}, weight scale {}) doesn't fit u8 0..127 inputs",
             shift, w_scale
@@ -1300,8 +1300,10 @@ unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_
     l1_product_portable(x, nz, count, w, 8)
 }
 
-/// clamp(a, 0, qa)^2 >> shift as u8 (load() checks it fits 0..127). The
-/// usual QA 255 / shift 9 has SIMD versions; a.len() is a multiple of 32.
+/// clamp(a, 0, qa)^2 >> shift, rounded to nearest, as u8 (load() checks it
+/// fits 0..127). Rounding rather than flooring halves the quantisation error
+/// of the hidden layer's inputs and removes its downward bias. The usual
+/// QA 255 / shift 9 has SIMD versions; a.len() is a multiple of 32.
 #[inline(always)]
 fn to_u8(a: &[i16], x: &mut [u8], qa: i32, shift: u32) {
     if qa == 255 && shift == 9 {
@@ -1314,20 +1316,29 @@ fn to_u8(a: &[i16], x: &mut [u8], qa: i32, shift: u32) {
 fn to_u8_scalar(a: &[i16], x: &mut [u8], qa: i32, shift: u32) {
     for (o, &v) in x.iter_mut().zip(a) {
         let c = (v as i32).clamp(0, qa);
-        *o = ((c * c) >> shift) as u8;
+        *o = round_shift(c * c, shift) as u8;
     }
 }
 
-/// Pairwise: x[i] = (clamp(a[i]) * clamp(a[i + h/2])) >> shift, h/2 outputs.
+/// Pairwise: x[i] = (clamp(a[i]) * clamp(a[i + h/2])) >> shift, rounded,
+/// h/2 outputs.
 fn to_u8_pw_scalar(a: &[i16], x: &mut [u8], qa: i32, shift: u32) {
     let half = a.len() / 2;
     for i in 0..half {
         let (c1, c2) = ((a[i] as i32).clamp(0, qa), (a[half + i] as i32).clamp(0, qa));
-        x[i] = ((c1 * c2) >> shift) as u8;
+        x[i] = round_shift(c1 * c2, shift) as u8;
     }
 }
 
-/// QA 255, shift 9: (c * c) >> 9 = mulhi_u16(c << 7, c) (c << 7 fits u16).
+/// v >> shift, rounded to nearest (half up).
+#[inline(always)]
+fn round_shift(v: i32, shift: u32) -> i32 {
+    (v + ((1 << shift) >> 1)) >> shift
+}
+
+/// QA 255, shift 9: (c * c + 256) >> 9 = mulhrs_i16(c << 6, c), the rounding
+/// high product (64 * c * c + 2^14) >> 15; c << 6 fits i16 and the result is
+/// at most 127.
 #[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
 #[inline(always)]
 unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
@@ -1340,7 +1351,7 @@ unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
         let sq = |o: usize| {
             let c =
                 _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero), qa);
-            _mm512_mulhi_epu16(_mm512_slli_epi16(c, 7), c)
+            _mm512_mulhrs_epi16(_mm512_slli_epi16(c, 6), c)
         };
         let (lo, hi) = (sq(i), if i + 32 < a.len() { sq(i + 32) } else { zero });
         let p = _mm512_permutexvar_epi64(order, _mm512_packus_epi16(lo, hi));
@@ -1371,7 +1382,7 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
                     _mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero),
                     qa,
                 );
-                _mm512_mulhi_epu16(_mm512_slli_epi16(c, 7), c)
+                _mm512_mulhrs_epi16(_mm512_slli_epi16(c, 6), c)
             };
             let (lo, hi) = (sq(i), if i + 32 < a.len() { sq(i + 32) } else { zero });
             let p = _mm512_permutexvar_epi64(order, _mm512_packus_epi16(lo, hi));
@@ -1391,7 +1402,7 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
 }
 
 /// Pairwise version of to_u8_nz_255_9: per perspective, the first half times
-/// the second half, (c1 * c2) >> 9 = mulhi_u16(c1 << 7, c2); h/2 outputs each
+/// the second half, (c1 * c2 + 256) >> 9 = mulhrs_i16(c1 << 6, c2); h/2 outputs each
 /// (h/2 is a multiple of 64).
 #[cfg(all(avx512_intrinsics, target_feature = "avx512bw"))]
 #[inline(always)]
@@ -1408,7 +1419,7 @@ unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]
             _mm512_min_epi16(_mm512_max_epi16(_mm512_loadu_si512(a.as_ptr().add(o) as *const __m512i), zero), qa)
         };
         for i in (0..half).step_by(64) {
-            let prod = |o: usize| _mm512_mulhi_epu16(_mm512_slli_epi16(clamp(o), 7), clamp(half + o));
+            let prod = |o: usize| _mm512_mulhrs_epi16(_mm512_slli_epi16(clamp(o), 6), clamp(half + o));
             let q = _mm512_permutexvar_epi64(order, _mm512_packus_epi16(prod(i), prod(i + 32)));
             let o = base + i;
             _mm512_storeu_si512(x.as_mut_ptr().add(o) as *mut __m512i, q);
@@ -1435,7 +1446,7 @@ unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]
             _mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero), qa)
         };
         for i in (0..half).step_by(32) {
-            let prod = |o: usize| _mm256_mulhi_epu16(_mm256_slli_epi16(clamp(o), 7), clamp(half + o));
+            let prod = |o: usize| _mm256_mulhrs_epi16(_mm256_slli_epi16(clamp(o), 6), clamp(half + o));
             let q = _mm256_permute4x64_epi64(_mm256_packus_epi16(prod(i), prod(i + 16)), 0b11_01_10_00);
             let o = base + i;
             _mm256_storeu_si256(x.as_mut_ptr().add(o) as *mut __m256i, q);
@@ -1462,7 +1473,7 @@ unsafe fn to_u8_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -
                     _mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero),
                     qa,
                 );
-                _mm256_mulhi_epu16(_mm256_slli_epi16(c, 7), c)
+                _mm256_mulhrs_epi16(_mm256_slli_epi16(c, 6), c)
             };
             let p = _mm256_permute4x64_epi64(_mm256_packus_epi16(sq(i), sq(i + 16)), 0b11_01_10_00);
             let o = base + i;
@@ -1484,7 +1495,7 @@ unsafe fn to_u8_255_9(a: &[i16], x: &mut [u8]) {
         let sq = |o: usize| {
             let c =
                 _mm256_min_epi16(_mm256_max_epi16(_mm256_loadu_si256(a.as_ptr().add(o) as *const __m256i), zero), qa);
-            _mm256_mulhi_epu16(_mm256_slli_epi16(c, 7), c)
+            _mm256_mulhrs_epi16(_mm256_slli_epi16(c, 6), c)
         };
         // packus interleaves the 128-bit lanes; permute4x64 restores the order.
         let p = _mm256_permute4x64_epi64(_mm256_packus_epi16(sq(i), sq(i + 16)), 0b11_01_10_00);
@@ -2229,9 +2240,9 @@ unsafe fn clamp_u8(ap: *const i16) -> std::arch::aarch64::uint8x16_t {
     vqmovun_high_s16(vqmovun_s16(vld1q_s16(ap)), vld1q_s16(ap.add(8)))
 }
 
-/// NEON: (c1 * c2) >> 9 per byte. The u8 x u8 product is exact in u16 (at
-/// most 65025); uzp2 takes the products' high bytes (>> 8) and a shift by 1
-/// completes the >> 9.
+/// NEON: (c1 * c2 + 256) >> 9 per byte. The u8 x u8 product is exact in u16
+/// (at most 65025); a rounding shift by 9 leaves at most 127, which narrows
+/// back to u8.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn mul_255_9(
@@ -2240,11 +2251,11 @@ unsafe fn mul_255_9(
 ) -> std::arch::aarch64::uint8x16_t {
     use std::arch::aarch64::*;
     let (lo, hi) = (vmull_u8(vget_low_u8(c1), vget_low_u8(c2)), vmull_high_u8(c1, c2));
-    vshrq_n_u8(vuzp2q_u8(vreinterpretq_u8_u16(lo), vreinterpretq_u8_u16(hi)), 1)
+    vqmovn_high_u16(vqmovn_u16(vrshrq_n_u16::<9>(lo)), vrshrq_n_u16::<9>(hi))
 }
 
 /// NEON version of to_u8_pw_nz_255_9: per perspective, 32 outputs at a time,
-/// clamp(a[i]) * clamp(a[half + i]) >> 9. half is a multiple of 32.
+/// (clamp(a[i]) * clamp(a[half + i]) + 256) >> 9. half is a multiple of 32.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn to_u8_pw_nz_255_9(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
