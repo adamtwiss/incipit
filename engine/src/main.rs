@@ -411,7 +411,8 @@ fn main() {
                 // `bench [depth] [Param=value ...]`, e.g. `bench 13 UseProbcut=0` for ablations
                 // (also EvalCacheKB=N).
                 let mut eval_cache_kb = search::EVAL_CACHE_KB;
-                for a in args.iter().skip(3) {
+                let mut depth = 13;
+                for a in &args[2..] {
                     if let Some((k, v)) = a.split_once('=') {
                         if k.eq_ignore_ascii_case("EvalCacheKB") {
                             eval_cache_kb = v.parse().unwrap_or(eval_cache_kb);
@@ -425,9 +426,16 @@ fn main() {
                             eprintln!("unknown parameter {a}");
                             std::process::exit(1);
                         }
+                    } else if let Ok(d) = a.parse() {
+                        depth = d;
+                    } else {
+                        // A parameter without a value would otherwise be skipped
+                        // silently and the run would measure the baseline.
+                        eprintln!("bench: unexpected argument {a}; usage: bench [depth] [Param=value ...]");
+                        std::process::exit(1);
                     }
                 }
-                bench(args.get(2).and_then(|s| s.parse().ok()).unwrap_or(13), eval_cache_kb);
+                bench(depth, eval_cache_kb);
                 return;
             }
             _ => {}
