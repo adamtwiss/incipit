@@ -95,6 +95,12 @@ params! {
     FutDepth = "FutDepth", 9, 4, 12, 1;
     HistPruneDepth = "HistPruneDepth", 4, 2, 8, 1;
     SeeNoisyDepth = "SeeNoisyDepth", 7, 3, 10, 1;
+    // SEE piece values (pawn = 100), textbook starting values: used by SEE pruning,
+    // ProbCut, qsearch SEE and capture ordering.
+    SeeKnight = "SeeKnight", 320, 150, 650, 25;
+    SeeBishop = "SeeBishop", 330, 150, 650, 25;
+    SeeRook = "SeeRook", 500, 250, 1000, 37;
+    SeeQueen = "SeeQueen", 950, 500, 2000, 75;
     SeDepth = "SeDepth", 6, 4, 10, 1;
     // Correction history. The eval correction is (CorrPawnWeight * pawn entry +
     // CorrNonPawnWeight * (white + black non-pawn entries)) / 128; the defaults are the

@@ -74,8 +74,6 @@ pub fn make_pc(pt: usize, c: usize) -> u8 {
     (pt * 2 + c) as u8
 }
 
-pub const SEE_VAL: [i32; 7] = [100, 320, 330, 500, 950, 20000, 0];
-
 /// UCI_Chess960: castling moves are written king-takes-rook (e.g. e1h1) instead
 /// of as the king's two-square move (e1g1).
 pub static CHESS960: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -711,7 +709,8 @@ impl Position {
     /// standing behind it; those x-ray attackers are added to the pool as they appear.
     /// A king may only join in when the other side has no attackers left on the square.
     /// Castling, en passant and promotions are not examined and count as a zero gain.
-    pub fn see_ge(&self, m: Move, threshold: i32) -> bool {
+    /// `val` holds the piece values by piece type (the search's SEE parameters).
+    pub fn see_ge(&self, m: Move, threshold: i32, val: &[i32; 7]) -> bool {
         let flag = mflag(m);
         if is_promo(m) || flag == F_EP || flag == F_KCASTLE || flag == F_QCASTLE {
             return threshold <= 0;
@@ -721,14 +720,14 @@ impl Position {
         let target = mto(m);
 
         // Best case: nobody recaptures. If even that falls short, the answer is no.
-        let mut balance = SEE_VAL[self.captured_type(m)];
+        let mut balance = val[self.captured_type(m)];
         if balance < threshold {
             return false;
         }
         // Worst case: the moved piece is lost for nothing more. If that still clears
         // the bar, the answer is yes.
         let mut victim = pc_type(self.board[origin]);
-        if balance - SEE_VAL[victim] >= threshold {
+        if balance - val[victim] >= threshold {
             return true;
         }
 
@@ -752,12 +751,12 @@ impl Position {
             // The recapture happens; the opponent of `recapturer` now decides whether
             // to go on, and stops at once if the balance already suits it.
             if recapturer == us {
-                balance += SEE_VAL[victim];
+                balance += val[victim];
                 if balance < threshold {
                     return false;
                 }
             } else {
-                balance -= SEE_VAL[victim];
+                balance -= val[victim];
                 if balance >= threshold {
                     return true;
                 }

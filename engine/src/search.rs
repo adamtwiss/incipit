@@ -256,6 +256,13 @@ impl PonderTm {
     }
 }
 
+/// SEE piece values by piece type: the pawn is the unit (100) and the others are
+/// SPSA parameters, starting from textbook values; constants outside tune builds.
+#[inline(always)]
+fn see_vals() -> [i32; 7] {
+    [100, tp(P::SeeKnight), tp(P::SeeBishop), tp(P::SeeRook), tp(P::SeeQueen), 20000, 0]
+}
+
 /// Field order is fixed (repr(C)): the fields touched at every node come first,
 /// at small offsets (short instruction encodings), and fields added later go at
 /// the end, so they can't shift the hot ones (layout changes cost 0.5-2% nps).
@@ -1209,7 +1216,7 @@ impl Searcher {
                 pos.gen_moves(&mut list, true);
                 for i in 0..list.len() {
                     let m = list[i];
-                    if !pos.see_ge(m, pc_beta - static_eval) {
+                    if !pos.see_ge(m, pc_beta - static_eval, &see_vals()) {
                         continue;
                     }
                     let mut child = *pos;
@@ -1358,13 +1365,14 @@ impl Searcher {
                         self.stats.hist_prunes += 1;
                         continue;
                     }
-                    if on(P::UseSeeQuiet) && !in_check && !pos.see_ge(m, -tp(P::SeeQuiet) * lmr_d * lmr_d) {
+                    if on(P::UseSeeQuiet) && !in_check && !pos.see_ge(m, -tp(P::SeeQuiet) * lmr_d * lmr_d, &see_vals())
+                    {
                         self.stats.see_quiet += 1;
                         continue;
                     }
                 } else if on(P::UseSeeNoisy)
                     && depth <= tp(P::SeeNoisyDepth)
-                    && !pos.see_ge(m, -tp(P::SeeNoisy) * depth)
+                    && !pos.see_ge(m, -tp(P::SeeNoisy) * depth, &see_vals())
                 {
                     self.stats.see_noisy += 1;
                     continue;
@@ -1619,7 +1627,7 @@ impl Searcher {
             } else if is_noisy(m) {
                 let ct = pos.captured_type(m);
                 let pc = pos.board[mfrom(m)] as usize;
-                let base = SEE_VAL[ct.min(5)] * 16 * (ct < 6) as i32
+                let base = see_vals()[ct.min(5)] * 16 * (ct < 6) as i32
                     + if is_promo(m) && promo_pt(m) == QUEEN { 8000 } else { 0 }
                     + self.capt[pc][mto(m)][ct] as i32 / 16;
                 if is_promo(m) && promo_pt(m) != QUEEN {
@@ -1627,7 +1635,7 @@ impl Searcher {
                     // pawn is nearly always at least as good, and a negative
                     // score lets them be reduced like losing captures.
                     -(1 << 29) + base
-                } else if pos.see_ge(m, -50) {
+                } else if pos.see_ge(m, -50, &see_vals()) {
                     (1 << 28) + base
                 } else {
                     -(1 << 28) + base
@@ -1729,7 +1737,7 @@ impl Searcher {
             } else if is_noisy(m) {
                 let ct = pos.captured_type(m);
                 let pc = pos.board[mfrom(m)] as usize;
-                (1 << 20) + SEE_VAL[ct.min(5)] * 16 * (ct < 6) as i32 - SEE_VAL[pc_type(pc as u8)]
+                (1 << 20) + see_vals()[ct.min(5)] * 16 * (ct < 6) as i32 - see_vals()[pc_type(pc as u8)]
                     + if is_promo(m) { 8000 } else { 0 }
             } else {
                 self.hist[pos.stm][mfrom(m)][mto(m)] as i32
@@ -1743,7 +1751,7 @@ impl Searcher {
             pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
             let m = list[i];
             if !in_check {
-                if on(P::UseQsSee) && !pos.see_ge(m, 0) {
+                if on(P::UseQsSee) && !pos.see_ge(m, 0, &see_vals()) {
                     continue;
                 }
             } else if on(P::UseQsEvasionLimit) && legal > 0 && best > -MATE_BOUND && !is_noisy(m) && legal >= 3 {
