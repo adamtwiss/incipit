@@ -85,8 +85,20 @@ pub struct Stats {
 impl Stats {
     /// Multi-line summary; `nodes` is the total node count over the same searches.
     pub fn report(&self, nodes: u64) -> String {
-        let pct = |a: u64, b: u64| if b == 0 { 0.0 } else { 100.0 * a as f64 / b as f64 };
-        let kn = |a: u64| if nodes == 0 { 0.0 } else { 1000.0 * a as f64 / nodes as f64 };
+        let pct = |a: u64, b: u64| {
+            if b == 0 {
+                0.0
+            } else {
+                100.0 * a as f64 / b as f64
+            }
+        };
+        let kn = |a: u64| {
+            if nodes == 0 {
+                0.0
+            } else {
+                1000.0 * a as f64 / nodes as f64
+            }
+        };
         let mut o = String::new();
         let mut line = |label: &str, text: String| o.push_str(&format!("{:<16}{}\n", label, text));
         line("Total nodes:", format!("{}  (QS {:.1}%)", nodes, pct(self.qs_nodes, nodes)));
@@ -348,27 +360,19 @@ fn upd_shared(h: &AtomicI16, bonus: i32) {
 /// History tables shared by all threads of a search. Entries are atomics
 /// used only with Relaxed loads and stores (plain moves on x86 and ARM):
 /// each entry is a heuristic score, read and written alone, so no ordering
-/// is needed and a lost concurrent update is harmless.
+/// is needed and a lost concurrent update is harmless. The tables are
+/// inline in the Arc's allocation, so a lookup is one pointer load and an
+/// offset, as with the per-thread tables.
 pub struct SharedHist {
-    cont: Box<[[AtomicI16; 768]; 768]>,
-    corr: Box<[[AtomicI32; CORR_SIZE]; 2]>,
-    corr_np: Box<[[[AtomicI32; CORR_SIZE]; 2]; 2]>,
+    cont: [[AtomicI16; 768]; 768],
+    corr: [[AtomicI32; CORR_SIZE]; 2],
+    corr_np: [[[AtomicI32; CORR_SIZE]; 2]; 2],
 }
 
 impl SharedHist {
-    fn new() -> SharedHist {
-        // Built on the heap (the correction tables are 384 KB): from_fn on
-        // a Box<[_]> slice, then converted to the fixed-size box.
-        fn zeroed<T>(n: usize, f: impl Fn() -> T) -> Box<[T]> {
-            (0..n).map(|_| f()).collect()
-        }
-        let corr = zeroed(2, || std::array::from_fn(|_| AtomicI32::new(0)));
-        let corr_np = zeroed(2, || std::array::from_fn(|_| std::array::from_fn(|_| AtomicI32::new(0))));
-        SharedHist {
-            cont: zeroed(768, || std::array::from_fn(|_| AtomicI16::new(0))).try_into().ok().unwrap(),
-            corr: corr.try_into().ok().unwrap(),
-            corr_np: corr_np.try_into().ok().unwrap(),
-        }
+    fn new() -> Arc<SharedHist> {
+        // SAFETY: all-zero atomics are valid, and empty tables.
+        unsafe { Arc::<SharedHist>::new_zeroed().assume_init() }
     }
     /// Largest |entry| of the continuation and correction tables (tests).
     #[cfg(test)]
@@ -387,12 +391,7 @@ impl SharedHist {
     /// Zeroes every entry. `&mut self` means no other thread is using the
     /// tables, so they can be zeroed as plain memory (zero atomics).
     pub fn clear(&mut self) {
-        fn zero<T>(b: &mut T) {
-            unsafe { std::ptr::write_bytes(b as *mut T, 0, 1) }
-        }
-        zero(&mut *self.cont);
-        zero(&mut *self.corr);
-        zero(&mut *self.corr_np);
+        unsafe { std::ptr::write_bytes(self as *mut SharedHist, 0, 1) }
     }
 }
 
@@ -476,7 +475,7 @@ impl Searcher {
             hard_ms: None,
             node_limit: None,
             hist: Box::new([[[0; 64]; 64]; 2]),
-            sh: Arc::new(SharedHist::new()),
+            sh: SharedHist::new(),
             capt: Box::new([[[0; 7]; 64]; 12]),
             killers: Align64([[0; 2]; MAX_PLY + 4]),
             stack: Align64([Frame::default(); MAX_PLY + 8]),
