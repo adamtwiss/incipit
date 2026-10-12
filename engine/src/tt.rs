@@ -146,21 +146,24 @@ impl TT {
     pub fn store(&self, key: u64, mv: Move, score: i32, eval: i32, depth: i32, bound: u8) {
         let gen = self.gen.load(Relaxed);
         let b = unsafe { self.table.get_unchecked(self.idx(key)) };
-        let age = |e: &Entry| (gen.wrapping_sub(e.bound >> 2) & 63) as i32;
+        // Only the bound byte (bits 56-63: bound and generation) and depth
+        // (bits 48-55) of a slot matter for replacement, so the packed
+        // words are read directly rather than unpacked.
+        let age = |bd: u8| (gen.wrapping_sub(bd >> 2) & 63) as i32;
         let mut slot = 0;
-        let mut old = Entry::default();
+        let mut old = 0u64;
         let mut found = false;
         let mut worst = i32::MAX;
         for (k, s) in b.0.iter().enumerate() {
             let (ek, d) = s.read();
-            let e = Entry::unpack(ek, d);
-            if ek == key && e.bound & 3 != BOUND_NONE {
+            let bd = (d >> 56) as u8;
+            if ek == key && bd & 3 != BOUND_NONE {
                 slot = k;
-                old = e;
+                old = d;
                 found = true;
                 break;
             }
-            let q = if e.bound & 3 == BOUND_NONE { i32::MIN } else { e.depth as i32 - 8 * age(&e) };
+            let q = if bd & 3 == BOUND_NONE { i32::MIN } else { (d >> 48) as u8 as i32 - 8 * age(bd) };
             if q < worst {
                 worst = q;
                 slot = k;
@@ -168,10 +171,10 @@ impl TT {
         }
         // Same position: keep the deeper result unless this one is exact,
         // nearly as deep, or the old one is from an earlier search.
-        if found && !(bound == BOUND_EXACT || depth + 3 >= old.depth as i32 || age(&old) != 0) {
+        if found && !(bound == BOUND_EXACT || depth + 3 >= (old >> 48) as u8 as i32 || age((old >> 56) as u8) != 0) {
             return;
         }
-        let mv = if mv == 0 && found { old.mv } else { mv };
+        let mv = if mv == 0 && found { old as u16 as Move } else { mv };
         b.0[slot].write(&Entry {
             key,
             mv,
