@@ -43,6 +43,14 @@ fn main() {
     if rustc_minor() >= 98 {
         println!("cargo:rustc-cfg=neon_dotprod");
     }
+    // wide_kernels: the target has a second NNUE kernel set, chosen at run
+    // time (nnue::wide): AVX-512 on x86-64, the dot-product extension on
+    // aarch64, each where the compiler has the intrinsics.
+    println!("cargo:rustc-check-cfg=cfg(wide_kernels)");
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    if (arch == "x86_64" && rustc_minor() >= 89) || (arch == "aarch64" && rustc_minor() >= 98) {
+        println!("cargo:rustc-cfg=wide_kernels");
+    }
     build_fathom(&dir);
     version(&dir);
 }
