@@ -615,7 +615,7 @@ impl Searcher {
         }
         let len = self.pv_len[0];
         if self.thread_id > 0 {
-            let mut r = self.helper_slots[self.thread_id - 1].result.lock().unwrap();
+            let mut r = crate::smp::lock(&self.helper_slots[self.thread_id - 1].result);
             r.depth = d + (self.thread_id & 1) as i32;
             r.score = *s;
             r.len = len;
@@ -629,7 +629,7 @@ impl Searcher {
         let mut cands = vec![crate::smp::IterResult { depth: d, score: *s, pv: [0; MAX_PLY + 2], len }];
         cands[0].pv[..len].copy_from_slice(&self.pv[0][..len]);
         for slot in self.helper_slots.iter() {
-            let r = *slot.result.lock().unwrap();
+            let r = *crate::smp::lock(&slot.result);
             if r.depth >= d - 1 && r.len > 0 {
                 cands.push(r);
             }

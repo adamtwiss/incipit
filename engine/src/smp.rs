@@ -28,13 +28,25 @@ pub struct IterResult {
 pub struct HelperSlot {
     pub nodes: AtomicU64,
     pub result: Mutex<IterResult>,
+    /// Cleared by the helper as it unwinds from a panic (see `Done`): the
+    /// pool then sends it nothing more. Its channel alone can't tell, since
+    /// it stays open, and takes messages it will never run, until the thread
+    /// has finished unwinding.
+    pub alive: AtomicBool,
 }
 
 impl Default for HelperSlot {
     fn default() -> HelperSlot {
         let r = IterResult { depth: 0, score: 0, pv: [0; MAX_PLY + 2], len: 0 };
-        HelperSlot { nodes: AtomicU64::new(0), result: Mutex::new(r) }
+        HelperSlot { nodes: AtomicU64::new(0), result: Mutex::new(r), alive: AtomicBool::new(true) }
     }
+}
+
+/// Locks a result mutex, poisoned or not: a helper that panicked while
+/// publishing leaves a result that is at worst stale, which voting copes
+/// with, and the main thread must not panic with it.
+pub fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl HelperSlot {
@@ -43,7 +55,7 @@ impl HelperSlot {
         // Clear the whole result: a stale PV from the previous search is a
         // different position's move, and must not vote (even at weight 0 its
         // score would set the vote floor).
-        let mut r = self.result.lock().unwrap();
+        let mut r = lock(&self.result);
         (r.depth, r.score, r.len) = (0, 0, 0);
     }
 }
@@ -66,11 +78,19 @@ pub struct Pool {
 }
 
 /// Sends `done` when dropped: at the end of a helper's task, or while a
-/// panic unwinds it, so `wait` never hangs on a dead helper.
-struct Done<'a>(&'a Sender<()>);
+/// panic unwinds it, so `wait` never hangs on a dead helper. A panicking
+/// helper first marks its slot dead, so that the pool, which sees the
+/// done signal after the mark, sends it nothing more.
+struct Done<'a> {
+    tx: &'a Sender<()>,
+    slot: &'a HelperSlot,
+}
 impl Drop for Done<'_> {
     fn drop(&mut self) {
-        let _ = self.0.send(());
+        if std::thread::panicking() {
+            self.slot.alive.store(false, Ordering::Relaxed);
+        }
+        let _ = self.tx.send(());
     }
 }
 
@@ -97,9 +117,9 @@ impl Pool {
                         let mut s = Searcher::new(1, stop);
                         s.silent = true;
                         s.thread_id = i + 1;
-                        s.helper_slots = nodes;
+                        s.helper_slots = nodes.clone();
                         while let Ok(msg) = rx.recv() {
-                            let done = Done(&done_tx);
+                            let done = Done { tx: &done_tx, slot: &nodes[i] };
                             match msg {
                                 Msg::Search { pos, hist, moves, tt, sh } => {
                                     let own = std::mem::replace(&mut s.tt, tt);
@@ -164,12 +184,12 @@ impl Pool {
     }
 
     /// Sends a message to every helper still alive and counts those that
-    /// took it, for `wait`. A helper that panicked is gone for good: its
-    /// channel is closed, so it is skipped from then on.
+    /// took it, for `wait`. A helper that panicked is gone for good (see
+    /// `HelperSlot::alive`) and is skipped from then on.
     fn send(&self, msg: impl Fn() -> Msg) {
         let mut n = 0;
-        for (tx, _) in &self.helpers {
-            if tx.send(msg()).is_ok() {
+        for (i, (tx, _)) in self.helpers.iter().enumerate() {
+            if self.nodes[i].alive.load(Ordering::Relaxed) && tx.send(msg()).is_ok() {
                 n += 1;
             }
         }
@@ -227,14 +247,17 @@ mod tests {
         let mut main = Searcher::new(8, Arc::new(AtomicBool::new(false)));
         main.silent = true;
         main.helper_slots = pool.slots();
+        // The dying helper still owns a result lock, so the lock is poisoned too.
         pool.each(|s| {
             if s.thread_id == 1 {
+                let _held = s.helper_slots[0].result.lock().unwrap();
                 panic!("test: helper 1 dies");
             }
         });
         let pos = Position::from_fen(crate::position::START_FEN).unwrap();
         let lim = Limits { soft_ms: None, hard_ms: None, depth: 8, nodes: None };
-        for _ in 0..2 {
+        assert!(!pool.nodes[0].alive.load(Ordering::Relaxed) && pool.nodes[1].alive.load(Ordering::Relaxed));
+        for _ in 0..20 {
             pool.start(&pos, &[], &main);
             let (m, _) = main.search(&pos, &lim);
             pool.finish();
@@ -242,6 +265,8 @@ mod tests {
             assert!(pool.nodes[1].nodes.load(Ordering::Relaxed) > 0, "helper 2 searched");
         }
         pool.each(|_| {});
+        // The dead helper's slot never votes: its result stays cleared.
+        assert_eq!(lock(&pool.nodes[0].result).depth, 0);
     }
 
     /// Four threads search together, sharing the TT and histories, over
