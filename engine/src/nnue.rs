@@ -941,16 +941,17 @@ impl Scratch {
 #[inline]
 pub fn evaluate(acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
     let n = net();
-    // Safe: pick_eval chose a function for this network's shape (and only an
-    // AVX-512 one on a CPU that has the features).
+    // Safe: pick_eval chose a function for this network's shape (and only a
+    // wide one on a CPU that has the features).
     unsafe { (n.eval)(n, acc, pos, s) }
 }
 
 /// Network with one hidden layer: u8 inputs from both perspectives (side to
 /// move first), an int8 matrix product per output bucket, then float SCReLU
 /// and the float output layer. One entry point per layer shape and hidden
-/// size, each in an AVX2 and (where the compiler has the intrinsics) an
-/// AVX-512 version; `pick_eval` chooses one at net load.
+/// size, each in a baseline version and, where the target has a second
+/// kernel set (AVX-512 on x86-64, dotprod on aarch64), a wide one;
+/// `pick_eval` chooses one at net load.
 type EvalFn = unsafe fn(&Network, &Acc, &Position, &mut Scratch) -> i32;
 
 macro_rules! eval_entries {
@@ -959,8 +960,9 @@ macro_rules! eval_entries {
         unsafe fn $name<const H: usize>(n: &Network, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
             eval_hidden::<H, $l, $l2, $pw, $dual, false>(n, n.l1.as_ref().unwrap_unchecked(), acc, pos, s)
         }
-        #[cfg(all(target_arch = "x86_64", avx512_intrinsics))]
-        #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
+        #[cfg(wide_kernels)]
+        #[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx512f,avx512bw,avx512vnni"))]
+        #[cfg_attr(target_arch = "aarch64", target_feature(enable = "dotprod"))]
         #[inline(never)]
         unsafe fn $wide<const H: usize>(n: &Network, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
             eval_hidden::<H, $l, $l2, $pw, $dual, true>(n, n.l1.as_ref().unwrap_unchecked(), acc, pos, s)
@@ -1004,11 +1006,11 @@ fn pick_eval(n: &Network) -> EvalFn {
             }
         };
     }
-    #[cfg(all(target_arch = "x86_64", avx512_intrinsics))]
+    #[cfg(wide_kernels)]
     let w = wide();
     macro_rules! pick {
         ($f:ident, $g:ident) => {{
-            #[cfg(all(target_arch = "x86_64", avx512_intrinsics))]
+            #[cfg(wide_kernels)]
             if w {
                 return sized!($g);
             }
@@ -1343,13 +1345,13 @@ unsafe fn l1_product_portable(x: &[u8], nz: &[u16], count: usize, w: &[i8], l: u
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
-unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product16<const W: bool>(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     l1_product_portable(x, nz, count, w, 16)
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[inline(always)]
-unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product8<const W: bool>(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     l1_product_portable(x, nz, count, w, 8)
 }
 
@@ -1699,7 +1701,7 @@ unsafe fn dpbusd256(
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product16<const W: bool>(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
     let mut a = [_mm256_setzero_si256(); 4];
@@ -1727,7 +1729,8 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
 }
 
 /// The hidden-layer product for L (8 or 16) outputs; outputs past L are 0.
-/// W picks the AVX-512 kernels (see `wide`).
+/// W picks the wide kernels (see `wide`): separate functions on x86-64, the
+/// sdot form of the NEON ones on aarch64 (elsewhere W is unused).
 #[inline(always)]
 unsafe fn l1_product<const L: usize, const W: bool>(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     #[cfg(all(target_arch = "x86_64", avx512_intrinsics))]
@@ -1735,16 +1738,17 @@ unsafe fn l1_product<const L: usize, const W: bool>(x: &[u8], nz: &[u16], count:
         return if L == 8 { l1_product8_x512(x, nz, count, w) } else { l1_product16_x512(x, nz, count, w) };
     }
     if L == 8 {
-        l1_product8(x, nz, count, w)
+        l1_product8::<W>(x, nz, count, w)
     } else {
-        l1_product16(x, nz, count, w)
+        l1_product16::<W>(x, nz, count, w)
     }
 }
 
-// Kernel width: W = true picks the AVX-512 (+VNNI) kernels. It is a constant
-// in each instantiation, so the choice compiles away; the W = true code only
-// runs in the AVX-512 eval entry points, chosen at net load on CPUs that have
-// the features (`wide`), whose target features let these kernels inline.
+// Kernel width: W = true picks the wide kernels (AVX-512 with VNNI on
+// x86-64, sdot on aarch64). It is a constant in each instantiation, so the
+// choice compiles away; the W = true code only runs in the wide eval entry
+// points, chosen at net load on CPUs that have the features (`wide`), whose
+// target features let these kernels inline.
 
 #[inline(always)]
 unsafe fn to_u8_nz_w<const W: bool>(a0: &[i16], a1: &[i16], x: &mut [u8], nz: &mut [u16]) -> usize {
@@ -1782,28 +1786,40 @@ unsafe fn to_u8_255_9_w<const W: bool>(a: &[i16], x: &mut [u8]) {
     to_u8_255_9(a, x)
 }
 
-/// Whether this CPU runs the AVX-512 kernels: AVX-512 F, BW and VNNI (the
-/// kernels use VNNI's dpbusd; CPUs with AVX-512 but no VNNI run the AVX2
-/// ones). INCIPIT_ISA=avx2 forces the AVX2 kernels (for testing both on one
-/// machine).
+/// Whether this CPU runs the wide kernels. On x86-64 those are the AVX-512
+/// ones, which need AVX-512 F, BW and VNNI (they use VNNI's dpbusd; CPUs
+/// with AVX-512 but no VNNI run the AVX2 ones); on aarch64 the NEON kernels
+/// with sdot, which needs the dot-product extension (every Apple core and
+/// most Arm cores since ARMv8.2; the Cortex-A53/A72 of a Raspberry Pi 3/4
+/// lack it). INCIPIT_ISA=avx2 or neon forces the baseline kernels (for
+/// testing both on one machine).
 pub fn wide() -> bool {
+    #[cfg(wide_kernels)]
+    if std::env::var("INCIPIT_ISA").is_ok_and(|v| v == "avx2" || v == "neon") {
+        return false;
+    }
     #[cfg(all(target_arch = "x86_64", avx512_intrinsics))]
     {
-        if std::env::var("INCIPIT_ISA").is_ok_and(|v| v == "avx2") {
-            return false;
-        }
         is_x86_feature_detected!("avx512f")
             && is_x86_feature_detected!("avx512bw")
             && is_x86_feature_detected!("avx512vnni")
     }
-    #[cfg(not(all(target_arch = "x86_64", avx512_intrinsics)))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        std::arch::is_aarch64_feature_detected!("dotprod")
+    }
+    #[cfg(not(wide_kernels))]
     false
 }
 
 /// The NNUE kernels in use, for bench and diagnostics.
 pub fn kernel_isa() -> &'static str {
     if cfg!(target_arch = "aarch64") {
-        "neon"
+        if wide() {
+            "neon-dotprod"
+        } else {
+            "neon"
+        }
     } else if !cfg!(target_arch = "x86_64") {
         "portable"
     } else if wide() {
@@ -1858,7 +1874,7 @@ unsafe fn l1_product8_x512(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32
 /// AVX2, 8 outputs: one register per group; maddubs + madd.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product8<const W: bool>(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::x86_64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
     let mut a = [_mm256_setzero_si256(); 4];
@@ -1991,7 +2007,7 @@ unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
 
 /// Checks the SIMD hidden-layer kernels against the scalar versions on random
 /// accumulators and weights. Returns the number of mismatches.
-/// The SIMD kernels of one width (W: AVX-512) against the scalar versions,
+/// The SIMD kernels of one width (W: the wide set) against the scalar versions,
 /// for accumulators `a` (2h values), their scalar u8 conversion x2, int8
 /// weights w and sparse inputs xs. Returns the number of mismatches.
 fn check_kernels<const W: bool>(a: &[i16], h: usize, x2: &[u8], w: &[i8], xs: &[u8]) -> usize {
@@ -2061,7 +2077,7 @@ pub fn l1check(trials: usize) -> usize {
             let keep = rnd() % 64;
             let xs: Vec<u8> = x2.iter().map(|&v| if rnd() % 64 < keep { v } else { 0 }).collect();
             bad += check_kernels::<false>(&a, h, &x2, &w, &xs);
-            #[cfg(all(target_arch = "x86_64", avx512_intrinsics))]
+            #[cfg(wide_kernels)]
             if wide() {
                 bad += check_kernels::<true>(&a, h, &x2, &w, &xs);
             }
@@ -2445,24 +2461,23 @@ unsafe fn scan_nz(x: &[u8], nz: &mut [u16]) -> usize {
     count
 }
 
-/// acc + Σ x · w over each 4-byte group, per 32-bit lane: one sdot with the
-/// dot-product extension (every Apple and recent Arm core), else widening
-/// multiplies and pairwise adds. The u8 inputs are at most 127, so they are
-/// exact as i8 and the signed dot product gives the u8 x i8 result.
+/// acc + Σ x · w over each 4-byte group, per 32-bit lane: one sdot when W
+/// (the dot-product extension, see `wide`), else widening multiplies and
+/// pairwise adds. The u8 inputs are at most 127, so they are exact as i8 and
+/// the signed dot product gives the u8 x i8 result.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn dot4(
+unsafe fn dot4<const W: bool>(
     acc: std::arch::aarch64::int32x4_t,
     x: std::arch::aarch64::int8x16_t,
     w: std::arch::aarch64::int8x16_t,
 ) -> std::arch::aarch64::int32x4_t {
     use std::arch::aarch64::*;
-    #[cfg(target_feature = "dotprod")]
-    {
+    if W {
+        // Only reached from the dotprod entry points, whose target feature
+        // lets the intrinsic inline.
         vdotq_s32(acc, x, w)
-    }
-    #[cfg(not(target_feature = "dotprod"))]
-    {
+    } else {
         // i8 x i8 products fit i16; pairs, then pairs of pairs, to i32.
         let lo = vpaddlq_s16(vmull_s8(vget_low_s8(x), vget_low_s8(w)));
         let hi = vpaddlq_s16(vmull_high_s8(x, w));
@@ -2475,17 +2490,17 @@ unsafe fn dot4(
 /// Two groups per step into separate accumulators (eight chains).
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product16<const W: bool>(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::aarch64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
     let mut a = [vdupq_n_s32(0); 8];
     let mut step = |k: usize, g: usize| {
         let xb = vreinterpretq_s8_s32(vdupq_n_s32(xp.add(g).read_unaligned()));
         let wv = vld1q_s8_x4(wp.add(g * 64));
-        a[4 * k] = dot4(a[4 * k], xb, wv.0);
-        a[4 * k + 1] = dot4(a[4 * k + 1], xb, wv.1);
-        a[4 * k + 2] = dot4(a[4 * k + 2], xb, wv.2);
-        a[4 * k + 3] = dot4(a[4 * k + 3], xb, wv.3);
+        a[4 * k] = dot4::<W>(a[4 * k], xb, wv.0);
+        a[4 * k + 1] = dot4::<W>(a[4 * k + 1], xb, wv.1);
+        a[4 * k + 2] = dot4::<W>(a[4 * k + 2], xb, wv.2);
+        a[4 * k + 3] = dot4::<W>(a[4 * k + 3], xb, wv.3);
     };
     let mut i = 0;
     while i + 1 < count {
@@ -2507,15 +2522,15 @@ unsafe fn l1_product16(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1
 /// outputs; four groups per step into separate accumulators (eight chains).
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-unsafe fn l1_product8(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
+unsafe fn l1_product8<const W: bool>(x: &[u8], nz: &[u16], count: usize, w: &[i8]) -> [i32; L1_SIZE] {
     use std::arch::aarch64::*;
     let (xp, wp) = (x.as_ptr() as *const i32, w.as_ptr());
     let mut a = [vdupq_n_s32(0); 8];
     let mut step = |k: usize, g: usize| {
         let xb = vreinterpretq_s8_s32(vdupq_n_s32(xp.add(g).read_unaligned()));
         let wv = vld1q_s8_x2(wp.add(g * 32));
-        a[2 * k] = dot4(a[2 * k], xb, wv.0);
-        a[2 * k + 1] = dot4(a[2 * k + 1], xb, wv.1);
+        a[2 * k] = dot4::<W>(a[2 * k], xb, wv.0);
+        a[2 * k + 1] = dot4::<W>(a[2 * k + 1], xb, wv.1);
     };
     let mut i = 0;
     while i + 3 < count {
