@@ -800,8 +800,9 @@ impl Searcher {
         self.pt.start_ms = now_ms();
         self.pt.target_ms = lim.soft_ms.map_or(f64::INFINITY, |s| s as f64);
         self.pt.soft_ms = lim.soft_ms.unwrap_or(0) as f64;
-        // One generation per search: with helpers, Pool::start advances it
-        // before any thread starts.
+        // One generation per search. With helpers the TT is shared and
+        // Pool::start advances it before any thread starts, so only a
+        // standalone Searcher (one thread, bench, datagen) does it here.
         if self.helper_slots.is_empty() {
             self.tt.new_search();
         }
@@ -838,7 +839,10 @@ impl Searcher {
         }
         // Root in the tablebases: play the move that keeps the result, with the
         // fifty-move counter taken into account (DTZ).
-        if crate::tb::largest() > 0 && self.search_moves.is_empty() {
+        // Fathom's root probe isn't thread-safe: the main thread alone does
+        // it. In a tablebase position it returns at once and the helpers,
+        // which search on, are stopped with it.
+        if crate::tb::largest() > 0 && self.search_moves.is_empty() && self.thread_id == 0 {
             if let Some((w, m)) = crate::tb::probe_root(root).filter(|&(_, m)| !self.repeats_after(root, m)) {
                 let s = match w {
                     crate::tb::Wdl::Win => TB_WIN - 1,
