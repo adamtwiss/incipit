@@ -6,7 +6,7 @@
 use crate::position::{Move, Position};
 use crate::search::{Limits, Searcher, SharedHist, MAX_PLY};
 use crate::tt::TT;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -60,6 +60,18 @@ pub struct Pool {
     done: Receiver<()>,
     stop: Arc<AtomicBool>,
     nodes: Arc<[HelperSlot]>,
+    /// Helpers that took the last message, so `wait` knows how many `done`
+    /// signals to expect once a helper has died.
+    pending: AtomicUsize,
+}
+
+/// Sends `done` when dropped: at the end of a helper's task, or while a
+/// panic unwinds it, so `wait` never hangs on a dead helper.
+struct Done<'a>(&'a Sender<()>);
+impl Drop for Done<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
 }
 
 impl Pool {
@@ -79,12 +91,15 @@ impl Pool {
                     .stack_size(8 << 20)
                     .spawn(move || {
                         // Its own TT (1 MB) and SharedHist are unused: during a
-                        // search they're swapped for the main thread's.
+                        // search they're swapped for the main thread's. Both
+                        // come zeroed from the allocator and are never
+                        // touched, so they cost address space, not memory.
                         let mut s = Searcher::new(1, stop);
                         s.silent = true;
                         s.thread_id = i + 1;
                         s.helper_slots = nodes;
                         while let Ok(msg) = rx.recv() {
+                            let done = Done(&done_tx);
                             match msg {
                                 Msg::Search { pos, hist, moves, tt, sh } => {
                                     let own = std::mem::replace(&mut s.tt, tt);
@@ -102,16 +117,14 @@ impl Pool {
                                 }
                                 Msg::Run(f) => f(&mut s),
                             }
-                            if done_tx.send(()).is_err() {
-                                break;
-                            }
+                            drop(done);
                         }
                     })
                     .expect("spawn helper thread");
                 (tx, handle)
             })
             .collect();
-        Pool { helpers, done, stop, nodes }
+        Pool { helpers, done, stop, nodes, pending: AtomicUsize::new(0) }
     }
 
     pub fn len(&self) -> usize {
@@ -134,21 +147,33 @@ impl Pool {
         if self.helpers.is_empty() {
             return;
         }
-        // The main Searcher shares `nodes` and so leaves this to us (see
-        // Searcher::search).
+        // The generation advances once per search, here rather than in
+        // Searcher::search (which does it only without helpers), so every
+        // thread stores under the new one from its first node.
         tt.new_search();
         for c in self.nodes.iter() {
             c.reset();
         }
+        self.send(|| Msg::Search {
+            pos: *pos,
+            hist: hist.to_vec(),
+            moves: main.search_moves.clone(),
+            tt: tt.clone(),
+            sh: sh.clone(),
+        });
+    }
+
+    /// Sends a message to every helper still alive and counts those that
+    /// took it, for `wait`. A helper that panicked is gone for good: its
+    /// channel is closed, so it is skipped from then on.
+    fn send(&self, msg: impl Fn() -> Msg) {
+        let mut n = 0;
         for (tx, _) in &self.helpers {
-            let _ = tx.send(Msg::Search {
-                pos: *pos,
-                hist: hist.to_vec(),
-                moves: main.search_moves.clone(),
-                tt: tt.clone(),
-                sh: sh.clone(),
-            });
+            if tx.send(msg()).is_ok() {
+                n += 1;
+            }
         }
+        self.pending.store(n, Ordering::Relaxed);
     }
 
     /// Stops the helpers and waits until all have finished searching.
@@ -160,17 +185,16 @@ impl Pool {
     /// Runs `f` on every helper's Searcher (e.g. clear, option changes) and
     /// waits for all. Only call while the helpers are idle.
     pub fn each(&self, f: impl Fn(&mut Searcher) + Clone + Send + 'static) {
-        for (tx, _) in &self.helpers {
-            let _ = tx.send(Msg::Run(Box::new(f.clone())));
-        }
+        self.send(|| Msg::Run(Box::new(f.clone())));
         self.wait();
     }
 
+    /// Waits for every helper that took the last message to signal done
+    /// (a panicking helper signals it while unwinding: see `Done`).
     fn wait(&self) {
-        for _ in 0..self.helpers.len() {
-            // Err: every helper has exited (one panicked); nothing to wait for.
+        for _ in 0..self.pending.swap(0, Ordering::Relaxed) {
             if self.done.recv().is_err() {
-                break;
+                break; // every helper has exited
             }
         }
     }
@@ -192,6 +216,33 @@ mod tests {
     use crate::params::{tp, P};
     use crate::search::CORR_GRAIN;
     use std::sync::atomic::AtomicBool;
+
+    /// A helper that panics must not hang the pool: `each` and `finish`
+    /// return, and the other helpers keep searching.
+    #[test]
+    fn dead_helper_does_not_hang() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let pool = Pool::new(2);
+        let mut main = Searcher::new(8, Arc::new(AtomicBool::new(false)));
+        main.silent = true;
+        main.helper_slots = pool.slots();
+        pool.each(|s| {
+            if s.thread_id == 1 {
+                panic!("test: helper 1 dies");
+            }
+        });
+        let pos = Position::from_fen(crate::position::START_FEN).unwrap();
+        let lim = Limits { soft_ms: None, hard_ms: None, depth: 8, nodes: None };
+        for _ in 0..2 {
+            pool.start(&pos, &[], &main);
+            let (m, _) = main.search(&pos, &lim);
+            pool.finish();
+            assert!(m != 0);
+            assert!(pool.nodes[1].nodes.load(Ordering::Relaxed) > 0, "helper 2 searched");
+        }
+        pool.each(|_| {});
+    }
 
     /// Four threads search together, sharing the TT and histories, over
     /// several positions: no panic, every search returns a legal move, and
