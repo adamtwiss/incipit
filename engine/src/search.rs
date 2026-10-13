@@ -1709,6 +1709,7 @@ impl Searcher {
             // Never negative, whatever the tuned values: a cutoff must not
             // lower its move's history (nor raise the failed ones').
             let bonus = (tp(P::HistMul) * bdepth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
+            let malus = (tp(P::HistMalusMul) * bdepth - tp(P::HistMalusOff)).clamp(0, tp(P::HistMalusMax));
             let m = best_move;
             if !is_noisy(m) {
                 if self.killers[ply][0] != m {
@@ -1717,7 +1718,7 @@ impl Searcher {
                 }
                 self.update_quiet(pos, m, bonus, prev1, prev2, prev4);
                 for k in 0..nq {
-                    self.update_quiet(pos, quiets[k], -bonus, prev1, prev2, prev4);
+                    self.update_quiet(pos, quiets[k], -malus, prev1, prev2, prev4);
                 }
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
@@ -1728,7 +1729,7 @@ impl Searcher {
                 let cm = capts[k];
                 let pc = pos.board[mfrom(cm)] as usize;
                 let ct = pos.captured_type(cm);
-                upd(&mut self.capt[pc][mto(cm)][ct], -bonus);
+                upd(&mut self.capt[pc][mto(cm)][ct], -malus);
             }
         }
 

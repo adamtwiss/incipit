@@ -58,6 +58,12 @@ params! {
     HistMul = "HistMul", 302, 100, 500, 20;
     HistOff = "HistOff", 187, 0, 500, 25;
     HistMax = "HistMax", 2734, 1000, 4000, 150;
+    // Malus for the moves a cutoff refuted: HistMalusMul * depth - HistMalusOff, capped at
+    // HistMalusMax. Starts equal to the bonus formula (one scale for both, as before) so
+    // SPSA can move the two apart.
+    HistMalusMul = "HistMalusMul", 302, 100, 500, 20;
+    HistMalusOff = "HistMalusOff", 187, 0, 500, 25;
+    HistMalusMax = "HistMalusMax", 2734, 1000, 4000, 150;
     SeDouble = "SeDouble", 12, 5, 50, 2;
     RfpDepth = "RfpDepth", 8, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
