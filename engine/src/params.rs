@@ -58,6 +58,10 @@ params! {
     HistMul = "HistMul", 302, 100, 500, 20;
     HistOff = "HistOff", 187, 0, 500, 25;
     HistMax = "HistMax", 2734, 1000, 4000, 150;
+    // Bonus for the opponent's previous quiet move when this node fails low (it refuted
+    // every reply): PriorBonusPct% of the cutoff bonus at this depth. Half, as weaker
+    // evidence than a cutoff; 0 disables it.
+    PriorBonusPct = "PriorBonusPct", 50, 0, 150, 8;
     SeDouble = "SeDouble", 12, 5, 50, 2;
     RfpDepth = "RfpDepth", 8, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.

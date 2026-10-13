@@ -1730,6 +1730,27 @@ impl Searcher {
                 let ct = pos.captured_type(cm);
                 upd(&mut self.capt[pc][mto(cm)][ct], -bonus);
             }
+        } else if alpha == orig_alpha && excluded == 0 && ply >= 1 && tp(P::PriorBonusPct) > 0 {
+            // Fail low: the opponent's last move, if quiet, held against every reply.
+            let pm = self.stack[ply - 1].mv;
+            if pm != 0 && !is_noisy(pm) {
+                let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
+                let bonus = bonus * tp(P::PriorBonusPct) / 100;
+                let prev3 = if ply >= 3 { self.stack[ply - 3].cont_idx } else { 0 };
+                let prev5 = if ply >= 5 { self.stack[ply - 5].cont_idx } else { 0 };
+                upd(&mut self.hist[pos.stm ^ 1][mfrom(pm)][mto(pm)], bonus);
+                // Its continuation entries, as seen from the opponent's node: their
+                // previous moves were ours at ply-2, -3 (theirs) and -5.
+                if prev2 != 0 {
+                    upd_shared(&self.sh.cont[prev2][prev1], bonus);
+                }
+                if prev3 != 0 {
+                    upd_shared(&self.sh.cont[prev3][prev1], bonus);
+                }
+                if prev5 != 0 {
+                    upd_shared(&self.sh.cont[prev5][prev1], bonus);
+                }
+            }
         }
 
         if excluded == 0 {
