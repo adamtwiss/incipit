@@ -49,6 +49,11 @@ params! {
     FutBase = "FutBase", 82, 30, 250, 11;
     FutMul = "FutMul", 93, 40, 200, 8;
     HistPrune = "HistPrune", 3124, 500, 5000, 225;
+    // Capture futility at lmr_d <= CapFutDepth: skip a non-promotion capture when
+    // static_eval + value of the captured piece + CapFutBase + CapFutMul * lmr_d <= alpha.
+    // Round starts: a pawn each, a depth below the quiet margin's.
+    CapFutBase = "CapFutBase", 100, 0, 300, 15;
+    CapFutMul = "CapFutMul", 100, 20, 300, 14;
     SeeQuiet = "SeeQuiet", 8, 0, 80, 4;
     SeeNoisy = "SeeNoisy", 91, 10, 200, 10;
     LmrBaseX100 = "LmrBaseX100", 44, 30, 130, 5;
@@ -95,6 +100,7 @@ params! {
     ProbcutRed = "ProbcutRed", 6, 2, 6, 1;
     IirDepth = "IirDepth", 2, 2, 8, 1;
     FutDepth = "FutDepth", 9, 4, 12, 1;
+    CapFutDepth = "CapFutDepth", 6, 2, 10, 1;
     HistPruneDepth = "HistPruneDepth", 5, 2, 8, 1;
     SeeNoisyDepth = "SeeNoisyDepth", 7, 3, 10, 1;
     // SEE piece values (pawn = 100), textbook starting values: used by SEE pruning,
@@ -138,6 +144,7 @@ params! {
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
+    UseCapFut = "UseCapFut", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
     UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
     UseSeeNoisy = "UseSeeNoisy", 1, 0, 1, 0;

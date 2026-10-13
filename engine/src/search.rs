@@ -63,6 +63,7 @@ pub struct Stats {
     pub iir: u64,
     pub lmp: u64,
     pub futility: u64,
+    pub cap_futility: u64,
     pub hist_prunes: u64,
     pub see_quiet: u64,
     pub see_noisy: u64,
@@ -162,6 +163,7 @@ impl Stats {
         line("IIR:", format!("{} reductions", self.iir));
         line("LMP:", format!("{} triggers (remaining quiets skipped)", self.lmp));
         line("Futility:", format!("{} triggers (remaining quiets skipped)", self.futility));
+        line("Cap futility:", format!("{} moves ({:.1}/Kn)", self.cap_futility, kn(self.cap_futility)));
         line("History prune:", format!("{} moves ({:.1}/Kn)", self.hist_prunes, kn(self.hist_prunes)));
         line(
             "SEE prune:",
@@ -1536,12 +1538,28 @@ impl Searcher {
                         self.stats.see_quiet += 1;
                         continue;
                     }
-                } else if on(P::UseSeeNoisy)
-                    && depth <= tp(P::SeeNoisyDepth)
-                    && !pos.see_ge(m, -tp(P::SeeNoisy) * depth, &see_vals())
-                {
-                    self.stats.see_noisy += 1;
-                    continue;
+                } else {
+                    // Capture futility: even winning the piece outright can't reach alpha.
+                    if on(P::UseCapFut) && !in_check && !is_promo(m) {
+                        let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
+                        if lmr_d <= tp(P::CapFutDepth)
+                            && static_eval
+                                + see_vals()[pos.captured_type(m)]
+                                + tp(P::CapFutBase)
+                                + tp(P::CapFutMul) * lmr_d
+                                <= alpha
+                        {
+                            self.stats.cap_futility += 1;
+                            continue;
+                        }
+                    }
+                    if on(P::UseSeeNoisy)
+                        && depth <= tp(P::SeeNoisyDepth)
+                        && !pos.see_ge(m, -tp(P::SeeNoisy) * depth, &see_vals())
+                    {
+                        self.stats.see_noisy += 1;
+                        continue;
+                    }
                 }
             }
 
