@@ -17,6 +17,8 @@ pub struct Entry {
     pub eval: i16,
     pub depth: u8,
     pub bound: u8,
+    /// Stored from a PV node, or from a node whose entry already said so.
+    pub pv: bool,
 }
 
 impl Entry {
@@ -25,7 +27,8 @@ impl Entry {
         self.mv as u64
             | (self.score as u16 as u64) << 16
             | (self.eval as u16 as u64) << 32
-            | (self.depth as u64) << 48
+            | (self.depth as u64 & 127) << 48
+            | (self.pv as u64) << 55
             | (self.bound as u64) << 56
     }
     #[inline(always)]
@@ -35,8 +38,9 @@ impl Entry {
             mv: d as u16 as Move,
             score: (d >> 16) as u16 as i16,
             eval: (d >> 32) as u16 as i16,
-            depth: (d >> 48) as u8,
+            depth: (d >> 48) as u8 & 127,
             bound: (d >> 56) as u8,
+            pv: d >> 55 & 1 != 0,
         }
     }
 }
@@ -78,7 +82,8 @@ struct Bucket([Slot; WAYS]);
 
 /// Buckets of 4 entries. An entry's `bound` byte also holds the generation
 /// (search number) it was written in: bits 0-1 the bound, bits 2-7 the
-/// generation. Replacement prefers, in a bucket: the same key; else an empty
+/// generation; the depth byte holds the depth (7 bits, depth < MAX_PLY)
+/// and the was-PV flag (bit 7). Replacement prefers, in a bucket: the same key; else an empty
 /// entry; else the entry with the lowest depth - 8 * age (old and shallow
 /// first), so quiescence stores no longer evict deep or PV entries.
 pub struct TT {
@@ -201,7 +206,7 @@ impl TT {
         None
     }
     #[inline(always)]
-    pub fn store(&self, key: u64, mv: Move, score: i32, eval: i32, depth: i32, bound: u8) {
+    pub fn store(&self, key: u64, mv: Move, score: i32, eval: i32, depth: i32, bound: u8, pv: bool) {
         let gen = self.gen.load(Relaxed);
         let b = unsafe { self.table.get_unchecked(self.idx(key)) };
         // Only the bound byte (bits 56-63: bound and generation) and depth
@@ -221,7 +226,7 @@ impl TT {
                 found = true;
                 break;
             }
-            let q = if bd & 3 == BOUND_NONE { i32::MIN } else { (d >> 48) as u8 as i32 - 8 * age(bd) };
+            let q = if bd & 3 == BOUND_NONE { i32::MIN } else { ((d >> 48) as u8 & 127) as i32 - 8 * age(bd) };
             if q < worst {
                 worst = q;
                 slot = k;
@@ -229,7 +234,9 @@ impl TT {
         }
         // Same position: keep the deeper result unless this one is exact,
         // nearly as deep, or the old one is from an earlier search.
-        if found && !(bound == BOUND_EXACT || depth + 3 >= (old >> 48) as u8 as i32 || age((old >> 56) as u8) != 0) {
+        if found
+            && !(bound == BOUND_EXACT || depth + 3 >= ((old >> 48) as u8 & 127) as i32 || age((old >> 56) as u8) != 0)
+        {
             return;
         }
         let mv = if mv == 0 && found { old as u16 as Move } else { mv };
@@ -238,8 +245,9 @@ impl TT {
             mv,
             score: score as i16,
             eval: eval as i16,
-            depth: depth.clamp(0, 255) as u8,
+            depth: depth.clamp(0, 127) as u8,
             bound: bound | (gen << 2),
+            pv,
         });
     }
     /// Permille of entries in use from the current search (first 1000).
@@ -281,7 +289,17 @@ mod tests {
 
     #[test]
     fn entry_roundtrip() {
-        let e = Entry { key: 0x0123_4567_89AB_CDEF, mv: 0xBEEF, score: -31000, eval: 32000, depth: 200, bound: 0xFF };
+        let e = Entry {
+            key: 0x0123_4567_89AB_CDEF,
+            mv: 0xBEEF,
+            score: -31000,
+            eval: 32000,
+            depth: 100,
+            bound: 0xFF,
+            pv: true,
+        };
+        assert_eq!(Entry::unpack(e.key, e.pack()), e);
+        let e = Entry { depth: 127, pv: false, ..e };
         assert_eq!(Entry::unpack(e.key, e.pack()), e);
     }
 
@@ -302,7 +320,7 @@ mod tests {
                         let key = keys[(r % keys.len() as u64) as usize];
                         if r >> 32 & 1 == 0 {
                             let (mv, score, eval, depth, bound) = fields(key, t, n);
-                            tt.store(key, mv, score, eval, depth, bound);
+                            tt.store(key, mv, score, eval, depth, bound, n & 1 == 0);
                         } else if let Some(e) = tt.probe(key) {
                             hits += 1;
                             let h = mix(key ^ e.score as i32 as u64);

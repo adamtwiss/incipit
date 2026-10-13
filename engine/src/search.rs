@@ -1198,9 +1198,12 @@ impl Searcher {
         let mut tt_score = 0;
         let mut tt_depth = -1;
         let mut tt_bound = BOUND_NONE;
+        // This node was a PV node in an earlier search (or iteration).
+        let mut tt_pv = false;
         if let Some(e) = tte {
             self.stats.tt_hits += 1;
             tt_move = e.mv;
+            tt_pv = e.pv;
             tt_score = e.score as i32;
             if tt_score >= MATE_BOUND {
                 tt_score -= ply as i32;
@@ -1254,7 +1257,7 @@ impl Searcher {
                         s
                     };
                     let ev = if in_check { -INF } else { self.evaluate(pos, ply) };
-                    self.tt.store(pos.hash, 0, ss, ev, (depth + 6).min(MAX_PLY as i32 - 1), bound);
+                    self.tt.store(pos.hash, 0, ss, ev, (depth + 6).min(MAX_PLY as i32 - 1), bound, pv_node || tt_pv);
                     return s;
                 }
             }
@@ -1413,7 +1416,7 @@ impl Searcher {
                     }
                     if v >= pc_beta {
                         let ss = if v >= MATE_BOUND { v + ply as i32 } else { v };
-                        self.tt.store(pos.hash, m, ss, raw_eval, depth - 3, BOUND_LOWER);
+                        self.tt.store(pos.hash, m, ss, raw_eval, depth - 3, BOUND_LOWER, pv_node || tt_pv);
                         self.stats.probcut_cuts += 1;
                         return v;
                     }
@@ -1628,6 +1631,10 @@ impl Searcher {
                     if tt_capture {
                         r += 1;
                     }
+                    // A node that was on the PV before deserves a closer look.
+                    if on(P::UseTtPv) && tt_pv && !pv_node {
+                        r -= 1;
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {
@@ -1746,7 +1753,7 @@ impl Searcher {
             } else if ss <= -MATE_BOUND {
                 ss -= ply as i32;
             }
-            self.tt.store(pos.hash, best_move, ss, raw_eval, depth, bound);
+            self.tt.store(pos.hash, best_move, ss, raw_eval, depth, bound, pv_node || tt_pv);
             if !in_check
                 && (best_move == 0 || !is_noisy(best_move))
                 && !(bound == BOUND_LOWER && best_score <= static_eval)
@@ -1966,7 +1973,7 @@ impl Searcher {
         } else if ss <= -MATE_BOUND {
             ss -= ply as i32;
         }
-        self.tt.store(pos.hash, best_move, ss, raw_eval, 0, bound);
+        self.tt.store(pos.hash, best_move, ss, raw_eval, 0, bound, pv_node || tte.is_some_and(|e| e.pv));
         best
     }
 }
