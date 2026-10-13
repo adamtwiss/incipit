@@ -377,6 +377,9 @@ pub struct SharedHist {
     cont: [[AtomicI16; 768]; 768],
     corr: [[AtomicI32; CORR_SIZE]; 2],
     corr_np: [[[AtomicI32; CORR_SIZE]; 2]; 2],
+    /// Continuation correction: by side to move and the previous move's
+    /// piece-square (as the continuation history indexes it; 0 = none).
+    corr_cont: [[AtomicI32; 768]; 2],
 }
 
 impl SharedHist {
@@ -393,6 +396,7 @@ impl SharedHist {
             .iter()
             .flatten()
             .chain(self.corr_np.iter().flatten().flatten())
+            .chain(self.corr_cont.iter().flatten())
             .map(|x| x.load(Ordering::Relaxed).abs())
             .max()
             .unwrap();
@@ -762,21 +766,26 @@ impl Searcher {
     }
 
     #[inline(always)]
-    fn corrected(&self, pos: &Position, raw: i32) -> i32 {
+    /// The eval corrected by the pawn, non-pawn and continuation tables
+    /// (`prev1`: the previous move's piece-square, 0 for none).
+    fn corrected(&self, pos: &Position, raw: i32, prev1: usize) -> i32 {
         let m = CORR_SIZE - 1;
         if !on(P::UseCorrHist) {
             return Self::damp(pos, raw).clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
         }
         let (corr, corr_np) = (&self.sh.corr[pos.stm], &self.sh.corr_np[pos.stm]);
-        let c = (tp(P::CorrPawnWeight) * corr[(pos.pawn_key as usize) & m].load(Ordering::Relaxed)
+        let mut c = tp(P::CorrPawnWeight) * corr[(pos.pawn_key as usize) & m].load(Ordering::Relaxed)
             + tp(P::CorrNonPawnWeight)
                 * (corr_np[0][(pos.np_key[0] as usize) & m].load(Ordering::Relaxed)
-                    + corr_np[1][(pos.np_key[1] as usize) & m].load(Ordering::Relaxed)))
-            / (128 * CORR_GRAIN);
-        Self::damp(pos, raw + c).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+                    + corr_np[1][(pos.np_key[1] as usize) & m].load(Ordering::Relaxed));
+        if on(P::UseCorrCont) {
+            // Row 0 (no previous move) is never updated, so it reads as 0.
+            c += tp(P::CorrContWeight) * self.sh.corr_cont[pos.stm][prev1].load(Ordering::Relaxed);
+        }
+        Self::damp(pos, raw + c / (128 * CORR_GRAIN)).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
-    fn update_corr(&mut self, pos: &Position, depth: i32, diff: i32) {
+    fn update_corr(&mut self, pos: &Position, depth: i32, diff: i32, prev1: usize) {
         let w = (depth + 1).min(tp(P::CorrUpdateCap));
         let target = diff.clamp(-tp(P::CorrDiffClamp), tp(P::CorrDiffClamp)) * CORR_GRAIN;
         let m = CORR_SIZE - 1;
@@ -798,6 +807,9 @@ impl Searcher {
         f(&corr[(pos.pawn_key as usize) & m]);
         f(&corr_np[0][(pos.np_key[0] as usize) & m]);
         f(&corr_np[1][(pos.np_key[1] as usize) & m]);
+        if on(P::UseCorrCont) && prev1 != 0 {
+            f(&self.sh.corr_cont[pos.stm][prev1]);
+        }
     }
 
     /// Whether playing `m` at the root reaches a position already in the game
@@ -1260,6 +1272,10 @@ impl Searcher {
             }
         }
 
+        // The moves leading here, as the continuation history indexes them.
+        let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
+        let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
+        let prev4 = if ply >= 4 { self.stack[ply - 4].cont_idx } else { 0 };
         let static_eval;
         let mut eval;
         let mut raw_eval = -INF;
@@ -1271,7 +1287,7 @@ impl Searcher {
             eval = static_eval;
         } else {
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
-            static_eval = self.corrected(pos, raw_eval);
+            static_eval = self.corrected(pos, raw_eval, prev1);
             eval = static_eval;
             // The stored score replaces the eval only where the TT cutoff
             // would trust it (the fifty-move guard), so it can't drive pruning
@@ -1429,9 +1445,6 @@ impl Searcher {
         let mut list = MoveList::new();
         let mut scores = Stack256::<i32>::new();
         let us = pos.stm;
-        let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
-        let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
-        let prev4 = if ply >= 4 { self.stack[ply - 4].cont_idx } else { 0 };
         let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
         let mut generated = false;
         if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
@@ -1752,7 +1765,7 @@ impl Searcher {
                 && !(bound == BOUND_LOWER && best_score <= static_eval)
                 && !(bound == BOUND_UPPER && best_score >= static_eval)
             {
-                self.update_corr(pos, depth, best_score - static_eval);
+                self.update_corr(pos, depth, best_score - static_eval, prev1);
             }
         }
         best_score
@@ -1876,7 +1889,8 @@ impl Searcher {
             best = -INF;
         } else {
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
-            best = self.corrected(pos, raw_eval);
+            let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
+            best = self.corrected(pos, raw_eval, prev1);
             if let Some(e) = tte {
                 let s = e.score as i32;
                 if s.abs() < MATE_BOUND
@@ -1933,6 +1947,8 @@ impl Searcher {
             self.prefetch_eval(child.hash);
             legal += 1;
             self.push_acc(ply, pos, &child, m);
+            // For the child's continuation correction.
+            self.stack[ply].cont_idx = pos.board[mfrom(m)] as usize * 64 + mto(m);
             let score = -self.qsearch(&child, -beta, -alpha, ply + 1);
             if self.stopped {
                 return 0;

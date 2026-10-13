@@ -115,6 +115,10 @@ params! {
     CorrUpdateCap = "CorrUpdateCap", 18, 4, 64, 3;
     CorrDiffClamp = "CorrDiffClamp", 404, 100, 1000, 45;
     CorrLimit = "CorrLimit", 57, 16, 256, 12;
+    // Weight of the continuation correction (keyed by the previous move's
+    // piece and square): half the pawn table's original weight of 128, as
+    // one non-pawn table had, until SPSA says otherwise.
+    CorrContWeight = "CorrContWeight", 64, 0, 256, 13;
     // Network output multiplier in percent, applied to every search eval. Lets a
     // net trained on differently scaled labels be run at Incipit's eval scale
     // (which the pruning margins and other cp thresholds are tuned to) without
@@ -172,6 +176,8 @@ params! {
     // Correction history: incremental updates toward zero residual (1) or the
     // old average toward the residual (0).
     UseCorrIncr = "UseCorrIncr", 1, 0, 1, 0;
+    // Continuation correction history (the previous move's piece-square).
+    UseCorrCont = "UseCorrCont", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
