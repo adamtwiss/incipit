@@ -1727,13 +1727,15 @@ impl Searcher {
                     self.killers[ply][0] = m;
                 }
                 self.update_quiet(pos, m, bonus, prev1, prev2, prev4);
-                for k in 0..nq {
-                    self.update_quiet(pos, quiets[k], -bonus, prev1, prev2, prev4);
-                }
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ct = pos.captured_type(m);
                 upd(&mut self.capt[pc][mto(m)][ct], bonus);
+            }
+            // The quiets and captures tried before the cutoff failed,
+            // whatever kind of move cut.
+            for k in 0..nq {
+                self.update_quiet(pos, quiets[k], -bonus, prev1, prev2, prev4);
             }
             for k in 0..nc {
                 let cm = capts[k];
