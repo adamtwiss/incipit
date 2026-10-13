@@ -1291,7 +1291,10 @@ impl Searcher {
             };
         self.killers[ply + 1] = [0, 0];
 
-        if !pv_node && !in_check && excluded == 0 {
+        // No static pruning at the root of a null-move verification search:
+        // there it must search the position, or a reverse-futility or
+        // razoring cut "confirms" the null move without testing zugzwang.
+        if !pv_node && !in_check && excluded == 0 && ply != self.no_nmp_ply {
             // reverse futility pruning
             if on(P::UseRfp)
                 && depth <= tp(P::RfpDepth)
