@@ -59,6 +59,9 @@ params! {
     HistOff = "HistOff", 187, 0, 500, 25;
     HistMax = "HistMax", 2734, 1000, 4000, 150;
     SeDouble = "SeDouble", 12, 5, 50, 2;
+    // A reduced search that beats the best score so far by more than LmrDeeper is
+    // re-searched one ply deeper than the full depth (half a pawn, round value).
+    LmrDeeper = "LmrDeeper", 50, 10, 200, 10;
     RfpDepth = "RfpDepth", 8, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 23, 0, 60, 3;
@@ -146,6 +149,7 @@ params! {
     UseMulticut = "UseMulticut", 1, 0, 1, 0;
     UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;
     UseLmr = "UseLmr", 1, 0, 1, 0;
+    UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
