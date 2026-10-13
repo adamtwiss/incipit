@@ -1648,6 +1648,10 @@ impl Searcher {
                     }
                     if cut_node {
                         r += 1;
+                        // Expected to fail high and no TT move to do it: one more.
+                        if on(P::UseLmrCutNoTt) && tt_move == 0 {
+                            r += 1;
+                        }
                     }
                     if !improving {
                         r += 1;
