@@ -64,6 +64,7 @@ pub struct Stats {
     pub lmp: u64,
     pub futility: u64,
     pub hist_prunes: u64,
+    pub cap_hist_prunes: u64,
     pub see_quiet: u64,
     pub see_noisy: u64,
     pub lmr_searches: u64,
@@ -163,6 +164,7 @@ impl Stats {
         line("LMP:", format!("{} triggers (remaining quiets skipped)", self.lmp));
         line("Futility:", format!("{} triggers (remaining quiets skipped)", self.futility));
         line("History prune:", format!("{} moves ({:.1}/Kn)", self.hist_prunes, kn(self.hist_prunes)));
+        line("Cap hist prune:", format!("{} moves ({:.1}/Kn)", self.cap_hist_prunes, kn(self.cap_hist_prunes)));
         line(
             "SEE prune:",
             format!(
@@ -1536,12 +1538,25 @@ impl Searcher {
                         self.stats.see_quiet += 1;
                         continue;
                     }
-                } else if on(P::UseSeeNoisy)
-                    && depth <= tp(P::SeeNoisyDepth)
-                    && !pos.see_ge(m, -tp(P::SeeNoisy) * depth, &see_vals())
-                {
-                    self.stats.see_noisy += 1;
-                    continue;
+                } else {
+                    // Capture-history pruning, as history pruning does for quiets.
+                    if on(P::UseCapHistPrune) && !in_check {
+                        let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
+                        let pc = pos.board[mfrom(m)] as usize;
+                        if lmr_d <= tp(P::HistPruneDepth)
+                            && (self.capt[pc][mto(m)][pos.captured_type(m)] as i32) < -tp(P::CapHistPrune) * depth
+                        {
+                            self.stats.cap_hist_prunes += 1;
+                            continue;
+                        }
+                    }
+                    if on(P::UseSeeNoisy)
+                        && depth <= tp(P::SeeNoisyDepth)
+                        && !pos.see_ge(m, -tp(P::SeeNoisy) * depth, &see_vals())
+                    {
+                        self.stats.see_noisy += 1;
+                        continue;
+                    }
                 }
             }
 

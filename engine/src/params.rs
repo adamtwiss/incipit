@@ -49,6 +49,10 @@ params! {
     FutBase = "FutBase", 82, 30, 250, 11;
     FutMul = "FutMul", 93, 40, 200, 8;
     HistPrune = "HistPrune", 3124, 500, 5000, 225;
+    // Capture-history pruning at lmr_d <= HistPruneDepth: skip a capture whose capture
+    // history is below -CapHistPrune * depth. Same +-16384 scale as the quiet history, so
+    // it starts at the quiet threshold's round value.
+    CapHistPrune = "CapHistPrune", 3000, 500, 5000, 225;
     SeeQuiet = "SeeQuiet", 8, 0, 80, 4;
     SeeNoisy = "SeeNoisy", 91, 10, 200, 10;
     LmrBaseX100 = "LmrBaseX100", 44, 30, 130, 5;
@@ -139,6 +143,7 @@ params! {
     UseLmp = "UseLmp", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
+    UseCapHistPrune = "UseCapHistPrune", 1, 0, 1, 0;
     UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
     UseSeeNoisy = "UseSeeNoisy", 1, 0, 1, 0;
     UseSe = "UseSe", 1, 0, 1, 0;
