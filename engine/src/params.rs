@@ -55,6 +55,9 @@ params! {
     LmrDivX100 = "LmrDivX100", 311, 150, 350, 10;
     LmrHistDiv = "LmrHistDiv", 8418, 3000, 16000, 650;
     AspDelta = "AspDelta", 15, 3, 40, 2;
+    // The aspiration window also widens with the score: delta = AspDelta + |score| /
+    // AspScoreDiv (16: the bench's best of 8/16 in the 2026-10-13 review's node counts).
+    AspScoreDiv = "AspScoreDiv", 16, 4, 64, 3;
     HistMul = "HistMul", 302, 100, 500, 20;
     HistOff = "HistOff", 187, 0, 500, 25;
     HistMax = "HistMax", 2734, 1000, 4000, 150;
@@ -154,6 +157,7 @@ params! {
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
     UseAsp = "UseAsp", 1, 0, 1, 0;
+    UseAspScore = "UseAspScore", 1, 0, 1, 0;
     // Soft time limit scaled by best-move node share and stability (0: plain soft limit).
     UseTm = "UseTm", 1, 0, 1, 0;
     // Don't start a depth predicted (elapsed x last branching factor) to end past

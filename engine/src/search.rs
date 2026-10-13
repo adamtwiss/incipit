@@ -928,6 +928,10 @@ impl Searcher {
             let nodes_at_start = self.nodes;
             self.root_depth = d;
             let mut delta = tp(P::AspDelta);
+            if on(P::UseAspScore) {
+                // Big scores swing more between iterations: open the window with them.
+                delta += (score as i32).abs() / tp(P::AspScoreDiv);
+            }
             let (mut a, mut b) = if d >= 4 && on(P::UseAsp) { (score - delta, score + delta) } else { (-INF, INF) };
             let mut fh_move: Move = 0;
             let mut fh_score = 0;
