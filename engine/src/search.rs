@@ -272,6 +272,11 @@ impl PonderTm {
 
 /// SEE piece values by piece type: the pawn is the unit (100) and the others are
 /// SPSA parameters, starting from textbook values; constants outside tune builds.
+/// A capture whose static exchange gain is at least this (cp, slightly
+/// below zero) is ordered as a good capture; losing captures follow the
+/// quiets.
+const GOOD_CAPTURE_SEE: i32 = -50;
+
 #[inline(always)]
 fn see_vals() -> [i32; 7] {
     [100, tp(P::SeeKnight), tp(P::SeeBishop), tp(P::SeeRook), tp(P::SeeQueen), 20000, 0]
@@ -1391,14 +1396,21 @@ impl Searcher {
                     self.hash_hist.push(pos.hash);
                     let mut v = -self.qsearch(&child, -pc_beta, -pc_beta + 1, ply + 1);
                     if v >= pc_beta {
-                        v = -self.negamax(
-                            &child,
-                            -pc_beta,
-                            -pc_beta + 1,
-                            depth - tp(P::ProbcutRed),
-                            ply + 1,
-                            !cut_node,
-                        );
+                        // Confirm with a reduced search; at depth 0 that would
+                        // be the same qsearch again, so only its repetition
+                        // check is kept.
+                        if depth - tp(P::ProbcutRed) > 0 {
+                            v = -self.negamax(
+                                &child,
+                                -pc_beta,
+                                -pc_beta + 1,
+                                depth - tp(P::ProbcutRed),
+                                ply + 1,
+                                !cut_node,
+                            );
+                        } else if self.is_repetition(&child) {
+                            v = 0;
+                        }
                     }
                     self.hash_hist.pop();
                     if self.stopped {
@@ -1531,6 +1543,10 @@ impl Searcher {
                     }
                 } else if on(P::UseSeeNoisy)
                     && depth <= tp(P::SeeNoisyDepth)
+                    // A good capture (ordered so by its SEE against
+                    // GOOD_CAPTURE_SEE) passes any bar at or below that
+                    // without another exchange evaluation.
+                    && (mscore < 0 || -tp(P::SeeNoisy) * depth > GOOD_CAPTURE_SEE)
                     && !pos.see_ge(m, -tp(P::SeeNoisy) * depth, &see_vals())
                 {
                     self.stats.see_noisy += 1;
@@ -1563,6 +1579,8 @@ impl Searcher {
                 self.stack[ply].excluded = m;
                 let v = self.negamax(pos, sbeta - 1, sbeta, (depth - 1) / 2, ply, cut_node);
                 self.stack[ply].excluded = 0;
+                // The exclusion search ran at this ply: its PV is not ours.
+                self.pv_len[ply] = 0;
                 if self.stopped {
                     return 0;
                 }
@@ -1795,7 +1813,7 @@ impl Searcher {
                     // pawn is nearly always at least as good, and a negative
                     // score lets them be reduced like losing captures.
                     -(1 << 29) + base
-                } else if pos.see_ge(m, -50, &see_vals()) {
+                } else if pos.see_ge(m, GOOD_CAPTURE_SEE, &see_vals()) {
                     (1 << 28) + base
                 } else {
                     -(1 << 28) + base
