@@ -55,6 +55,13 @@ pub fn is_promo(m: Move) -> bool {
 pub fn promo_pt(m: Move) -> usize {
     ((mflag(m) & 3) + 1) as usize
 }
+/// Kinds of moves for `Position::gen`: captures, en passant and the queen
+/// and knight promotions; quiet moves (pushes, piece moves, castling); the
+/// bishop and rook promotions (searched last, after the quiets).
+pub const GEN_NOISY: u8 = 1;
+pub const GEN_QUIET: u8 = 2;
+pub const GEN_UNDERPROMO: u8 = 4;
+
 #[inline(always)]
 pub fn is_noisy(m: Move) -> bool {
     mflag(m) & 12 != 0
@@ -539,7 +546,19 @@ impl Position {
         self.checkers = 0;
     }
 
+    /// All pseudo-legal moves, or the noisy ones (captures, en passant,
+    /// queen and knight promotions) alone.
     pub fn gen_moves(&self, list: &mut MoveList, noisy_only: bool) {
+        self.gen(list, if noisy_only { GEN_NOISY } else { GEN_NOISY | GEN_QUIET | GEN_UNDERPROMO });
+    }
+
+    /// The pseudo-legal moves of the kinds in `want` (GEN_* bits), in a
+    /// fixed order: pawn promotions and pushes, pawn captures, en passant,
+    /// knight, bishop and queen, rook and queen, king moves, castling. The
+    /// relative order of the moves of one kind is the same whatever else is
+    /// generated with them, so the search can generate the kinds in stages.
+    pub fn gen(&self, list: &mut MoveList, want: u8) {
+        let (noisy, quiet) = (want & GEN_NOISY != 0, want & GEN_QUIET != 0);
         let us = self.stm;
         let them = us ^ 1;
         let occ = self.occ();
@@ -564,16 +583,18 @@ impl Position {
         let pushes = push1 & evade;
         for to in Bits(pushes & rank8) {
             let from = (to as i32 - up) as usize;
-            list.push(mk(from, to, F_PROMO + 3));
-            // The knight promotion counts as noisy too: it can mate or fork
-            // where the queen stalemates (8/5KP1/6Bk/5R2/8/8/8/8 w: g7g8n#).
-            list.push(mk(from, to, F_PROMO));
-            if !noisy_only {
+            if noisy {
+                list.push(mk(from, to, F_PROMO + 3));
+                // The knight promotion counts as noisy too: it can mate or fork
+                // where the queen stalemates (8/5KP1/6Bk/5R2/8/8/8/8 w: g7g8n#).
+                list.push(mk(from, to, F_PROMO));
+            }
+            if want & GEN_UNDERPROMO != 0 {
                 list.push(mk(from, to, F_PROMO + 1));
                 list.push(mk(from, to, F_PROMO + 2));
             }
         }
-        if !noisy_only {
+        if quiet {
             let push2 = sh(push1 & rank3, up) & empty & evade;
             for to in Bits(pushes & !rank8) {
                 list.push(mk((to as i32 - up) as usize, to, F_QUIET));
@@ -583,6 +604,9 @@ impl Position {
             }
         }
         for (mask, d) in [(!FILE_A, up - 1), (!FILE_H, up + 1)] {
+            if !noisy {
+                break;
+            }
             let caps = sh(pawns & mask, d) & enemy & evade;
             for to in Bits(caps & rank8) {
                 let from = (to as i32 - d) as usize;
@@ -597,7 +621,7 @@ impl Position {
         }
         // En passant also answers a check by the pawn it captures (which isn't
         // on the ep square itself).
-        let ep_ok = self.ep != NO_SQ && {
+        let ep_ok = noisy && self.ep != NO_SQ && {
             let victim = (self.ep as i32 - up) as usize;
             evade >> self.ep & 1 != 0 || self.checkers >> victim & 1 != 0
         };
@@ -607,7 +631,7 @@ impl Position {
                 list.push(mk(from, e, F_EP));
             }
         }
-        let targets = if noisy_only { enemy } else { enemy | empty };
+        let targets = if noisy { enemy } else { 0 } | if quiet { empty } else { 0 };
         let mut add = |from: usize, att: u64| {
             for to in Bits(att & targets) {
                 list.push(mk(from, to, if enemy & (1u64 << to) != 0 { F_CAPTURE } else { F_QUIET }));
@@ -625,7 +649,7 @@ impl Position {
         }
         let ksq = self.king_sq(us);
         add(ksq, king_attacks(ksq));
-        if !noisy_only && self.checkers == 0 && self.castling & (3 << (2 * us)) != 0 {
+        if quiet && self.checkers == 0 && self.castling & (3 << (2 * us)) != 0 {
             // The king ends on the g (c) file and the rook on the f (d) file.
             // Every square either piece crosses or lands on must be empty apart
             // from the two of them, and no square the king crosses or lands on

@@ -338,7 +338,9 @@ pub struct Searcher {
 }
 
 #[inline(always)]
-fn pick(moves: &mut [Move], scores: &mut [i32], i: usize, n: usize) {
+/// Swaps the best-scored move of `i..n` to position i (the first of equal
+/// scores); returns where it came from, so the swap can be undone.
+fn pick(moves: &mut [Move], scores: &mut [i32], i: usize, n: usize) -> usize {
     // Slicing to n once lets the loop run without bounds checks.
     let (moves, scores) = (&mut moves[..n], &mut scores[..n]);
     let mut bi = i;
@@ -352,6 +354,7 @@ fn pick(moves: &mut [Move], scores: &mut [i32], i: usize, n: usize) {
     }
     scores.swap(i, bi);
     moves.swap(i, bi);
+    bi
 }
 
 #[inline(always)]
@@ -1426,13 +1429,23 @@ impl Searcher {
         let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
         let prev4 = if ply >= 4 { self.stack[ply - 4].cont_idx } else { 0 };
         let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
-        let mut generated = false;
+        // Moves come in stages: the TT move, the noisy moves, the quiets,
+        // each generated and scored when the stage before is used up, so a
+        // node that cuts on the TT move or a capture never generates or
+        // scores its quiets. The order is the usual one: good captures,
+        // killers, quiets by history, losing captures and underpromotions
+        // last; so the quiets are generated as soon as only losing captures
+        // (negative scores) remain in the noisy stage.
+        const STAGE_TT: u8 = 0;
+        const STAGE_NOISY: u8 = 1;
+        const STAGE_QUIET: u8 = 2;
+        let mut stage = STAGE_TT;
         if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
             list.push(tt_move);
             scores.push(1 << 30);
         } else {
-            generated = true;
-            pos.gen_moves(&mut list, false);
+            stage = STAGE_NOISY;
+            pos.gen(&mut list, GEN_NOISY | GEN_UNDERPROMO);
             self.score_moves(pos, list.as_slice(), &mut scores, 0, killers, prev1, prev2, prev4);
         }
         let mut best_score = -INF;
@@ -1452,25 +1465,27 @@ impl Searcher {
         let mut compacted = false;
         loop {
             if i >= n {
-                if generated {
+                if stage == STAGE_QUIET {
                     break;
                 }
-                generated = true;
-                let mut tmp = MoveList::new();
-                pos.gen_moves(&mut tmp, false);
-                for k in 0..tmp.len() {
-                    if tmp[k] != tt_move {
-                        list.push(tmp[k]);
-                    }
+                stage += 1;
+                if stage == STAGE_NOISY {
+                    n = self.gen_stage(
+                        pos,
+                        &mut list,
+                        &mut scores,
+                        GEN_NOISY | GEN_UNDERPROMO,
+                        tt_move,
+                        killers,
+                        prev1,
+                        prev2,
+                        prev4,
+                    );
+                } else if !skip_quiets {
+                    n = self.gen_stage(pos, &mut list, &mut scores, GEN_QUIET, tt_move, killers, prev1, prev2, prev4);
                 }
-                n = list.len();
-                // Scored so far: the TT move, so the new scores line up with list[i..].
-                debug_assert_eq!(scores.len(), i);
-                self.score_moves(pos, &list.as_slice()[i..n], &mut scores, tt_move, killers, prev1, prev2, prev4);
                 compacted = false;
-                if i >= n {
-                    break;
-                }
+                continue;
             }
             if skip_quiets && !compacted {
                 compacted = true;
@@ -1487,7 +1502,19 @@ impl Searcher {
                     break;
                 }
             }
-            pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+            let from = pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+            if stage == STAGE_NOISY && scores[i] < 0 {
+                // Only losing captures and underpromotions are left: the
+                // quiets come before them. The pick is undone first, so
+                // equal scores keep their generation order.
+                list.as_mut_slice().swap(i, from);
+                scores.as_mut_slice().swap(i, from);
+                stage = STAGE_QUIET;
+                if !skip_quiets {
+                    n = self.gen_stage(pos, &mut list, &mut scores, GEN_QUIET, tt_move, killers, prev1, prev2, prev4);
+                }
+                continue;
+            }
             let m = list[i];
             let mscore = scores[i];
             i += 1;
@@ -1765,6 +1792,38 @@ impl Searcher {
         if prev4 != 0 {
             upd_shared(&self.sh.cont[prev4][ci], bonus);
         }
+    }
+
+    /// Appends the moves of the kinds `want` (all but the TT move) to the
+    /// list, scored; returns the new length. The list has not been
+    /// compacted (that only happens in the last stage), so every entry up
+    /// to its length is scored.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn gen_stage(
+        &self,
+        pos: &Position,
+        list: &mut MoveList,
+        scores: &mut Stack256<i32>,
+        want: u8,
+        tt_move: Move,
+        killers: [Move; 2],
+        prev1: usize,
+        prev2: usize,
+        prev4: usize,
+    ) -> usize {
+        let old = list.len();
+        debug_assert_eq!(scores.len(), old);
+        let mut tmp = MoveList::new();
+        pos.gen(&mut tmp, want);
+        for k in 0..tmp.len() {
+            if tmp[k] != tt_move {
+                list.push(tmp[k]);
+            }
+        }
+        let n = list.len();
+        self.score_moves(pos, &list.as_slice()[old..n], scores, tt_move, killers, prev1, prev2, prev4);
+        n
     }
 
     #[inline]
