@@ -1534,17 +1534,38 @@ impl Searcher {
                 }
             }
             let from = pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
-            if stage == STAGE_NOISY && scores[i] < 0 {
-                // Only losing captures and underpromotions are left: the
-                // quiets come before them. The pick is undone first, so
-                // equal scores keep their generation order.
-                list.as_mut_slice().swap(i, from);
-                scores.as_mut_slice().swap(i, from);
-                stage = STAGE_QUIET;
-                if !skip_quiets {
-                    n = self.gen_stage(pos, &mut list, &mut scores, GEN_QUIET, tt_move, killers, prev1, prev2, prev4);
+            if stage == STAGE_NOISY {
+                if scores[i] < 0 {
+                    // Only losing captures and underpromotions are left: the
+                    // quiets come before them. The pick is undone first, so
+                    // equal scores keep their generation order.
+                    list.as_mut_slice().swap(i, from);
+                    scores.as_mut_slice().swap(i, from);
+                    stage = STAGE_QUIET;
+                    if !skip_quiets {
+                        n = self.gen_stage(
+                            pos,
+                            &mut list,
+                            &mut scores,
+                            GEN_QUIET,
+                            tt_move,
+                            killers,
+                            prev1,
+                            prev2,
+                            prev4,
+                        );
+                    }
+                    continue;
                 }
-                continue;
+                if scores[i] >= (1 << 28) && !pos.see_ge(list[i], tp(P::GoodCaptureSee), &see_vals()) {
+                    // A losing capture after all: it goes behind the quiets
+                    // (score_moves). The pick is undone so the list keeps
+                    // its generation order, and the pick runs again.
+                    list.as_mut_slice().swap(i, from);
+                    scores.as_mut_slice().swap(i, from);
+                    scores[from] -= 1 << 29;
+                    continue;
+                }
             }
             let m = list[i];
             let mscore = scores[i];
@@ -1923,10 +1944,12 @@ impl Searcher {
                     // pawn is nearly always at least as good, and a negative
                     // score lets them be reduced like losing captures.
                     -(1 << 29) + base
-                } else if pos.see_ge(m, tp(P::GoodCaptureSee), &see_vals()) {
-                    (1 << 28) + base
                 } else {
-                    -(1 << 28) + base
+                    // Scored as a good capture; the move loop runs the
+                    // exchange evaluation when the move is picked and
+                    // demotes a losing one by 1 << 29, so captures that are
+                    // never reached are never evaluated.
+                    (1 << 28) + base
                 }
             } else if m == killers[0] {
                 (1 << 27) + 2
