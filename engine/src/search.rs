@@ -1177,7 +1177,7 @@ impl Searcher {
             if !root && self.is_repetition(pos) {
                 return 0;
             }
-            return self.qsearch(pos, alpha, beta, ply);
+            return self.qsearch(pos, alpha, beta, ply, true);
         }
         self.nodes += 1;
         if self.nodes & 1023 == 0 {
@@ -1339,7 +1339,7 @@ impl Searcher {
             // razoring
             if on(P::UseRazor) && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth * depth <= alpha {
                 self.stats.razor_tries += 1;
-                let v = self.qsearch(pos, alpha, alpha + 1, ply);
+                let v = self.qsearch(pos, alpha, alpha + 1, ply, false);
                 if v <= alpha {
                     self.stats.razor_cuts += 1;
                     return v;
@@ -1423,7 +1423,7 @@ impl Searcher {
                     self.stack[ply].mv = m;
                     self.stack[ply].cont_idx = pc * 64 + mto(m);
                     self.hash_hist.push(pos.hash);
-                    let mut v = -self.qsearch(&child, -pc_beta, -pc_beta + 1, ply + 1);
+                    let mut v = -self.qsearch(&child, -pc_beta, -pc_beta + 1, ply + 1, false);
                     if v >= pc_beta {
                         // Confirm with a reduced search; at depth 0 that would
                         // be the same qsearch again, so only its repetition
@@ -1937,7 +1937,9 @@ impl Searcher {
         }
     }
 
-    fn qsearch(&mut self, pos: &Position, mut alpha: i32, beta: i32, ply: usize) -> i32 {
+    /// `checks`: also try the quiet moves that give check (the first
+    /// quiescence ply only, from the main search).
+    fn qsearch(&mut self, pos: &Position, mut alpha: i32, beta: i32, ply: usize, checks: bool) -> i32 {
         self.nodes += 1;
         self.stats.qs_nodes += 1;
         if self.nodes & 1023 == 0 {
@@ -2012,6 +2014,17 @@ impl Searcher {
         }
         let mut list = MoveList::new();
         pos.gen_moves(&mut list, !in_check);
+        if checks && !in_check && on(P::UseQsChecks) {
+            // Quiet direct checks, after the captures; SEE below drops the
+            // ones that hang the piece.
+            let mut quiets = MoveList::new();
+            pos.gen(&mut quiets, GEN_QUIET);
+            for k in 0..quiets.len() {
+                if pos.gives_direct_check(quiets[k]) {
+                    list.push(quiets[k]);
+                }
+            }
+        }
         let mut scores = Stack256::<i32>::new();
         for &m in list.as_slice() {
             let score = if m == tt_move {
@@ -2050,7 +2063,7 @@ impl Searcher {
             self.push_acc(ply, pos, &child, m);
             // For the child's continuation correction.
             self.stack[ply].cont_idx = pos.board[mfrom(m)] as usize * 64 + mto(m);
-            let score = -self.qsearch(&child, -beta, -alpha, ply + 1);
+            let score = -self.qsearch(&child, -beta, -alpha, ply + 1, false);
             if self.stopped {
                 return 0;
             }

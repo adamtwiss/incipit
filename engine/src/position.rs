@@ -441,6 +441,25 @@ impl Position {
             | (rook_attacks(sq, occ) & (self.pieces[ROOK] | self.pieces[QUEEN]))
     }
 
+    /// Whether `m` attacks the enemy king from its destination: a direct
+    /// check (discovered checks are not seen). Not for king moves.
+    #[inline]
+    pub fn gives_direct_check(&self, m: Move) -> bool {
+        let (from, to) = (mfrom(m), mto(m));
+        let king = 1u64 << self.king_sq(self.stm ^ 1);
+        let occ = (self.occ() & !(1u64 << from)) | (1u64 << to);
+        let pt = if is_promo(m) { promo_pt(m) } else { pc_type(self.board[from]) };
+        let att = match pt {
+            PAWN => pawn_attacks(self.stm, to),
+            KNIGHT => knight_attacks(to),
+            BISHOP => bishop_attacks(to, occ),
+            ROOK => rook_attacks(to, occ),
+            QUEEN => bishop_attacks(to, occ) | rook_attacks(to, occ),
+            _ => 0,
+        };
+        att & king != 0
+    }
+
     fn update_castle_touch(&mut self) {
         self.castle_touch = 0;
         for r in 0..4 {
