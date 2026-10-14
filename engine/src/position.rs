@@ -441,6 +441,26 @@ impl Position {
             | (rook_attacks(sq, occ) & (self.pieces[ROOK] | self.pieces[QUEEN]))
     }
 
+    /// The pieces of `us` pinned to their king by an enemy slider: each may
+    /// move only along the line between the king and the pinner.
+    #[inline]
+    pub fn pinned(&self, us: usize) -> u64 {
+        let ksq = self.king_sq(us);
+        let them = self.colors[us ^ 1];
+        let occ = self.occ();
+        let snipers = (bishop_attacks(ksq, 0) & (self.pieces[BISHOP] | self.pieces[QUEEN])
+            | rook_attacks(ksq, 0) & (self.pieces[ROOK] | self.pieces[QUEEN]))
+            & them;
+        let mut pinned = 0;
+        for s in Bits(snipers) {
+            let b = between(ksq, s) & occ;
+            if b != 0 && b & (b - 1) == 0 && b & self.colors[us] != 0 {
+                pinned |= b;
+            }
+        }
+        pinned
+    }
+
     fn update_castle_touch(&mut self) {
         self.castle_touch = 0;
         for r in 0..4 {
@@ -579,7 +599,15 @@ impl Position {
         // The legality test in make_move still handles pins and king safety;
         // this only spares generating and trying moves that can't help.
         let evade = self.evade_mask();
-        let push1 = sh(pawns, up) & empty;
+        // A pinned piece can only move along its pin line, so its other
+        // moves (illegal, and rejected by make_move) are not generated: a
+        // pinned knight has none, a pinned pawn pushes only on the king's
+        // file and captures only toward the pinner.
+        let ksq = self.king_sq(us);
+        let pinned = self.pinned(us);
+        let free_pawns = pawns & !pinned;
+        let pinned_push = pawns & pinned & FILE_A << (ksq & 7);
+        let push1 = (sh(free_pawns | pinned_push, up)) & empty;
         let pushes = push1 & evade;
         for to in Bits(pushes & rank8) {
             let from = (to as i32 - up) as usize;
@@ -607,7 +635,13 @@ impl Position {
             if !noisy {
                 break;
             }
-            let caps = sh(pawns & mask, d) & enemy & evade;
+            let mut caps = sh(free_pawns & mask, d) & enemy & evade;
+            for from in Bits(pawns & pinned & mask) {
+                let to = (from as i32 + d) as usize;
+                if enemy & evade & line(ksq, from) & (1u64 << to) != 0 {
+                    caps |= 1u64 << to;
+                }
+            }
             for to in Bits(caps & rank8) {
                 let from = (to as i32 - d) as usize;
                 list.push(mk(from, to, F_PROMO_CAP + 3));
@@ -638,16 +672,16 @@ impl Position {
             }
         };
         let piece_targets = evade;
-        for from in Bits(self.pcs(us, KNIGHT)) {
+        let pin_line = |from: usize| if pinned >> from & 1 != 0 { line(ksq, from) } else { !0 };
+        for from in Bits(self.pcs(us, KNIGHT) & !pinned) {
             add(from, knight_attacks(from) & piece_targets);
         }
         for from in Bits((self.pieces[BISHOP] | self.pieces[QUEEN]) & self.colors[us]) {
-            add(from, bishop_attacks(from, occ) & piece_targets);
+            add(from, bishop_attacks(from, occ) & piece_targets & pin_line(from));
         }
         for from in Bits((self.pieces[ROOK] | self.pieces[QUEEN]) & self.colors[us]) {
-            add(from, rook_attacks(from, occ) & piece_targets);
+            add(from, rook_attacks(from, occ) & piece_targets & pin_line(from));
         }
-        let ksq = self.king_sq(us);
         add(ksq, king_attacks(ksq));
         if quiet && self.checkers == 0 && self.castling & (3 << (2 * us)) != 0 {
             // The king ends on the g (c) file and the rook on the f (d) file.
@@ -847,6 +881,10 @@ impl Position {
         }
         // In check the generator only makes moves that answer it (see gen_moves).
         if pc_type(pc) != KING && self.evade_mask() >> to & 1 == 0 {
+            return false;
+        }
+        // Nor does it move a pinned piece off its pin line.
+        if pc_type(pc) != KING && self.pinned(us) >> from & 1 != 0 && line(self.king_sq(us), from) >> to & 1 == 0 {
             return false;
         }
         let target = self.board[to];
