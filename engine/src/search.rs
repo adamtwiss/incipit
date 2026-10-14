@@ -3,6 +3,7 @@ use crate::nnue::{self, Acc};
 use crate::params::{on, tp, P};
 use crate::position::*;
 use crate::tt::*;
+use std::cmp::Reverse;
 use std::sync::atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -1475,7 +1476,30 @@ impl Searcher {
         const STAGE_NOISY: u8 = 1;
         const STAGE_QUIET: u8 = 2;
         let mut stage = STAGE_TT;
-        if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
+        // At the root from the second iteration on, every move is generated
+        // at once and ordered by the nodes its subtree took in the earlier
+        // iterations (TT move first, ties by the usual score): the move
+        // that needed the most work is the likeliest to be the best, or
+        // to become it. The scores keep their usual meaning (history, good
+        // capture) for the reductions below.
+        let root_by_count = root && depth >= 2 && on(P::UseRootCounts);
+        if root_by_count {
+            pos.gen_moves(&mut list, false);
+            self.score_moves(pos, list.as_slice(), &mut scores, tt_move, killers, prev1, prev2, prev4);
+            let n = list.len();
+            let mut idx: Vec<usize> = (0..n).collect();
+            idx.sort_by_key(|&k| {
+                let m = list[k];
+                (m != tt_move, Reverse(self.root_node_counts[mfrom(m)][mto(m)]), Reverse(scores[k]))
+            });
+            let moves: Vec<Move> = idx.iter().map(|&k| list[k]).collect();
+            let scs: Vec<i32> = idx.iter().map(|&k| scores[k]).collect();
+            for k in 0..n {
+                list[k] = moves[k];
+                scores[k] = scs[k];
+            }
+            stage = STAGE_QUIET;
+        } else if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
             list.push(tt_move);
             scores.push(1 << 30);
         } else {
@@ -1537,7 +1561,7 @@ impl Searcher {
                     break;
                 }
             }
-            let from = pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+            let from = if root_by_count { i } else { pick(list.as_mut_slice(), scores.as_mut_slice(), i, n) };
             if stage == STAGE_NOISY && scores[i] < 0 {
                 // Only losing captures and underpromotions are left: the
                 // quiets come before them. The pick is undone first, so
