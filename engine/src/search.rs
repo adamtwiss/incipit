@@ -27,6 +27,9 @@ pub const EVAL_CACHE_KB: usize = 256;
 /// that treats |score| >= MATE_BOUND as decisive handles them like mates.
 pub const TB_WIN: i32 = MATE - 2 * MAX_PLY as i32;
 const CORR_SIZE: usize = 16384;
+/// Pawn-structure history: pawn-key slots, each a piece-square table (768
+/// entries of 2 bytes: 1.5 KB a slot, 768 KB in all).
+const PAWN_HIST_SIZE: usize = 512;
 pub const CORR_GRAIN: i32 = 256;
 
 #[derive(Clone, Copy, Default)]
@@ -383,6 +386,9 @@ fn upd_shared(h: &AtomicI16, bonus: i32) {
 /// offset, as with the per-thread tables.
 pub struct SharedHist {
     cont: [[AtomicI16; 768]; 768],
+    /// Quiet-move history by pawn structure (low bits of the pawn key) and
+    /// moving piece-square: what works with these pawns.
+    pawn_hist: [[AtomicI16; 768]; PAWN_HIST_SIZE],
     corr: [[AtomicI32; CORR_SIZE]; 2],
     corr_np: [[[AtomicI32; CORR_SIZE]; 2]; 2],
     /// Continuation correction: by side to move and the previous move's
@@ -398,7 +404,14 @@ impl SharedHist {
     /// Largest |entry| of the continuation and correction tables (tests).
     #[cfg(test)]
     pub fn max_abs(&self) -> (i32, i32) {
-        let c = self.cont.iter().flatten().map(|x| (x.load(Ordering::Relaxed) as i32).abs()).max().unwrap();
+        let c = self
+            .cont
+            .iter()
+            .flatten()
+            .chain(self.pawn_hist.iter().flatten())
+            .map(|x| (x.load(Ordering::Relaxed) as i32).abs())
+            .max()
+            .unwrap();
         let k = self
             .corr
             .iter()
@@ -1845,6 +1858,9 @@ impl Searcher {
         let pc = pos.board[mfrom(m)] as usize;
         let ci = pc * 64 + mto(m);
         upd(&mut self.hist[pos.stm][mfrom(m)][mto(m)], bonus);
+        if on(P::UsePawnHist) {
+            upd_shared(&self.sh.pawn_hist[pos.pawn_key as usize & (PAWN_HIST_SIZE - 1)][ci], bonus);
+        }
         if prev1 != 0 {
             upd_shared(&self.sh.cont[prev1][ci], bonus);
         }
@@ -1902,6 +1918,7 @@ impl Searcher {
         prev4: usize,
     ) {
         let us = pos.stm;
+        let pk = pos.pawn_key as usize & (PAWN_HIST_SIZE - 1);
         for &m in moves {
             let score = if m == tt_move {
                 1 << 30
@@ -1932,6 +1949,7 @@ impl Searcher {
                     + self.sh.cont[prev1][ci].load(Ordering::Relaxed) as i32
                     + self.sh.cont[prev2][ci].load(Ordering::Relaxed) as i32
                     + self.sh.cont[prev4][ci].load(Ordering::Relaxed) as i32 / 2
+                    + if on(P::UsePawnHist) { self.sh.pawn_hist[pk][ci].load(Ordering::Relaxed) as i32 } else { 0 }
             };
             scores.push(score);
         }
