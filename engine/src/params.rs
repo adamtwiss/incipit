@@ -48,6 +48,12 @@ params! {
     ProbcutMargin = "ProbcutMargin", 221, 100, 350, 13;
     FutBase = "FutBase", 82, 30, 250, 11;
     FutMul = "FutMul", 93, 40, 200, 8;
+    // Futility margin by quiet history: a quiet's history sum (the ordering
+    // score, four tables of +-16384) over this is added to the margin, so a
+    // well-scored quiet survives a margin a badly scored one does not. Start:
+    // 128, so a move at one table's ceiling adds 128 cp, about one depth of
+    // FutMul.
+    FutHistDiv = "FutHistDiv", 128, 32, 512, 12;
     HistPrune = "HistPrune", 3124, 500, 5000, 225;
     SeeQuiet = "SeeQuiet", 8, 0, 80, 4;
     SeeNoisy = "SeeNoisy", 91, 10, 200, 10;
@@ -151,6 +157,7 @@ params! {
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
+    UseFutHist = "UseFutHist", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
     UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
     UseSeeNoisy = "UseSeeNoisy", 1, 0, 1, 0;

@@ -1568,7 +1568,11 @@ impl Searcher {
                     if on(P::UseFut)
                         && !in_check
                         && lmr_d <= tp(P::FutDepth)
-                        && static_eval + tp(P::FutBase) + tp(P::FutMul) * lmr_d <= alpha
+                        && static_eval
+                            + tp(P::FutBase)
+                            + tp(P::FutMul) * lmr_d
+                            + if on(P::UseFutHist) { hist_score / tp(P::FutHistDiv) } else { 0 }
+                            <= alpha
                     {
                         self.stats.futility += 1;
                         skip_quiets = true;
