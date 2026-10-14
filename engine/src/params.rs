@@ -62,6 +62,12 @@ params! {
     // every reply): PriorBonusPct% of the cutoff bonus at this depth. Half, as weaker
     // evidence than a cutoff; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 50, 0, 150, 8;
+    // Malus for the moves a cutoff refuted: HistMalusMul * depth - HistMalusOff, capped at
+    // HistMalusMax. Started equal to the bonus formula (one scale for both, as before);
+    // SPSA #4244 (10000 iterations) moved it slightly below it.
+    HistMalusMul = "HistMalusMul", 283, 100, 500, 20;
+    HistMalusOff = "HistMalusOff", 199, 0, 500, 25;
+    HistMalusMax = "HistMalusMax", 2692, 1000, 4000, 150;
     SeDouble = "SeDouble", 12, 5, 50, 2;
     RfpDepth = "RfpDepth", 8, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
