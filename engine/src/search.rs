@@ -1327,7 +1327,14 @@ impl Searcher {
                 && depth <= tp(P::RfpDepth)
                 && eval.abs() < MATE_BOUND
                 && beta.abs() < MATE_BOUND
-                && eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta
+                && eval
+                    - tp(P::RfpMargin) * (depth - improving as i32)
+                    - if on(P::UseCorrRfp) {
+                        (static_eval - Self::damp(pos, raw_eval)).abs() * tp(P::CorrRfpPct) / 100
+                    } else {
+                        0
+                    }
+                    >= beta
             {
                 self.stats.rfp += 1;
                 return (eval + beta) / 2;

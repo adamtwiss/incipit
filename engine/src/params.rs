@@ -40,6 +40,11 @@ macro_rules! params {
 // name = UCI name, default, min, max, SPSA step (c_end). Step = (max - min) / 20, at least 1.
 params! {
     RfpMargin = "RfpMargin", 75, 30, 150, 6;
+    // Reverse futility margin by correction size: the correction applied to
+    // the static eval here is the size of the net's recent error in positions
+    // like this one, so that much (times this percentage) is added to the
+    // margin. Start: 100%, the error counted once.
+    CorrRfpPct = "CorrRfpPct", 100, 0, 300, 15;
     // Razoring at any depth: eval + RazorBase + RazorMul * depth^2 <= alpha. Starting values
     // fit the old tuned linear margin (242 + 312 * depth, depth <= 3) at depths 1 and 3.
     RazorBase = "RazorBase", 509, 100, 800, 35;
@@ -145,6 +150,7 @@ params! {
     // tune-spec; OpenBench builds advertise them, so a test can set e.g. UseProbcut=0.
     UseTtCut = "UseTtCut", 1, 0, 1, 0;
     UseRfp = "UseRfp", 1, 0, 1, 0;
+    UseCorrRfp = "UseCorrRfp", 1, 0, 1, 0;
     UseRazor = "UseRazor", 1, 0, 1, 0;
     UseNmp = "UseNmp", 1, 0, 1, 0;
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
