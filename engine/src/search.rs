@@ -951,11 +951,15 @@ impl Searcher {
             let mut fail_lows = 0;
             let mut s;
             self.seldepth = 0;
+            // After a fail high the next attempt runs one ply shallower (the
+            // move is already better than the window; the widened search only
+            // has to find its score), and at full depth again after a fail low.
+            let mut fh_red = 0;
             loop {
                 // Lazy SMP diversity: odd helpers search one ply deeper than
                 // the iteration, so threads spread over two depths and the
                 // deeper ones fill the TT ahead of the main thread.
-                let ds = d + (self.thread_id & 1) as i32;
+                let ds = d + (self.thread_id & 1) as i32 - fh_red;
                 s = self.negamax(root, a, b, ds, 0, false);
                 if self.stopped {
                     break;
@@ -966,9 +970,13 @@ impl Searcher {
                     fail_lows += 1;
                     b = (a + b) / 2;
                     a = (s - delta).max(-INF);
+                    fh_red = 0;
                 } else if s >= b {
                     self.stats.asp_fail_high += 1;
                     b = (s + delta).min(INF);
+                    if on(P::UseAspFhRed) && d >= 6 {
+                        fh_red = 1;
+                    }
                     if self.root_best != 0 {
                         best = self.root_best;
                         fh_move = best;
