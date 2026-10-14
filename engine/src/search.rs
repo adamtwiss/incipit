@@ -1460,16 +1460,17 @@ impl Searcher {
         let mut scores = Stack256::<i32>::new();
         let us = pos.stm;
         let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
-        // Moves come in stages: the TT move, the noisy moves, the quiets,
-        // each generated and scored when the stage before is used up, so a
-        // node that cuts on the TT move or a capture never generates or
-        // scores its quiets. The order is the usual one: good captures,
-        // killers, quiets by history, losing captures and underpromotions
-        // last; so the quiets are generated as soon as only losing captures
-        // (negative scores) remain in the noisy stage.
+        // Moves come in stages: the TT move, the noisy moves, the killers,
+        // the quiets, each generated and scored when the stage before is
+        // used up, so a node that cuts on the TT move, a capture or a killer
+        // never generates or scores its quiets. The order is the usual one:
+        // good captures, killers, quiets by history, losing captures and
+        // underpromotions last; so a stage ends as soon as only losing
+        // captures (negative scores) remain in the list.
         const STAGE_TT: u8 = 0;
         const STAGE_NOISY: u8 = 1;
-        const STAGE_QUIET: u8 = 2;
+        const STAGE_KILLER: u8 = 2;
+        const STAGE_QUIET: u8 = 3;
         let mut stage = STAGE_TT;
         if tt_move != 0 && pos.is_pseudo_legal(tt_move) {
             list.push(tt_move);
@@ -1495,7 +1496,31 @@ impl Searcher {
         let mut i = 0;
         let mut compacted = false;
         loop {
-            if i >= n {
+            if skip_quiets && !compacted {
+                compacted = true;
+                let mut k = i;
+                for j in i..n {
+                    if is_noisy(list[j]) {
+                        list[k] = list[j];
+                        scores[k] = scores[j];
+                        k += 1;
+                    }
+                }
+                n = k;
+            }
+            let mut used_up = i >= n;
+            if !used_up && stage != STAGE_TT && stage != STAGE_QUIET {
+                let from = pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+                if scores[i] < 0 {
+                    // Only losing captures and underpromotions are left:
+                    // the next stage comes before them. The pick is undone
+                    // first, so equal scores keep their generation order.
+                    list.as_mut_slice().swap(i, from);
+                    scores.as_mut_slice().swap(i, from);
+                    used_up = true;
+                }
+            }
+            if used_up {
                 if stage == STAGE_QUIET {
                     break;
                 }
@@ -1512,39 +1537,30 @@ impl Searcher {
                         prev2,
                         prev4,
                     );
-                } else if !skip_quiets {
+                } else if skip_quiets {
+                    // Nothing to add: the quiets (killers included) are
+                    // pruned, the losing captures are already listed.
+                } else if stage == STAGE_KILLER {
+                    // The killers are tried before the quiets are generated;
+                    // the quiet stage leaves them out. A killer is a quiet
+                    // move from a sibling, so it must be checked against this
+                    // position; a legal one is exactly what the generator
+                    // would produce, scored as score_moves scores killers.
+                    for (k, &km) in killers.iter().enumerate() {
+                        if km != 0 && km != tt_move && pos.is_pseudo_legal(km) {
+                            list.push(km);
+                            scores.push((1 << 27) + 2 - k as i32);
+                        }
+                    }
+                    n = list.len();
+                } else {
                     n = self.gen_stage(pos, &mut list, &mut scores, GEN_QUIET, tt_move, killers, prev1, prev2, prev4);
                 }
                 compacted = false;
                 continue;
             }
-            if skip_quiets && !compacted {
-                compacted = true;
-                let mut k = i;
-                for j in i..n {
-                    if is_noisy(list[j]) {
-                        list[k] = list[j];
-                        scores[k] = scores[j];
-                        k += 1;
-                    }
-                }
-                n = k;
-                if i >= n {
-                    break;
-                }
-            }
-            let from = pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
-            if stage == STAGE_NOISY && scores[i] < 0 {
-                // Only losing captures and underpromotions are left: the
-                // quiets come before them. The pick is undone first, so
-                // equal scores keep their generation order.
-                list.as_mut_slice().swap(i, from);
-                scores.as_mut_slice().swap(i, from);
-                stage = STAGE_QUIET;
-                if !skip_quiets {
-                    n = self.gen_stage(pos, &mut list, &mut scores, GEN_QUIET, tt_move, killers, prev1, prev2, prev4);
-                }
-                continue;
+            if stage == STAGE_QUIET {
+                pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
             }
             let m = list[i];
             let mscore = scores[i];
@@ -1885,9 +1901,11 @@ impl Searcher {
         debug_assert_eq!(scores.len(), old);
         let mut tmp = MoveList::new();
         pos.gen(&mut tmp, want);
+        // The TT move and the killers had their own stages.
         for k in 0..tmp.len() {
-            if tmp[k] != tt_move {
-                list.push(tmp[k]);
+            let m = tmp[k];
+            if m != tt_move && m != killers[0] && m != killers[1] {
+                list.push(m);
             }
         }
         let n = list.len();
