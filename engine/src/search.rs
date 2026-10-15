@@ -1325,8 +1325,13 @@ impl Searcher {
         // there it must search the position, or a reverse-futility or
         // razoring cut "confirms" the null move without testing zugzwang.
         if !pv_node && !in_check && excluded == 0 && ply != self.no_nmp_ply {
+            // A node that was on the PV with a capture as its best move has
+            // a static eval the capture is about to change: no eval-based
+            // cut there.
+            let pv_capture = on(P::UseTtPvCap) && tt_pv && tt_move != 0 && is_capture(tt_move);
             // reverse futility pruning
             if on(P::UseRfp)
+                && !pv_capture
                 && depth <= tp(P::RfpDepth)
                 && eval.abs() < MATE_BOUND
                 && beta.abs() < MATE_BOUND
@@ -1336,7 +1341,7 @@ impl Searcher {
                 return (eval + beta) / 2;
             }
             // razoring
-            if on(P::UseRazor) && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth * depth <= alpha {
+            if on(P::UseRazor) && !pv_capture && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth * depth <= alpha {
                 self.stats.razor_tries += 1;
                 let v = self.qsearch(pos, alpha, alpha + 1, ply);
                 if v <= alpha {
