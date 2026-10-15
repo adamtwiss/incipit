@@ -1586,8 +1586,16 @@ impl Searcher {
                         self.stats.hist_prunes += 1;
                         continue;
                     }
-                    if on(P::UseSeeQuiet) && !in_check && !pos.see_ge(m, -tp(P::SeeQuiet) * lmr_d * lmr_d, &see_vals())
-                    {
+                    // The SEE bar moves with the quiet's history: a well-scored
+                    // quiet may lose more material and still be searched, a badly
+                    // scored one less. A quiet never gains material, so the bar
+                    // stays at or below zero.
+                    let see_bar = if on(P::UseSeeHist) {
+                        (-tp(P::SeeQuiet) * lmr_d * lmr_d - hist_score / tp(P::SeeHistDiv)).min(0)
+                    } else {
+                        -tp(P::SeeQuiet) * lmr_d * lmr_d
+                    };
+                    if on(P::UseSeeQuiet) && !in_check && !pos.see_ge(m, see_bar, &see_vals()) {
                         self.stats.see_quiet += 1;
                         continue;
                     }

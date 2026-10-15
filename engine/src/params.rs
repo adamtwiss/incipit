@@ -56,6 +56,10 @@ params! {
     FutHistDiv = "FutHistDiv", 128, 32, 512, 12;
     HistPrune = "HistPrune", 3124, 500, 5000, 225;
     SeeQuiet = "SeeQuiet", 8, 0, 80, 4;
+    // Quiet SEE bar by history: the history sum over this is subtracted from
+    // the bar. Start 128, the same scale as FutHistDiv (a table ceiling of
+    // 16384 moves the bar by 128 cp).
+    SeeHistDiv = "SeeHistDiv", 128, 32, 512, 12;
     SeeNoisy = "SeeNoisy", 91, 10, 200, 10;
     LmrBaseX100 = "LmrBaseX100", 44, 30, 130, 5;
     LmrDivX100 = "LmrDivX100", 311, 150, 350, 10;
@@ -166,6 +170,7 @@ params! {
     UseFutHist = "UseFutHist", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
     UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
+    UseSeeHist = "UseSeeHist", 1, 0, 1, 0;
     UseSeeNoisy = "UseSeeNoisy", 1, 0, 1, 0;
     UseSe = "UseSe", 1, 0, 1, 0;
     UseSeDoubleExt = "UseSeDoubleExt", 1, 0, 1, 0;
