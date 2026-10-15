@@ -3,7 +3,7 @@ use crate::nnue::{self, Acc};
 use crate::params::{on, tp, P};
 use crate::position::*;
 use crate::tt::*;
-use std::sync::atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -306,8 +306,11 @@ pub struct Searcher {
     /// it between searches (see `clear`).
     pub tt: Arc<TT>,
     hist: Box<[[[i16; 64]; 64]; 2]>,
-    /// Continuation and correction history: one set shared by all Lazy SMP
-    /// threads while they search (see SharedHist).
+    /// Continuation history, per thread: shared, it made every thread order
+    /// moves alike and was nearly all the shared write traffic (#4170).
+    cont: Box<[[i16; 768]; 768]>,
+    /// Correction history: one set shared by all Lazy SMP threads while they
+    /// search (see SharedHist).
     pub sh: Arc<SharedHist>,
     capt: Box<[[[i16; 7]; 64]; 12]>,
     pv: Box<[[Move; MAX_PLY + 2]; MAX_PLY + 2]>,
@@ -364,13 +367,6 @@ fn upd(h: &mut i16, bonus: i32) {
     *h = (v + bonus - v * bonus.abs() / 16384) as i16;
 }
 
-/// `upd` on a shared entry: load then store (see `update_corr`).
-#[inline(always)]
-fn upd_shared(h: &AtomicI16, bonus: i32) {
-    let v = h.load(Ordering::Relaxed) as i32;
-    h.store((v + bonus - v * bonus.abs() / 16384) as i16, Ordering::Relaxed);
-}
-
 /// History tables shared by all threads of a search. Entries are atomics
 /// used only with Relaxed loads and stores (plain moves on x86 and ARM):
 /// each entry is a heuristic score, read and written alone, so no ordering
@@ -378,7 +374,6 @@ fn upd_shared(h: &AtomicI16, bonus: i32) {
 /// inline in the Arc's allocation, so a lookup is one pointer load and an
 /// offset, as with the per-thread tables.
 pub struct SharedHist {
-    cont: [[AtomicI16; 768]; 768],
     corr: [[AtomicI32; CORR_SIZE]; 2],
     corr_np: [[[AtomicI32; CORR_SIZE]; 2]; 2],
     /// Continuation correction: by side to move and the previous move's
@@ -391,20 +386,17 @@ impl SharedHist {
         // SAFETY: all-zero atomics are valid, and empty tables.
         unsafe { Arc::<SharedHist>::new_zeroed().assume_init() }
     }
-    /// Largest |entry| of the continuation and correction tables (tests).
+    /// Largest |entry| of the correction tables (tests).
     #[cfg(test)]
-    pub fn max_abs(&self) -> (i32, i32) {
-        let c = self.cont.iter().flatten().map(|x| (x.load(Ordering::Relaxed) as i32).abs()).max().unwrap();
-        let k = self
-            .corr
+    pub fn max_abs(&self) -> i32 {
+        self.corr
             .iter()
             .flatten()
             .chain(self.corr_np.iter().flatten().flatten())
             .chain(self.corr_cont.iter().flatten())
             .map(|x| x.load(Ordering::Relaxed).abs())
             .max()
-            .unwrap();
-        (c, k)
+            .unwrap()
     }
     /// Zeroes every entry. `&mut self` means no other thread is using the
     /// tables, so they can be zeroed as plain memory (zero atomics).
@@ -493,6 +485,7 @@ impl Searcher {
             hard_ms: None,
             node_limit: None,
             hist: Box::new([[[0; 64]; 64]; 2]),
+            cont: vec![[0; 768]; 768].into_boxed_slice().try_into().unwrap(),
             sh: SharedHist::new(),
             capt: Box::new([[[0; 7]; 64]; 12]),
             killers: Align64([[0; 2]; MAX_PLY + 4]),
@@ -571,6 +564,12 @@ impl Searcher {
         }
     }
 
+    /// Largest |entry| of this thread's continuation history (tests).
+    #[cfg(test)]
+    pub fn cont_max_abs(&self) -> i32 {
+        self.cont.iter().flatten().map(|&x| (x as i32).abs()).max().unwrap()
+    }
+
     pub fn clear(&mut self) {
         self.pt.spend_avg = 1.0;
         self.pt.ponder_seen = false;
@@ -579,6 +578,7 @@ impl Searcher {
         Arc::get_mut(&mut self.tt).expect("TT cleared during a search").clear();
         self.eval_cache.fill(0);
         *self.hist = [[[0; 64]; 64]; 2];
+        self.cont.iter_mut().for_each(|r| r.fill(0));
         Arc::get_mut(&mut self.sh).expect("histories cleared during a search").clear();
         *self.capt = [[[0; 7]; 64]; 12];
         self.killers = Align64([[0; 2]; MAX_PLY + 4]);
@@ -1817,13 +1817,13 @@ impl Searcher {
                 // Its continuation entries, as seen from the opponent's node: their
                 // previous moves were ours at ply-2, -3 (theirs) and -5.
                 if prev2 != 0 {
-                    upd_shared(&self.sh.cont[prev2][prev1], bonus);
+                    upd(&mut self.cont[prev2][prev1], bonus);
                 }
                 if prev3 != 0 {
-                    upd_shared(&self.sh.cont[prev3][prev1], bonus);
+                    upd(&mut self.cont[prev3][prev1], bonus);
                 }
                 if prev5 != 0 {
-                    upd_shared(&self.sh.cont[prev5][prev1], bonus);
+                    upd(&mut self.cont[prev5][prev1], bonus);
                 }
             }
         }
@@ -1860,13 +1860,13 @@ impl Searcher {
         let ci = pc * 64 + mto(m);
         upd(&mut self.hist[pos.stm][mfrom(m)][mto(m)], bonus);
         if prev1 != 0 {
-            upd_shared(&self.sh.cont[prev1][ci], bonus);
+            upd(&mut self.cont[prev1][ci], bonus);
         }
         if prev2 != 0 {
-            upd_shared(&self.sh.cont[prev2][ci], bonus);
+            upd(&mut self.cont[prev2][ci], bonus);
         }
         if prev4 != 0 {
-            upd_shared(&self.sh.cont[prev4][ci], bonus);
+            upd(&mut self.cont[prev4][ci], bonus);
         }
     }
 
@@ -1943,9 +1943,9 @@ impl Searcher {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ci = pc * 64 + mto(m);
                 self.hist[us][mfrom(m)][mto(m)] as i32
-                    + self.sh.cont[prev1][ci].load(Ordering::Relaxed) as i32
-                    + self.sh.cont[prev2][ci].load(Ordering::Relaxed) as i32
-                    + self.sh.cont[prev4][ci].load(Ordering::Relaxed) as i32 / 2
+                    + self.cont[prev1][ci] as i32
+                    + self.cont[prev2][ci] as i32
+                    + self.cont[prev4][ci] as i32 / 2
             };
             scores.push(score);
         }

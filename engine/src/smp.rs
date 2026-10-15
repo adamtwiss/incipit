@@ -299,8 +299,9 @@ mod tests {
                 assert!(main.total_nodes() > main.nodes, "helpers searched");
             }
         }
-        let (c, k) = main.sh.max_abs();
+        let c = main.cont_max_abs();
         assert!(c <= 16384, "continuation history out of range: {c}");
+        let k = main.sh.max_abs();
         assert!(k <= CORR_GRAIN * tp(P::CorrLimit), "correction history out of range: {k}");
         eprintln!("vote changed the move in {} iterations", main.stats.smp_vote_changes);
         // Between searches the main thread holds the tables alone again.
