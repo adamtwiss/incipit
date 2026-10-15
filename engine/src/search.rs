@@ -1316,6 +1316,12 @@ impl Searcher {
             } else {
                 false
             };
+        // Worsening: the eval fell by WorseMargin or more over our last move.
+        let worsening = on(P::UseLmrWorse)
+            && !in_check
+            && ply >= 2
+            && self.stack[ply - 2].static_eval != -INF
+            && static_eval <= self.stack[ply - 2].static_eval - tp(P::WorseMargin);
         self.killers[ply + 1] = [0, 0];
 
         // No static pruning at the root of a null-move verification search:
@@ -1677,6 +1683,9 @@ impl Searcher {
                         }
                     }
                     if !improving {
+                        r += 1;
+                    }
+                    if worsening {
                         r += 1;
                     }
                     if child.checkers != 0 {

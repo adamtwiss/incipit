@@ -54,6 +54,10 @@ params! {
     LmrBaseX100 = "LmrBaseX100", 44, 30, 130, 5;
     LmrDivX100 = "LmrDivX100", 311, 150, 350, 10;
     LmrHistDiv = "LmrHistDiv", 8418, 3000, 16000, 650;
+    // A node is worsening when its static eval is below the one two plies
+    // earlier by at least this (cp): LMR reduces one ply more there. Start:
+    // 50, half a pawn.
+    WorseMargin = "WorseMargin", 50, 0, 200, 10;
     AspDelta = "AspDelta", 15, 3, 40, 2;
     HistMul = "HistMul", 302, 100, 500, 20;
     HistOff = "HistOff", 187, 0, 500, 25;
@@ -162,6 +166,7 @@ params! {
     UseMulticut = "UseMulticut", 1, 0, 1, 0;
     UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;
     UseLmr = "UseLmr", 1, 0, 1, 0;
+    UseLmrWorse = "UseLmrWorse", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
