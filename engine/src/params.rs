@@ -85,6 +85,9 @@ params! {
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
+    // Exponent (x100) on the soft target's combined scale (node share x
+    // stability x fail-lows): 100 = linear.
+    TmScalePow = "TmScalePow", 100, 50, 250, 15;
     // On a ponder hit, move at once if we pondered at least PonderHitPct% of
     // the time we'd want for this move; otherwise keep thinking until pondering
     // + thinking reaches it (PonderCredit% of the pondering time counts).

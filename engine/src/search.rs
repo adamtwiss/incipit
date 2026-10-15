@@ -1068,7 +1068,11 @@ impl Searcher {
                 };
                 let (node_scale, stab_scale) = if on(P::UseTm) { (node_scale, stab_scale) } else { (1.0, 1.0) };
                 let ext = if on(P::UseTmExtMax) { score_scale.max(fl_scale) } else { score_scale * fl_scale };
-                let target = soft as f64 * node_scale * stab_scale * ext;
+                // TmScalePow > 100 makes the allocation steeper: in an offline test
+                // (7948 positions, 500k vs 1.5M nodes) the value of more search
+                // varied ~25x across the scale's range while the scale varied ~5x.
+                let scale = node_scale * stab_scale * ext;
+                let target = soft as f64 * scale.powf(tp(P::TmScalePow) as f64 / 100.0);
                 self.pt.target_ms = target;
                 (tm_target, tm_frac, tm_done) = (target, frac, d);
                 let el = self.elapsed_ms() as f64;
