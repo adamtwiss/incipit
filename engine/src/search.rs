@@ -1560,9 +1560,20 @@ impl Searcher {
             if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
                 if quiet {
                     if on(P::UseLmp) && legal >= lmp_limit && !in_check {
-                        self.stats.lmp += 1;
-                        skip_quiets = true;
-                        continue;
+                        if on(P::UseLmpHist) && hist_score >= tp(P::LmpHistBar) {
+                            // A strong history keeps the move past the count
+                            // limit.
+                        } else {
+                            self.stats.lmp += 1;
+                            // Killers (ordered first, history score 0) are
+                            // skipped alone: the plain quiets after them are
+                            // in history order, so the first one below the
+                            // bar ends them all.
+                            if !on(P::UseLmpHist) || mscore < (1 << 27) {
+                                skip_quiets = true;
+                            }
+                            continue;
+                        }
                     }
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
                     if on(P::UseFut)

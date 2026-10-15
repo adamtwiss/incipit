@@ -71,6 +71,11 @@ params! {
     HmGuard = "HmGuard", 66, 0, 300, 15;
     NmpBase = "NmpBase", 5, 2, 7, 1;
     LmpBase = "LmpBase", 5, 1, 8, 1;
+    // Late move pruning spares a quiet whose history sum (the ordering score,
+    // four tables of +-16384) is at least this: the count limit then ends the
+    // quiets at the first plain quiet below it. Start: 4000, a quarter of one
+    // table's ceiling.
+    LmpHistBar = "LmpHistBar", 4000, 0, 16000, 400;
     SeMul = "SeMul", 25, 8, 40, 2;
     CapLmrDiv = "CapLmrDiv", 3416, 2000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
@@ -153,6 +158,7 @@ params! {
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
+    UseLmpHist = "UseLmpHist", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
     UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
