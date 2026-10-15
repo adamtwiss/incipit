@@ -125,6 +125,9 @@ params! {
     // A TT entry qualifies its move for the singular test when its depth is
     // at least the node's depth minus this. Start: 3, the value used so far.
     SeTtDepth = "SeTtDepth", 3, 0, 6, 1;
+    // TT replacement: a was-PV entry counts this many plies deeper when a
+    // victim is chosen. Start 2, a small round value (one age step is 8).
+    TtPvKeep = "TtPvKeep", 2, 0, 8, 1;
     // Correction history. The eval correction is (CorrPawnWeight * pawn entry +
     // CorrNonPawnWeight * (white + black non-pawn entries)) / 128; the defaults are the
     // original 2:1:1 weighting, as separate weights so SPSA can move each one.
@@ -175,6 +178,7 @@ params! {
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
+    UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;

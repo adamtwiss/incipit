@@ -1,6 +1,7 @@
 // Transposition table: 16-byte entries in 4-entry buckets (one cache line),
 // full key verification, depth- and age-aware replacement. Lockless: safe
 // to probe and store from several threads at once (see `Slot`).
+use crate::params::{on, tp, P};
 use crate::position::Move;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering::Relaxed};
 
@@ -226,7 +227,14 @@ impl TT {
                 found = true;
                 break;
             }
-            let q = if bd & 3 == BOUND_NONE { i32::MIN } else { ((d >> 48) as u8 & 127) as i32 - 8 * age(bd) };
+            // A was-PV entry (bit 55) counts TtPvKeep plies deeper than it
+            // is, so it survives replacement longer.
+            let q = if bd & 3 == BOUND_NONE {
+                i32::MIN
+            } else {
+                ((d >> 48) as u8 & 127) as i32 - 8 * age(bd)
+                    + if on(P::UseTtPvKeep) && (d >> 55) & 1 != 0 { tp(P::TtPvKeep) } else { 0 }
+            };
             if q < worst {
                 worst = q;
                 slot = k;
