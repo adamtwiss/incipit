@@ -1602,16 +1602,24 @@ impl Searcher {
                         self.stats.see_quiet += 1;
                         continue;
                     }
-                } else if on(P::UseSeeNoisy)
-                    && depth <= tp(P::SeeNoisyDepth)
+                } else if on(P::UseSeeNoisy) && depth <= tp(P::SeeNoisyDepth) {
+                    // The bar moves with the capture history (as the quiet
+                    // bar does with the quiet history): a well-scored capture
+                    // may lose more, a badly scored one must win material.
+                    let bar = if on(P::UseCapSeeHist) {
+                        let pc = pos.board[mfrom(m)] as usize;
+                        let ch = self.capt[pc][mto(m)][pos.captured_type(m)] as i32;
+                        -tp(P::SeeNoisy) * depth - ch / tp(P::CapSeeHistDiv)
+                    } else {
+                        -tp(P::SeeNoisy) * depth
+                    };
                     // A good capture (ordered so by its SEE against
                     // GoodCaptureSee) passes any bar at or below that
                     // without another exchange evaluation.
-                    && (mscore < 0 || -tp(P::SeeNoisy) * depth > tp(P::GoodCaptureSee))
-                    && !pos.see_ge(m, -tp(P::SeeNoisy) * depth, &see_vals())
-                {
-                    self.stats.see_noisy += 1;
-                    continue;
+                    if (mscore < 0 || bar > tp(P::GoodCaptureSee)) && !pos.see_ge(m, bar, &see_vals()) {
+                        self.stats.see_noisy += 1;
+                        continue;
+                    }
                 }
             }
 

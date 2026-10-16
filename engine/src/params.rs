@@ -60,6 +60,9 @@ params! {
     // the bar. Start 128, the same scale as FutHistDiv (a table ceiling of
     // 16384 moves the bar by 128 cp).
     SeeHistDiv = "SeeHistDiv", 128, 32, 512, 12;
+    // Capture SEE bar by capture history: the entry (+-16384) over this is
+    // subtracted from the bar. Start 128, the SeeHistDiv scale.
+    CapSeeHistDiv = "CapSeeHistDiv", 128, 32, 512, 12;
     SeeNoisy = "SeeNoisy", 101, 10, 200, 10;
     LmrBaseX100 = "LmrBaseX100", 42, 30, 130, 5;
     LmrDivX100 = "LmrDivX100", 307, 150, 350, 10;
@@ -171,6 +174,7 @@ params! {
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
     UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
     UseSeeHist = "UseSeeHist", 1, 0, 1, 0;
+    UseCapSeeHist = "UseCapSeeHist", 1, 0, 1, 0;
     UseSeeNoisy = "UseSeeNoisy", 1, 0, 1, 0;
     UseSe = "UseSe", 1, 0, 1, 0;
     UseSeDoubleExt = "UseSeDoubleExt", 1, 0, 1, 0;
