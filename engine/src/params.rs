@@ -86,8 +86,8 @@ params! {
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
     // Exponent (x100) on the soft target's combined scale (node share x
-    // stability x fail-lows): 100 = linear.
-    TmScalePow = "TmScalePow", 100, 50, 250, 15;
+    // stability x fail-lows): 100 = linear. SPSA #4304 (32k games, STC): 106.
+    TmScalePow = "TmScalePow", 106, 50, 250, 15;
     // On a ponder hit, move at once if we pondered at least PonderHitPct% of
     // the time we'd want for this move; otherwise keep thinking until pondering
     // + thinking reaches it (PonderCredit% of the pondering time counts).
@@ -99,7 +99,7 @@ params! {
     // instant moves at 2-4%, like other engines that ponder.
     PonderMinPct = "PonderMinPct", 30, 0, 100, 5;
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
-    TmFailLow = "TmFailLow", 30, 0, 100, 8;
+    TmFailLow = "TmFailLow", 28, 0, 100, 8;
     TmFeedMax = "TmFeedMax", 250, 100, 400, 20;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 2, 2, 6, 1;
