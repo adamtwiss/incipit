@@ -72,6 +72,9 @@ params! {
     // every reply): PriorBonusPct% of the cutoff bonus at this depth. Half, as weaker
     // evidence than a cutoff; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 53, 0, 150, 8;
+    // Fail high: the opponent's last quiet move allowed the cutoff and loses
+    // PriorMalusPct% of the cutoff bonus. Round start: half, like the bonus.
+    PriorMalusPct = "PriorMalusPct", 50, 0, 150, 8;
     SeDouble = "SeDouble", 13, 5, 50, 2;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
@@ -208,6 +211,7 @@ params! {
     UseCorrIncr = "UseCorrIncr", 1, 0, 1, 0;
     // Continuation correction history (the previous move's piece-square).
     UseCorrCont = "UseCorrCont", 1, 0, 1, 0;
+    UsePriorMalus = "UsePriorMalus", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.

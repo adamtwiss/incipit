@@ -1813,6 +1813,26 @@ impl Searcher {
                 let ct = pos.captured_type(cm);
                 upd(&mut self.capt[pc][mto(cm)][ct], -bonus);
             }
+            // The mirror of the fail-low bonus below: the opponent's last
+            // move, if quiet, allowed this cutoff.
+            if on(P::UsePriorMalus) && excluded == 0 && ply >= 1 {
+                let pm = self.stack[ply - 1].mv;
+                if pm != 0 && !is_noisy(pm) {
+                    let malus = bonus * tp(P::PriorMalusPct) / 100;
+                    let prev3 = if ply >= 3 { self.stack[ply - 3].cont_idx } else { 0 };
+                    let prev5 = if ply >= 5 { self.stack[ply - 5].cont_idx } else { 0 };
+                    upd(&mut self.hist[pos.stm ^ 1][mfrom(pm)][mto(pm)], -malus);
+                    if prev2 != 0 {
+                        upd_shared(&self.sh.cont[prev2][prev1], -malus);
+                    }
+                    if prev3 != 0 {
+                        upd_shared(&self.sh.cont[prev3][prev1], -malus);
+                    }
+                    if prev5 != 0 {
+                        upd_shared(&self.sh.cont[prev5][prev1], -malus);
+                    }
+                }
+            }
         } else if alpha == orig_alpha && excluded == 0 && ply >= 1 && tp(P::PriorBonusPct) > 0 {
             // Fail low: the opponent's last move, if quiet, held against every reply.
             let pm = self.stack[ply - 1].mv;
