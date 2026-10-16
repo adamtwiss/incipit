@@ -381,6 +381,8 @@ pub struct SharedHist {
     cont: [[AtomicI16; 768]; 768],
     corr: [[AtomicI32; CORR_SIZE]; 2],
     corr_np: [[[AtomicI32; CORR_SIZE]; 2]; 2],
+    /// Minor-piece correction: by side to move and the minor-piece key.
+    corr_minor: [[AtomicI32; CORR_SIZE]; 2],
     /// Continuation correction: by side to move and the previous move's
     /// piece-square (as the continuation history indexes it; 0 = none).
     corr_cont: [[AtomicI32; 768]; 2],
@@ -400,6 +402,7 @@ impl SharedHist {
             .iter()
             .flatten()
             .chain(self.corr_np.iter().flatten().flatten())
+            .chain(self.corr_minor.iter().flatten())
             .chain(self.corr_cont.iter().flatten())
             .map(|x| x.load(Ordering::Relaxed).abs())
             .max()
@@ -786,6 +789,10 @@ impl Searcher {
             // Row 0 (no previous move) is never updated, so it reads as 0.
             c += tp(P::CorrContWeight) * self.sh.corr_cont[pos.stm][prev1].load(Ordering::Relaxed);
         }
+        if on(P::UseCorrMinor) {
+            c += tp(P::CorrMinorWeight)
+                * self.sh.corr_minor[pos.stm][(pos.minor_key as usize) & m].load(Ordering::Relaxed);
+        }
         Self::damp(pos, raw + c / (128 * CORR_GRAIN)).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
@@ -813,6 +820,9 @@ impl Searcher {
         f(&corr_np[1][(pos.np_key[1] as usize) & m]);
         if on(P::UseCorrCont) && prev1 != 0 {
             f(&self.sh.corr_cont[pos.stm][prev1]);
+        }
+        if on(P::UseCorrMinor) {
+            f(&self.sh.corr_minor[pos.stm][(pos.minor_key as usize) & m]);
         }
     }
 

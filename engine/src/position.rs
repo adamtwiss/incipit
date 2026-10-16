@@ -194,6 +194,8 @@ pub struct Position {
     pub hash: u64,
     pub pawn_key: u64,
     pub np_key: [u64; 2],
+    /// Knights and bishops of both sides (correction history key).
+    pub minor_key: u64,
     pub checkers: u64,
 }
 
@@ -215,6 +217,7 @@ impl Position {
             hash: 0,
             pawn_key: 0,
             np_key: [0; 2],
+            minor_key: 0,
             checkers: 0,
         }
     }
@@ -414,6 +417,9 @@ impl Position {
             self.pawn_key ^= zob_piece(pc as usize, sq);
         } else {
             self.np_key[pc_color(pc)] ^= zob_piece(pc as usize, sq);
+            if pc_type(pc) == KNIGHT || pc_type(pc) == BISHOP {
+                self.minor_key ^= zob_piece(pc as usize, sq);
+            }
         }
     }
     #[inline(always)]
@@ -428,6 +434,9 @@ impl Position {
             self.pawn_key ^= zob_piece(pc as usize, sq);
         } else {
             self.np_key[pc_color(pc)] ^= zob_piece(pc as usize, sq);
+            if pc_type(pc) == KNIGHT || pc_type(pc) == BISHOP {
+                self.minor_key ^= zob_piece(pc as usize, sq);
+            }
         }
     }
 

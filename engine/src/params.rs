@@ -144,6 +144,8 @@ params! {
     // piece and square): half the pawn table's original weight of 128, as
     // one non-pawn table had, until SPSA says otherwise.
     CorrContWeight = "CorrContWeight", 63, 0, 256, 13;
+    // Minor-piece correction weight: the same round start as the continuation table had (64).
+    CorrMinorWeight = "CorrMinorWeight", 64, 0, 256, 13;
     // Network output multiplier in percent, applied to every search eval. Lets a
     // net trained on differently scaled labels be run at Incipit's eval scale
     // (which the pruning margins and other cp thresholds are tuned to) without
@@ -208,6 +210,7 @@ params! {
     UseCorrIncr = "UseCorrIncr", 1, 0, 1, 0;
     // Continuation correction history (the previous move's piece-square).
     UseCorrCont = "UseCorrCont", 1, 0, 1, 0;
+    UseCorrMinor = "UseCorrMinor", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
