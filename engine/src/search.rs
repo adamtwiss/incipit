@@ -1708,6 +1708,11 @@ impl Searcher {
                     if on(P::UseTtPv) && tt_pv && !pv_node {
                         r -= 1;
                     }
+                    // The node already failed low once (a TT upper bound):
+                    // its late moves are less likely still to beat alpha.
+                    if on(P::UseLmrTtUpper) && !pv_node && tt_bound == BOUND_UPPER {
+                        r += 1;
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {
