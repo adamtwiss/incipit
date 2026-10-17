@@ -1703,7 +1703,11 @@ impl Searcher {
                 && ply < 2 * self.root_depth as usize
             {
                 self.stats.se_tries += 1;
-                let sbeta = tt_score - depth * tp(P::SeMul) / 16;
+                // A narrower margin where an earlier PV ran: the TT move
+                // there is more often the only move worth the extension.
+                let se_mul =
+                    if on(P::UseSePvMargin) && tt_pv { tp(P::SeMul) * tp(P::SePvPct) / 100 } else { tp(P::SeMul) };
+                let sbeta = tt_score - depth * se_mul / 16;
                 self.stack[ply].excluded = m;
                 let v = self.negamax(pos, sbeta - 1, sbeta, (depth - 1) / 2, ply, cut_node);
                 self.stack[ply].excluded = 0;

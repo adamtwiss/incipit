@@ -72,6 +72,8 @@ params! {
     // every reply): PriorBonusPct% of the cutoff bonus at this depth. Half, as weaker
     // evidence than a cutoff; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 53, 0, 150, 8;
+    // Singular margin at was-PV nodes as a percentage of SeMul. Round start: half.
+    SePvPct = "SePvPct", 50, 0, 150, 10;
     SeDouble = "SeDouble", 13, 5, 50, 2;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
@@ -183,6 +185,7 @@ params! {
     UseMulticut = "UseMulticut", 1, 0, 1, 0;
     UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;
     UseSeNeg2 = "UseSeNeg2", 1, 0, 1, 0;
+    UseSePvMargin = "UseSePvMargin", 1, 0, 1, 0;
     UseLmr = "UseLmr", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
