@@ -64,6 +64,7 @@ pub struct Stats {
     pub lmp: u64,
     pub futility: u64,
     pub hist_prunes: u64,
+    pub qs_delta: u64,
     pub see_quiet: u64,
     pub see_noisy: u64,
     pub lmr_searches: u64,
@@ -163,6 +164,7 @@ impl Stats {
         line("LMP:", format!("{} triggers (remaining quiets skipped)", self.lmp));
         line("Futility:", format!("{} triggers (remaining quiets skipped)", self.futility));
         line("History prune:", format!("{} moves ({:.1}/Kn)", self.hist_prunes, kn(self.hist_prunes)));
+        line("QS delta:", format!("{} captures ({:.1}/Kn)", self.qs_delta, kn(self.qs_delta)));
         line(
             "SEE prune:",
             format!(
@@ -2079,6 +2081,8 @@ impl Searcher {
                 alpha = best;
             }
         }
+        // The stand pat (TT-improved) for delta pruning.
+        let stand_pat = best;
         let mut list = MoveList::new();
         pos.gen_moves(&mut list, !in_check);
         let mut scores = Stack256::<i32>::new();
@@ -2102,6 +2106,15 @@ impl Searcher {
             pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
             let m = list[i];
             if !in_check {
+                // Delta pruning: even winning the captured piece outright,
+                // plus a margin, cannot reach alpha.
+                if on(P::UseQsDelta) && !is_promo(m) {
+                    let ct = pos.captured_type(m);
+                    if ct < 6 && stand_pat + see_vals()[ct] + tp(P::QsDelta) <= alpha {
+                        self.stats.qs_delta += 1;
+                        continue;
+                    }
+                }
                 if on(P::UseQsSee) && !pos.see_ge(m, 0, &see_vals()) {
                     continue;
                 }

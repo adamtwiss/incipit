@@ -55,6 +55,9 @@ params! {
     // FutMul.
     FutHistDiv = "FutHistDiv", 128, 32, 512, 12;
     HistPrune = "HistPrune", 3139, 500, 5000, 225;
+    // Qsearch delta pruning: skip a capture when stand pat + captured value +
+    // QsDelta <= alpha. Round start: a pawn.
+    QsDelta = "QsDelta", 100, 0, 400, 15;
     SeeQuiet = "SeeQuiet", 11, 0, 80, 4;
     // Quiet SEE bar by history: the history sum over this is subtracted from
     // the bar. Start 128, the same scale as FutHistDiv (a table ceiling of
@@ -188,6 +191,7 @@ params! {
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
+    UseQsDelta = "UseQsDelta", 1, 0, 1, 0;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
     UseAsp = "UseAsp", 1, 0, 1, 0;
