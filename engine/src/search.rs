@@ -399,6 +399,16 @@ pub struct SharedHist {
     corr_cont: [[AtomicI32; 768]; 2],
     /// The same keyed by our own move two plies back.
     corr_cont2: [[AtomicI32; 768]; 2],
+    /// The same keyed by the pair (hashed to CORR_SIZE buckets).
+    corr_pair: [[AtomicI32; CORR_SIZE]; 2],
+}
+
+/// Bucket of the two-move continuation pair in the pair correction table:
+/// the two indices mixed by Fibonacci hashing, the top bits of the product.
+#[inline]
+fn pair_bucket(prev1: usize, prev2: usize) -> usize {
+    let k = (prev1 as u32).wrapping_mul(0x9E37_79B1) ^ (prev2 as u32).wrapping_mul(0x85EB_CA6B).rotate_left(16);
+    (k >> (32 - CORR_SIZE.trailing_zeros())) as usize
 }
 
 impl SharedHist {
@@ -417,6 +427,7 @@ impl SharedHist {
             .chain(self.corr_np.iter().flatten().flatten())
             .chain(self.corr_cont.iter().flatten())
             .chain(self.corr_cont2.iter().flatten())
+            .chain(self.corr_pair.iter().flatten())
             .map(|x| x.load(Ordering::Relaxed).abs())
             .max()
             .unwrap();
@@ -828,6 +839,9 @@ impl Searcher {
         if on(P::UseCorrCont2) {
             c += tp(P::CorrCont2Weight) * self.sh.corr_cont2[pos.stm][prev2].load(Ordering::Relaxed);
         }
+        if on(P::UseCorrPair) && prev1 != 0 && prev2 != 0 {
+            c += tp(P::CorrPairWeight) * self.sh.corr_pair[pos.stm][pair_bucket(prev1, prev2)].load(Ordering::Relaxed);
+        }
         Self::damp(pos, raw + c / (128 * CORR_GRAIN)).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
@@ -858,6 +872,9 @@ impl Searcher {
         }
         if on(P::UseCorrCont2) && prev2 != 0 {
             f(&self.sh.corr_cont2[pos.stm][prev2]);
+        }
+        if on(P::UseCorrPair) && prev1 != 0 && prev2 != 0 {
+            f(&self.sh.corr_pair[pos.stm][pair_bucket(prev1, prev2)]);
         }
     }
 

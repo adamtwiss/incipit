@@ -152,6 +152,8 @@ params! {
     CorrContWeight = "CorrContWeight", 63, 0, 256, 13;
     // Ply-2 continuation correction weight: the round start the ply-1 table had (64).
     CorrCont2Weight = "CorrCont2Weight", 64, 0, 256, 13;
+    // Two-move pair correction weight: the same round start (64).
+    CorrPairWeight = "CorrPairWeight", 64, 0, 256, 13;
     // Network output multiplier in percent, applied to every search eval. Lets a
     // net trained on differently scaled labels be run at Incipit's eval scale
     // (which the pruning margins and other cp thresholds are tuned to) without
@@ -219,6 +221,8 @@ params! {
     // Continuation correction history (the previous move's piece-square).
     UseCorrCont = "UseCorrCont", 1, 0, 1, 0;
     UseCorrCont2 = "UseCorrCont2", 1, 0, 1, 0;
+    // Correction keyed by the last two moves together.
+    UseCorrPair = "UseCorrPair", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
