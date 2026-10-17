@@ -2107,10 +2107,11 @@ impl Searcher {
             let m = list[i];
             if !in_check {
                 // Delta pruning: even winning the captured piece outright,
-                // plus a margin, cannot reach alpha.
+                // plus a margin, cannot reach alpha. The SEE values are on
+                // a pawn = 100 scale; the eval is not (QsDeltaScale).
                 if on(P::UseQsDelta) && !is_promo(m) {
                     let ct = pos.captured_type(m);
-                    if ct < 6 && stand_pat + see_vals()[ct] + tp(P::QsDelta) <= alpha {
+                    if ct < 6 && stand_pat + see_vals()[ct] * tp(P::QsDeltaScale) / 100 + tp(P::QsDelta) <= alpha {
                         self.stats.qs_delta += 1;
                         continue;
                     }

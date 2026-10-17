@@ -58,6 +58,11 @@ params! {
     // Qsearch delta pruning: skip a capture when stand pat + captured value +
     // QsDelta <= alpha. Round start: a pawn.
     QsDelta = "QsDelta", 100, 0, 400, 15;
+    // Eval units per SEE unit, in percent. Measured on the net (depth 1,
+    // a piece removed from the start position): a pawn reads ~200, a minor
+    // ~600 against SEE 100 / 320, so 200%; rooks and queens read less than
+    // twice SEE (the eval saturates), which only prunes less.
+    QsDeltaScale = "QsDeltaScale", 200, 100, 400, 20;
     SeeQuiet = "SeeQuiet", 11, 0, 80, 4;
     // Quiet SEE bar by history: the history sum over this is subtracted from
     // the bar. Start 128, the same scale as FutHistDiv (a table ceiling of
