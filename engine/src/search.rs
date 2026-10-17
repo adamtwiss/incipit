@@ -1732,6 +1732,12 @@ impl Searcher {
                 } else if on(P::UseMulticut) && sbeta >= beta {
                     self.stats.multicut += 1;
                     return sbeta;
+                } else if on(P::UseMulticutV) && v >= beta && tt_score >= beta {
+                    // The TT move fails high at depth and, without it, a
+                    // second move fails high at the reduced depth: two
+                    // cutoff moves, so the node is cut.
+                    self.stats.multicut += 1;
+                    return v;
                 } else if on(P::UseSeNegExt) && tt_score >= beta {
                     // Not singular and expected to fail high: at a cut node,
                     // where the fail-high is expected anyway, two plies less.
