@@ -397,6 +397,8 @@ pub struct SharedHist {
     /// Continuation correction: by side to move and the previous move's
     /// piece-square (as the continuation history indexes it; 0 = none).
     corr_cont: [[AtomicI32; 768]; 2],
+    /// The same keyed by our own move two plies back.
+    corr_cont2: [[AtomicI32; 768]; 2],
 }
 
 impl SharedHist {
@@ -414,6 +416,7 @@ impl SharedHist {
             .flatten()
             .chain(self.corr_np.iter().flatten().flatten())
             .chain(self.corr_cont.iter().flatten())
+            .chain(self.corr_cont2.iter().flatten())
             .map(|x| x.load(Ordering::Relaxed).abs())
             .max()
             .unwrap();
@@ -786,7 +789,7 @@ impl Searcher {
     #[inline(always)]
     /// The eval corrected by the pawn, non-pawn and continuation tables
     /// (`prev1`: the previous move's piece-square, 0 for none).
-    fn corrected(&self, pos: &Position, raw: i32, prev1: usize) -> i32 {
+    fn corrected(&self, pos: &Position, raw: i32, prev1: usize, prev2: usize) -> i32 {
         let m = CORR_SIZE - 1;
         if !on(P::UseCorrHist) {
             return Self::damp(pos, raw).clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
@@ -800,10 +803,13 @@ impl Searcher {
             // Row 0 (no previous move) is never updated, so it reads as 0.
             c += tp(P::CorrContWeight) * self.sh.corr_cont[pos.stm][prev1].load(Ordering::Relaxed);
         }
+        if on(P::UseCorrCont2) {
+            c += tp(P::CorrCont2Weight) * self.sh.corr_cont2[pos.stm][prev2].load(Ordering::Relaxed);
+        }
         Self::damp(pos, raw + c / (128 * CORR_GRAIN)).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
-    fn update_corr(&mut self, pos: &Position, depth: i32, diff: i32, prev1: usize) {
+    fn update_corr(&mut self, pos: &Position, depth: i32, diff: i32, prev1: usize, prev2: usize) {
         let w = (depth + 1).min(tp(P::CorrUpdateCap));
         let target = diff.clamp(-tp(P::CorrDiffClamp), tp(P::CorrDiffClamp)) * CORR_GRAIN;
         let m = CORR_SIZE - 1;
@@ -827,6 +833,9 @@ impl Searcher {
         f(&corr_np[1][(pos.np_key[1] as usize) & m]);
         if on(P::UseCorrCont) && prev1 != 0 {
             f(&self.sh.corr_cont[pos.stm][prev1]);
+        }
+        if on(P::UseCorrCont2) && prev2 != 0 {
+            f(&self.sh.corr_cont2[pos.stm][prev2]);
         }
     }
 
@@ -1318,7 +1327,7 @@ impl Searcher {
             eval = static_eval;
         } else {
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
-            static_eval = self.corrected(pos, raw_eval, prev1);
+            static_eval = self.corrected(pos, raw_eval, prev1, prev2);
             eval = static_eval;
             // The stored score replaces the eval only where the TT cutoff
             // would trust it (the fifty-move guard), so it can't drive pruning
@@ -1901,7 +1910,7 @@ impl Searcher {
                 && !(bound == BOUND_LOWER && best_score <= static_eval)
                 && !(bound == BOUND_UPPER && best_score >= static_eval)
             {
-                self.update_corr(pos, depth, best_score - static_eval, prev1);
+                self.update_corr(pos, depth, best_score - static_eval, prev1, prev2);
             }
         }
         best_score
@@ -2060,7 +2069,8 @@ impl Searcher {
         } else {
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
             let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
-            best = self.corrected(pos, raw_eval, prev1);
+            let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
+            best = self.corrected(pos, raw_eval, prev1, prev2);
             if let Some(e) = tte {
                 let s = e.score as i32;
                 if s.abs() < MATE_BOUND
