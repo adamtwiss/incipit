@@ -1454,7 +1454,12 @@ impl Searcher {
                 pos.gen_moves(&mut list, true);
                 for i in 0..list.len() {
                     let m = list[i];
-                    if !pos.see_ge(m, pc_beta - static_eval, &see_vals()) {
+                    // The gap is in eval units and the SEE bar in SEE units
+                    // (pawn = 100); PcSeeScale converts (the eval reads about
+                    // twice the SEE value for pawns and minors).
+                    let gap = pc_beta - static_eval;
+                    let bar = if on(P::UsePcSeeScale) { gap * tp(P::PcSeeScale) / 100 } else { gap };
+                    if !pos.see_ge(m, bar, &see_vals()) {
                         continue;
                     }
                     let mut child = *pos;

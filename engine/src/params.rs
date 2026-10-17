@@ -112,6 +112,9 @@ params! {
     // prunes a subtree deep enough for a zugzwang to matter.
     NmpVerifyDepth = "NmpVerifyDepth", 11, 6, 30, 2;
     ProbcutDepth = "ProbcutDepth", 3, 3, 8, 1;
+    // SEE units per eval unit for the ProbCut bar, in percent: 50 from the
+    // measured eval scale (a pawn reads ~200, a minor ~600 against SEE 100 / 320).
+    PcSeeScale = "PcSeeScale", 50, 20, 150, 10;
     ProbcutRed = "ProbcutRed", 6, 2, 6, 1;
     IirDepth = "IirDepth", 2, 2, 8, 1;
     FutDepth = "FutDepth", 9, 4, 12, 1;
@@ -170,6 +173,7 @@ params! {
     UseRazor = "UseRazor", 1, 0, 1, 0;
     UseNmp = "UseNmp", 1, 0, 1, 0;
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
+    UsePcSeeScale = "UsePcSeeScale", 1, 0, 1, 0;
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
