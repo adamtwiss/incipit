@@ -174,6 +174,7 @@ params! {
     UseLmp = "UseLmp", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
     UseFutHist = "UseFutHist", 1, 0, 1, 0;
+    UseFutTtEval = "UseFutTtEval", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
     UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
     UseSeeHist = "UseSeeHist", 1, 0, 1, 0;

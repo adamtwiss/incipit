@@ -1596,7 +1596,8 @@ impl Searcher {
                     if on(P::UseFut)
                         && !in_check
                         && lmr_d <= tp(P::FutDepth)
-                        && static_eval
+                        // The TT-improved eval, as the other eval-based prunes use.
+                        && if on(P::UseFutTtEval) { eval } else { static_eval }
                             + tp(P::FutBase)
                             + tp(P::FutMul) * lmr_d
                             + if on(P::UseFutHist) { hist_score / tp(P::FutHistDiv) } else { 0 }
