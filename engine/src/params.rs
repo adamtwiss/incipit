@@ -53,13 +53,13 @@ params! {
     // well-scored quiet survives a margin a badly scored one does not. Start:
     // 128, so a move at one table's ceiling adds 128 cp, about one depth of
     // FutMul.
-    FutHistDiv = "FutHistDiv", 128, 32, 512, 12;
+    FutHistDiv = "FutHistDiv", 136, 32, 512, 12;
     HistPrune = "HistPrune", 3139, 500, 5000, 225;
-    SeeQuiet = "SeeQuiet", 11, 0, 80, 4;
+    SeeQuiet = "SeeQuiet", 10, 0, 80, 4;
     // Quiet SEE bar by history: the history sum over this is subtracted from
     // the bar. Start 128, the same scale as FutHistDiv (a table ceiling of
     // 16384 moves the bar by 128 cp).
-    SeeHistDiv = "SeeHistDiv", 128, 32, 512, 12;
+    SeeHistDiv = "SeeHistDiv", 133, 32, 512, 12;
     SeeNoisy = "SeeNoisy", 101, 10, 200, 10;
     LmrBaseX100 = "LmrBaseX100", 42, 30, 130, 5;
     LmrDivX100 = "LmrDivX100", 307, 150, 350, 10;
@@ -75,7 +75,7 @@ params! {
     SeDouble = "SeDouble", 13, 5, 50, 2;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
-    LmrDeeper = "LmrDeeper", 50, 10, 200, 10;
+    LmrDeeper = "LmrDeeper", 49, 10, 200, 10;
     RfpDepth = "RfpDepth", 8, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 23, 0, 60, 3;
@@ -121,7 +121,7 @@ params! {
     // below zero) is ordered as a good capture, before the killers and quiets;
     // the rest follow the quiets, and with staged generation the quiets are
     // generated as soon as only those remain.
-    GoodCaptureSee = "GoodCaptureSee", -50, -150, 0, 8;
+    GoodCaptureSee = "GoodCaptureSee", -47, -150, 0, 8;
     // SEE piece values (pawn = 100), textbook starting values: used by SEE pruning,
     // ProbCut, qsearch SEE and capture ordering.
     SeeKnight = "SeeKnight", 320, 150, 650, 25;
@@ -131,7 +131,7 @@ params! {
     SeDepth = "SeDepth", 5, 4, 10, 1;
     // A TT entry qualifies its move for the singular test when its depth is
     // at least the node's depth minus this. Start: 3, the value used so far.
-    SeTtDepth = "SeTtDepth", 3, 0, 6, 1;
+    SeTtDepth = "SeTtDepth", 4, 0, 6, 1;
     // TT replacement: a was-PV entry counts this many plies deeper when a
     // victim is chosen. Start 2, a small round value (one age step is 8).
     TtPvKeep = "TtPvKeep", 2, 0, 8, 1;
