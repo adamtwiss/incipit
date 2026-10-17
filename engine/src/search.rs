@@ -60,6 +60,7 @@ pub struct Stats {
     pub nmp_verify: u64,
     pub nmp_verify_fail: u64,
     pub probcut_cuts: u64,
+    pub probcut_tt: u64,
     pub iir: u64,
     pub lmp: u64,
     pub futility: u64,
@@ -158,7 +159,10 @@ impl Stats {
                 pct(self.nmp_verify_fail, self.nmp_verify)
             ),
         );
-        line("ProbCut:", format!("{} cutoffs ({:.1}/Kn)", self.probcut_cuts, kn(self.probcut_cuts)));
+        line(
+            "ProbCut:",
+            format!("{} cutoffs ({:.1}/Kn), {} from the TT", self.probcut_cuts, kn(self.probcut_cuts), self.probcut_tt),
+        );
         line("IIR:", format!("{} reductions", self.iir));
         line("LMP:", format!("{} triggers (remaining quiets skipped)", self.lmp));
         line("Futility:", format!("{} triggers (remaining quiets skipped)", self.futility));
@@ -1454,6 +1458,21 @@ impl Searcher {
             }
             // probcut
             let pc_beta = beta + tp(P::ProbcutMargin);
+            // A lower bound from a search within ProbCut's reduction of this
+            // depth that already clears pc_beta is the ProbCut result itself:
+            // no need to search for it.
+            if on(P::UseProbcutTt)
+                && depth >= tp(P::ProbcutDepth)
+                && beta.abs() < MATE_BOUND
+                && tte.is_some()
+                && tt_bound != BOUND_UPPER
+                && tt_depth >= depth - 3
+                && tt_score >= pc_beta
+                && tt_score.abs() < MATE_BOUND
+            {
+                self.stats.probcut_tt += 1;
+                return tt_score;
+            }
             if on(P::UseProbcut)
                 && depth >= tp(P::ProbcutDepth)
                 && beta.abs() < MATE_BOUND

@@ -172,6 +172,7 @@ params! {
     UseRazor = "UseRazor", 1, 0, 1, 0;
     UseNmp = "UseNmp", 1, 0, 1, 0;
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
+    UseProbcutTt = "UseProbcutTt", 1, 0, 1, 0;
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
