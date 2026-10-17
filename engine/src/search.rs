@@ -1802,7 +1802,10 @@ impl Searcher {
                     self.stats.lmr_researches += 1;
                     // Far above the best so far even reduced: confirm a ply deeper.
                     let deeper = on(P::UseLmrDeeper) && score > best_score + tp(P::LmrDeeper);
-                    let d = new_depth + deeper as i32;
+                    // Only just over alpha: confirm a ply shallower (still
+                    // deeper than the reduced search, which needs r >= 2).
+                    let shallower = on(P::UseLmrShallower) && r >= 2 && score < alpha + tp(P::LmrShallower);
+                    let d = new_depth + deeper as i32 - shallower as i32;
                     score = -self.negamax(&child, -alpha - 1, -alpha, d, ply + 1, !cut_node);
                 }
                 if pv_node && score > alpha && score < beta {

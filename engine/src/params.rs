@@ -76,6 +76,10 @@ params! {
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
     LmrDeeper = "LmrDeeper", 50, 10, 200, 10;
+    // A reduced search less than this above alpha is confirmed a ply
+    // shallower: a tenth of a pawn on the net's eval scale (a pawn reads
+    // about 200 at depth 1), rounded.
+    LmrShallower = "LmrShallower", 20, 0, 100, 10;
     RfpDepth = "RfpDepth", 8, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 23, 0, 60, 3;
@@ -188,6 +192,7 @@ params! {
     UseLmr = "UseLmr", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
+    UseLmrShallower = "UseLmrShallower", 1, 0, 1, 0;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
