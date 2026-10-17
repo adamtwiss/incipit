@@ -274,6 +274,41 @@ impl PonderTm {
 /// SPSA parameters, starting from textbook values; constants outside tune builds.
 
 #[inline(always)]
+/// The side to move's pieces attacked by a cheaper enemy piece: non-pawns
+/// attacked by a pawn, rooks and queens by a minor, queens by a rook.
+fn threatened_pieces(pos: &Position) -> u64 {
+    use crate::attacks::{bishop_attacks, knight_attacks, pawn_attacks, rook_attacks};
+    let us = pos.stm;
+    let them = us ^ 1;
+    let occ = pos.colors[0] | pos.colors[1];
+    let mut by_pawn = 0u64;
+    let mut pawns = pos.pcs(them, PAWN);
+    while pawns != 0 {
+        by_pawn |= pawn_attacks(them, pawns.trailing_zeros() as usize);
+        pawns &= pawns - 1;
+    }
+    let mut by_minor = 0u64;
+    let mut knights = pos.pcs(them, KNIGHT);
+    while knights != 0 {
+        by_minor |= knight_attacks(knights.trailing_zeros() as usize);
+        knights &= knights - 1;
+    }
+    let mut bishops = pos.pcs(them, BISHOP);
+    while bishops != 0 {
+        by_minor |= bishop_attacks(bishops.trailing_zeros() as usize, occ);
+        bishops &= bishops - 1;
+    }
+    let mut by_rook = 0u64;
+    let mut rooks = pos.pcs(them, ROOK);
+    while rooks != 0 {
+        by_rook |= rook_attacks(rooks.trailing_zeros() as usize, occ);
+        rooks &= rooks - 1;
+    }
+    let ours = pos.colors[us];
+    let majors = pos.pcs(us, ROOK) | pos.pcs(us, QUEEN);
+    (by_pawn & ours & !pos.pcs(us, PAWN)) | (by_minor & majors) | (by_rook & pos.pcs(us, QUEEN))
+}
+
 fn see_vals() -> [i32; 7] {
     [100, tp(P::SeeKnight), tp(P::SeeBishop), tp(P::SeeRook), tp(P::SeeQueen), 20000, 0]
 }
@@ -1993,6 +2028,9 @@ impl Searcher {
         prev4: usize,
     ) {
         let us = pos.stm;
+        // Our pieces attacked by a cheaper enemy piece, computed once, when
+        // the first quiet is scored.
+        let mut threatened: Option<u64> = None;
         for &m in moves {
             let score = if m == tt_move {
                 1 << 30
@@ -2021,10 +2059,23 @@ impl Searcher {
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ci = pc * 64 + mto(m);
+                // A quiet that moves a threatened piece is an evasion the
+                // square-keyed histories cannot see: ThreatBonus on top.
+                let evasion = if on(P::UseThreatOrd) {
+                    let t = *threatened.get_or_insert_with(|| threatened_pieces(pos));
+                    if t & (1u64 << mfrom(m)) != 0 {
+                        tp(P::ThreatBonus)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
                 self.hist[us][mfrom(m)][mto(m)] as i32
                     + self.sh.cont[prev1][ci].load(Ordering::Relaxed) as i32
                     + self.sh.cont[prev2][ci].load(Ordering::Relaxed) as i32
                     + self.sh.cont[prev4][ci].load(Ordering::Relaxed) as i32 / 2
+                    + evasion
             };
             scores.push(score);
         }

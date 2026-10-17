@@ -63,6 +63,9 @@ params! {
     SeeNoisy = "SeeNoisy", 101, 10, 200, 10;
     LmrBaseX100 = "LmrBaseX100", 42, 30, 130, 5;
     LmrDivX100 = "LmrDivX100", 307, 150, 350, 10;
+    // Ordering bonus for a quiet that moves a piece attacked by a cheaper
+    // enemy piece. Round start: a quarter of one history table's ceiling (16384).
+    ThreatBonus = "ThreatBonus", 4096, 0, 16384, 512;
     LmrHistDiv = "LmrHistDiv", 9103, 3000, 16000, 650;
     AspDelta = "AspDelta", 15, 3, 40, 2;
     HistMul = "HistMul", 305, 100, 500, 20;
@@ -211,6 +214,7 @@ params! {
     // GUI ponders (without pondering spend already meets the budget).
     UseTmFeed = "UseTmFeed", 1, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
+    UseThreatOrd = "UseThreatOrd", 1, 0, 1, 0;
     // Correction history: incremental updates toward zero residual (1) or the
     // old average toward the residual (0).
     UseCorrIncr = "UseCorrIncr", 1, 0, 1, 0;
