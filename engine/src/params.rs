@@ -48,6 +48,9 @@ params! {
     ProbcutMargin = "ProbcutMargin", 216, 100, 350, 13;
     FutBase = "FutBase", 79, 30, 250, 11;
     FutMul = "FutMul", 83, 40, 200, 8;
+    // Futility margin added at an improving node (the eval has risen since
+    // our last move): one ply's worth of FutMul, rounded.
+    FutImproving = "FutImproving", 80, 0, 250, 15;
     // Futility margin by quiet history: a quiet's history sum (the ordering
     // score, four tables of +-16384) over this is added to the margin, so a
     // well-scored quiet survives a margin a badly scored one does not. Start:
@@ -176,6 +179,7 @@ params! {
     UseLmp = "UseLmp", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
     UseFutHist = "UseFutHist", 1, 0, 1, 0;
+    UseFutImproving = "UseFutImproving", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
     UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
     UseSeeHist = "UseSeeHist", 1, 0, 1, 0;

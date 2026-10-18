@@ -1762,6 +1762,7 @@ impl Searcher {
                             + tp(P::FutBase)
                             + tp(P::FutMul) * lmr_d
                             + if on(P::UseFutHist) { hist_score / tp(P::FutHistDiv) } else { 0 }
+                            + if on(P::UseFutImproving) && improving { tp(P::FutImproving) } else { 0 }
                             <= alpha
                     {
                         self.stats.futility += 1;
