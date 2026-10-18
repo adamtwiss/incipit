@@ -72,6 +72,9 @@ params! {
     // every reply): PriorBonusPct% of the cutoff bonus at this depth. Half, as weaker
     // evidence than a cutoff; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 53, 0, 150, 8;
+    // Malus for the quiets searched before a capture cut off, as a share of
+    // the cutoff bonus: half, the round middle, until SPSA says otherwise.
+    QuietMalusCapPct = "QuietMalusCapPct", 50, 0, 150, 10;
     SeDouble = "SeDouble", 13, 5, 50, 2;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
@@ -213,6 +216,7 @@ params! {
     // GUI ponders (without pondering spend already meets the budget).
     UseTmFeed = "UseTmFeed", 1, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
+    UseQuietMalusCap = "UseQuietMalusCap", 1, 0, 1, 0;
     // Correction history: incremental updates toward zero residual (1) or the
     // old average toward the residual (0).
     UseCorrIncr = "UseCorrIncr", 1, 0, 1, 0;

@@ -1995,6 +1995,13 @@ impl Searcher {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ct = pos.captured_type(m);
                 upd(&mut self.capt[pc][mto(m)][ct], bonus);
+                // The quiets searched before the capture failed as well.
+                if on(P::UseQuietMalusCap) {
+                    let malus = bonus * tp(P::QuietMalusCapPct) / 100;
+                    for k in 0..nq {
+                        self.update_quiet(pos, quiets[k], -malus, prev1, prev2, prev4);
+                    }
+                }
             }
             for k in 0..nc {
                 let cm = capts[k];
