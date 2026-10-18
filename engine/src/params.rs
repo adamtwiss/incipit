@@ -104,6 +104,11 @@ params! {
     PonderMinPct = "PonderMinPct", 30, 0, 100, 5;
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
     TmFailLow = "TmFailLow", 28, 0, 100, 8;
+    // Node-share scale (TmNodeBase/100 - best move's share of root nodes):
+    // a larger base flattens it. Stability scale: the table's distance from 1
+    // times TmStabAmp/100. Hand-set shapes, exposed so tune rounds can move them.
+    TmNodeBase = "TmNodeBase", 150, 110, 250, 10;
+    TmStabAmp = "TmStabAmp", 100, 0, 200, 15;
     TmFeedMax = "TmFeedMax", 250, 100, 400, 20;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 2, 2, 6, 1;
