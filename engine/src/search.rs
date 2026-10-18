@@ -2119,7 +2119,10 @@ impl Searcher {
             } else if is_noisy(m) {
                 let ct = pos.captured_type(m);
                 let pc = pos.board[mfrom(m)] as usize;
+                // Victim first, then the cheaper attacker (as qsearch orders),
+                // then capture history.
                 let base = see_vals()[ct.min(5)] * 16 * (ct < 6) as i32
+                    - if on(P::UseMvvLva) { see_vals()[pc_type(pc as u8)] } else { 0 }
                     + if is_promo(m) && promo_pt(m) == QUEEN { 8000 } else { 0 }
                     + self.capt[pc][mto(m)][ct] as i32 / 16;
                 if is_promo(m) && promo_pt(m) != QUEEN {

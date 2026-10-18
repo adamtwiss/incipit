@@ -213,6 +213,8 @@ params! {
     // GUI ponders (without pondering spend already meets the budget).
     UseTmFeed = "UseTmFeed", 1, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
+    // Main-search capture ordering subtracts the attacker's value (MVV-LVA).
+    UseMvvLva = "UseMvvLva", 1, 0, 1, 0;
     // Correction history: incremental updates toward zero residual (1) or the
     // old average toward the residual (0).
     UseCorrIncr = "UseCorrIncr", 1, 0, 1, 0;
