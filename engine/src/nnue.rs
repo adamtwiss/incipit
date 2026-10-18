@@ -734,6 +734,8 @@ impl Acc {
 /// subtracts the pieces that differ from that entry, instead of every piece.
 pub struct RefreshCache {
     entries: Vec<CacheEntry>,
+    /// Pawn-pair vectors (pawn-pair nets only).
+    pairs: PairCache,
 }
 
 #[repr(C, align(64))]
@@ -750,6 +752,12 @@ impl RefreshCache {
 
     /// A cache for network `n` (tests use networks other than the loaded one).
     fn with_net(n: &Network) -> Self {
+        Self::with_pair_entries(n, if n.pp { PAIR_ENTRIES } else { 0 })
+    }
+
+    /// With a given pair-cache size (a power of two; tests use tiny ones to
+    /// force collisions).
+    fn with_pair_entries(n: &Network, pair_entries: usize) -> Self {
         let entries = (0..2 * n.nkb * 2)
             .map(|_| {
                 let mut e = CacheEntry { acc: [0; MAX_H], bb: [0; 12] };
@@ -757,7 +765,139 @@ impl RefreshCache {
                 e
             })
             .collect();
-        RefreshCache { entries }
+        RefreshCache { entries, pairs: PairCache::new(n.h, pair_entries) }
+    }
+}
+
+/// The source for building a pair vector from nothing.
+static ZERO_ROW: [i16; MAX_H] = [0; MAX_H];
+
+/// Entries per thread: 4096 x 2 KB at h = 1024.
+const PAIR_ENTRIES: usize = 4096;
+
+/// Pawn-pair vectors by pawn structure. The pair weights don't depend on the
+/// king bucket, so a perspective's pair contribution (the sum of its active
+/// pair rows) depends only on the pawns and that perspective's mirror state,
+/// and structures repeat constantly in a search. A pawn move then changes
+/// the accumulator by the new vector minus the old one (2 rows) instead of
+/// the 4-10 rows of the pairs that change. Entries are tagged with the exact
+/// pawns, so a hash collision can only cost a rebuild.
+struct PairCache {
+    h: usize,
+    mask: usize,
+    /// (white pawns, black pawns, perspective * 8 + mirror xor) per entry.
+    tags: Vec<(u64, u64, usize)>,
+    vecs: Vec<i16>, // [entry][h]
+}
+
+impl PairCache {
+    fn new(h: usize, entries: usize) -> Self {
+        debug_assert!(entries == 0 || entries.is_power_of_two());
+        // No position has pawns on every square, so these tags never match.
+        PairCache { h, mask: entries.wrapping_sub(1), tags: vec![(!0, !0, 0); entries], vecs: vec![0; entries * h] }
+    }
+
+    #[inline(always)]
+    fn slot(&self, tag: (u64, u64, usize)) -> usize {
+        // A full mix: pawn moves change high bits too (ranks 5-7).
+        let mut k = tag.0 ^ tag.1.rotate_left(29) ^ (tag.2 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        k ^= k >> 33;
+        k = k.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        k ^= k >> 33;
+        k = k.wrapping_mul(0xC4CE_B9FE_1A85_EC53);
+        (k >> 40) as usize & self.mask
+    }
+
+    #[inline(always)]
+    fn vec(&self, i: usize) -> &[i16] {
+        &self.vecs[i * self.h..(i + 1) * self.h]
+    }
+
+    /// The entry for `pawns` (white, black) in perspective p's frame with
+    /// mirror xor x, built from the active pairs on a miss.
+    #[inline(always)]
+    fn get(&mut self, n: &Network, pawns: (u64, u64), p: usize, x: usize) -> usize {
+        let tag = (pawns.0, pawns.1, p * 8 + x);
+        let i = self.slot(tag);
+        if self.tags[i] != tag {
+            self.tags[i] = tag;
+            let h = self.h;
+            let mut pairs = [0u16; crate::pawnpairs::MAX_ACTIVE];
+            let k = crate::pawnpairs::active_bb(pawns.0, pawns.1, p, x, &mut pairs);
+            let mut rows: [&[i16]; crate::pawnpairs::MAX_ACTIVE] = [&[]; crate::pawnpairs::MAX_ACTIVE];
+            for (r, &f) in rows.iter_mut().zip(&pairs[..k]) {
+                *r = row(n, n.pp_base + f as usize, h);
+            }
+            add_sub_rows(&mut self.vecs[i * h..(i + 1) * h], &ZERO_ROW[..h], &rows[..k], &[]);
+        }
+        i
+    }
+
+    /// The entry for `new`, built on a miss from entry `from` (holding
+    /// `old`) plus the pairs that change; None if it would overwrite `from`.
+    #[inline(always)]
+    fn get_from(
+        &mut self,
+        n: &Network,
+        from: usize,
+        old: (u64, u64),
+        new: (u64, u64),
+        p: usize,
+        x: usize,
+    ) -> Option<usize> {
+        let tag = (new.0, new.1, p * 8 + x);
+        let i = self.slot(tag);
+        if i == from {
+            return None;
+        }
+        if self.tags[i] != tag {
+            self.tags[i] = tag;
+            let h = self.h;
+            // The changing pairs' rows, then one pass: entry i = entry from +
+            // the added rows - the removed ones.
+            const M: usize = crate::pawnpairs::MAX_ACTIVE;
+            let (mut ar, mut sr): ([&[i16]; M], [&[i16]; M]) = ([&[]; M], [&[]; M]);
+            let (mut ka, mut ks) = (0, 0);
+            crate::pawnpairs::delta(old, new, p, x, |f, add| {
+                if add {
+                    ar[ka] = row(n, n.pp_base + f, h);
+                    ka += 1;
+                } else {
+                    sr[ks] = row(n, n.pp_base + f, h);
+                    ks += 1;
+                }
+            });
+            let (dst, src) = if i < from {
+                let (lo, hi) = self.vecs.split_at_mut(from * h);
+                (&mut lo[i * h..(i + 1) * h], &hi[..h])
+            } else {
+                let (lo, hi) = self.vecs.split_at_mut(i * h);
+                (&mut hi[..h], &lo[from * h..(from + 1) * h])
+            };
+            add_sub_rows(dst, src, &ar[..ka], &sr[..ks]);
+        }
+        Some(i)
+    }
+}
+
+/// v += r (add) or v -= r, 32 values at a time on local copies (a plain
+/// zipped loop here compiled to scalar code: the compiler couldn't rule out
+/// aliasing).
+#[inline(always)]
+fn add_row(v: &mut [i16], r: &[i16], add: bool) {
+    for (y, w) in v.chunks_exact_mut(32).zip(r.chunks_exact(32)) {
+        let mut a: [i16; 32] = (*y).try_into().unwrap();
+        let w: [i16; 32] = (*w).try_into().unwrap();
+        if add {
+            for k in 0..32 {
+                a[k] = a[k].wrapping_add(w[k]);
+            }
+        } else {
+            for k in 0..32 {
+                a[k] = a[k].wrapping_sub(w[k]);
+            }
+        }
+        y.copy_from_slice(&a);
     }
 }
 
@@ -795,7 +935,7 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
     let idx = (p * n.nkb + ki.0 / 768) * 2 + (ki.1 != 0) as usize;
     let e = &mut cache.entries[idx];
     // Feature rows to add and subtract (at most 32 pieces each way, plus the
-    // pawn pairs that change).
+    // pawn pairs that change when their vectors can't be used).
     let mut adds = [0usize; 32 + crate::pawnpairs::MAX_ACTIVE];
     let mut subs = [0usize; 32 + crate::pawnpairs::MAX_ACTIVE];
     let (mut na, mut ns) = (0, 0);
@@ -803,15 +943,22 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
         let old = (e.bb[make_pc(PAWN, WHITE) as usize], e.bb[make_pc(PAWN, BLACK) as usize]);
         let new = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
         if old != new {
-            crate::pawnpairs::delta(old, new, p, ki.1, |f, add| {
-                if add {
-                    adds[na] = n.pp_base + f;
-                    na += 1;
-                } else {
-                    subs[ns] = n.pp_base + f;
-                    ns += 1;
-                }
-            });
+            let pc = &mut cache.pairs;
+            let io = pc.get(n, old, p, ki.1);
+            if let Some(inew) = pc.get_from(n, io, old, new, p, ki.1) {
+                add_row(&mut e.acc[..h], pc.vec(inew), true);
+                add_row(&mut e.acc[..h], pc.vec(io), false);
+            } else {
+                crate::pawnpairs::delta(old, new, p, ki.1, |f, add| {
+                    if add {
+                        adds[na] = n.pp_base + f;
+                        na += 1;
+                    } else {
+                        subs[ns] = n.pp_base + f;
+                        ns += 1;
+                    }
+                });
+            }
         }
     }
     for c in 0..2 {
@@ -958,6 +1105,24 @@ fn update<const H: usize>(
         // then only the pairs of the pawns that left or arrived: those rows go
         // into the same single pass as the move's own rows.
         if pawns_change {
+            let old = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
+            let new = (child.pcs(WHITE, PAWN), child.pcs(BLACK, PAWN));
+            let pcache = &mut cache.pairs;
+            let io = pcache.get(n, old, p, ki.1);
+            if let Some(inew) = pcache.get_from(n, io, old, new, p, ki.1) {
+                // A pawn move is never a castle: one row added, one or two
+                // removed, plus the new and old pair vectors.
+                let (nv, ov) = (pcache.vec(inew), pcache.vec(io));
+                if ns == 1 {
+                    add_sub(dst, src, [a0, nv], [s0, ov]);
+                } else {
+                    let s1 = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
+                    add_sub(dst, src, [a0, nv], [s0, s1, ov]);
+                }
+                continue;
+            }
+            // The new entry's slot holds the old one: add the changing pairs'
+            // rows directly.
             let mut ar: [&[i16]; 2 + 17] = [a0; 2 + 17];
             let mut sr: [&[i16]; 2 + 34] = [s0; 2 + 34];
             let (mut ka, mut ks) = (1, 1);
@@ -969,8 +1134,6 @@ fn update<const H: usize>(
                 sr[1] = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
                 ks = 2;
             }
-            let old = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
-            let new = (child.pcs(WHITE, PAWN), child.pcs(BLACK, PAWN));
             crate::pawnpairs::delta(old, new, p, ki.1, |f, add| {
                 if add {
                     ar[ka] = row(n, n.pp_base + f, h);
@@ -2790,7 +2953,9 @@ mod tests {
     /// after every move of random games from varied positions (pawn moves,
     /// captures, en passant, promotions, castling, king moves that change
     /// bucket or mirror through the refresh cache), with and without pawn
-    /// pairs.
+    /// pairs. Pawn pairs run with the normal pair cache and with a 2-entry
+    /// one, where the new structure's slot often holds the old one (the
+    /// direct-rows fallback) and entries are constantly evicted and rebuilt.
     #[test]
     fn incremental_matches_refresh() {
         crate::attacks::init();
@@ -2802,10 +2967,10 @@ mod tests {
             "4k3/p1p1p1p1/1p1p1p1p/P1P1P1P1/1P1P1P1P/8/8/4K3 w - - 0 1",
             "bqnb1rkr/pp3ppp/3ppn2/2p5/5P2/P2P4/NPP1P1PP/BQ1BNRKR w HFhf - 2 9",
         ];
-        for pp in [false, true] {
+        for (pp, pair_entries) in [(false, 0), (true, PAIR_ENTRIES), (true, 2)] {
             let n = load(&synth_net(pp, 0x1234_5678)).unwrap();
             assert_eq!(n.pp, pp);
-            let mut cache = RefreshCache::with_net(&n);
+            let mut cache = RefreshCache::with_pair_entries(&n, pair_entries);
             let mut seed = 0x9E37_79B9_7F4A_7C15u64;
             let mut checked = 0;
             for g in 0..60 {
@@ -2841,8 +3006,9 @@ mod tests {
                     }
                     assert!(
                         inc.v[..256] == full.v[..256],
-                        "pp {}: incremental != refresh after {} in {}",
+                        "pp {} ({} pair entries): incremental != refresh after {} in {}",
                         pp,
+                        pair_entries,
                         pos.move_uci(m),
                         pos.to_fen()
                     );
