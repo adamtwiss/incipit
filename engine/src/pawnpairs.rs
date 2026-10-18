@@ -115,8 +115,9 @@ pub fn active_bb(wp: u64, bp: u64, persp: usize, xor: usize, out: &mut [u16; MAX
 }
 
 /// The pair features to add (in `new`, not `old`) and subtract (in `old`, not
-/// `new`), each passed to `f(feature, add)`. Sorts both lists in place.
-#[inline]
+/// `new`), each passed to `f(feature, add)`. Sorts both lists in place. The
+/// reference `delta` is tested against.
+#[cfg(test)]
 pub fn diff(old: &mut [u16], new: &mut [u16], mut f: impl FnMut(usize, bool)) {
     old.sort_unstable();
     new.sort_unstable();
@@ -131,6 +132,64 @@ pub fn diff(old: &mut [u16], new: &mut [u16], mut f: impl FnMut(usize, bool)) {
         } else {
             i += 1;
             j += 1;
+        }
+    }
+}
+
+/// For each square, the squares it pairs with: pawn squares (ranks 2-7) on
+/// the same or an adjacent file, itself excluded. Flips and mirrors keep
+/// files' adjacency, so this holds in every perspective's frame.
+fn partner_masks() -> &'static [u64; 64] {
+    static M: OnceLock<[u64; 64]> = OnceLock::new();
+    M.get_or_init(|| {
+        let mut m = [0u64; 64];
+        for (a, mask) in m.iter_mut().enumerate() {
+            for b in 8..56usize {
+                if b != a && (a % 8).abs_diff(b % 8) <= 1 {
+                    *mask |= 1 << b;
+                }
+            }
+        }
+        m
+    })
+}
+
+/// The pair features that change between pawn structures `old` and `new`
+/// (white, black bitboards) for perspective `persp` with file mirror `xor`,
+/// each passed to `f(feature, add)`. Only pairs with a pawn that left or
+/// arrived change, so this touches a few pairs instead of rebuilding both
+/// lists: a removed pawn's pairs in `old` are subtracted (a pair of two
+/// removed pawns once), an added pawn's pairs in `new` are added.
+#[inline]
+pub fn delta(old: (u64, u64), new: (u64, u64), persp: usize, xor: usize, mut f: impl FnMut(usize, bool)) {
+    let flip = if persp == WHITE { 0 } else { 56 };
+    let masks = partner_masks();
+    let t = pair_table();
+    let col = |sq: usize, w: u64| if w >> sq & 1 != 0 { WHITE ^ persp } else { BLACK ^ persp };
+    let mut feat = |a: usize, ca: usize, b: usize, cb: usize, add: bool| {
+        let (fa, fb) = (a ^ flip ^ xor, b ^ flip ^ xor);
+        let (lo, clo, hi, chi) = if fa < fb { (fa, ca, fb, cb) } else { (fb, cb, fa, ca) };
+        let id = t[lo][hi];
+        debug_assert!(id != NONE);
+        f(id as usize * 4 + clo * 2 + chi, add);
+    };
+    for (pawns, gone_w, gone_b, add) in
+        [(old, old.0 & !new.0, old.1 & !new.1, false), (new, new.0 & !old.0, new.1 & !old.1, true)]
+    {
+        let all = pawns.0 | pawns.1;
+        let mut done = 0u64;
+        let mut changed = gone_w | gone_b;
+        while changed != 0 {
+            let a = changed.trailing_zeros() as usize;
+            changed &= changed - 1;
+            let ca = col(a, pawns.0);
+            let mut partners = all & masks[a] & !done;
+            while partners != 0 {
+                let b = partners.trailing_zeros() as usize;
+                partners &= partners - 1;
+                feat(a, ca, b, col(b, pawns.0), add);
+            }
+            done |= 1 << a;
         }
     }
 }
@@ -225,6 +284,42 @@ mod tests {
         let (mut adds, mut subs) = (vec![], vec![]);
         diff(&mut a, &mut b, |f, add| if add { adds.push(f) } else { subs.push(f) });
         assert_eq!((adds, subs), (vec![2, 7], vec![1, 5]));
+    }
+
+    /// `delta` gives exactly the symmetric difference of the full lists, for
+    /// every legal move from the fixture positions (pawn moves, captures, en
+    /// passant, promotions, and moves that touch no pawn).
+    #[test]
+    fn delta_matches_full_diff() {
+        crate::attacks::init();
+        let mut n = 0;
+        for line in include_str!("../tests/pawnpairs_fixture.txt").lines().filter(|l| !l.starts_with('#')) {
+            let p = Position::from_fen(line.split('|').next().unwrap().trim()).unwrap();
+            let mut list = MoveList::new();
+            p.gen_moves(&mut list, false);
+            for i in 0..list.len() {
+                let mut c = p;
+                if !c.make_move(list[i]) {
+                    continue;
+                }
+                let (old, new) = ((p.pcs(WHITE, PAWN), p.pcs(BLACK, PAWN)), (c.pcs(WHITE, PAWN), c.pcs(BLACK, PAWN)));
+                for persp in [WHITE, BLACK] {
+                    for xor in [0, 7] {
+                        let (mut a, mut b) = ([0u16; MAX_ACTIVE], [0u16; MAX_ACTIVE]);
+                        let ka = active_bb(old.0, old.1, persp, xor, &mut a);
+                        let kb = active_bb(new.0, new.1, persp, xor, &mut b);
+                        let (mut want, mut got) = (Vec::new(), Vec::new());
+                        diff(&mut a[..ka], &mut b[..kb], |f, add| want.push((f, add)));
+                        delta(old, new, persp, xor, |f, add| got.push((f, add)));
+                        want.sort_unstable();
+                        got.sort_unstable();
+                        assert_eq!(got, want, "{} {}", p.to_fen(), p.move_uci(list[i]));
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert!(n > 5000, "{n}");
     }
 
     /// The checked-in fixture matches this implementation (the trainer's test

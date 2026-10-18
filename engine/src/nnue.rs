@@ -784,36 +784,6 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
     }
 }
 
-/// The pawn-pair rows that change between pawn structures `old` and `new`
-/// (white, black pawn bitboards) for perspective p with file mirror `xor`,
-/// appended to `adds` / `subs` from `na` / `ns`; returns the new counts.
-#[inline]
-fn pair_diff(
-    n: &Network,
-    p: usize,
-    xor: usize,
-    old: (u64, u64),
-    new: (u64, u64),
-    adds: &mut [usize],
-    subs: &mut [usize],
-    (mut na, mut ns): (usize, usize),
-) -> (usize, usize) {
-    use crate::pawnpairs::{active_bb, diff, MAX_ACTIVE};
-    let (mut a, mut b) = ([0u16; MAX_ACTIVE], [0u16; MAX_ACTIVE]);
-    let ka = active_bb(old.0, old.1, p, xor, &mut a);
-    let kb = active_bb(new.0, new.1, p, xor, &mut b);
-    diff(&mut a[..ka], &mut b[..kb], |f, add| {
-        if add {
-            adds[na] = n.pp_base + f;
-            na += 1;
-        } else {
-            subs[ns] = n.pp_base + f;
-            ns += 1;
-        }
-    });
-    (na, ns)
-}
-
 /// Rebuilds perspective p of `acc` for `pos` through the cache entry for p's
 /// king bucket and mirror state: the entry's rows plus the pieces added and
 /// minus those removed since it was last used, written back to the entry and
@@ -833,7 +803,15 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
         let old = (e.bb[make_pc(PAWN, WHITE) as usize], e.bb[make_pc(PAWN, BLACK) as usize]);
         let new = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
         if old != new {
-            (na, ns) = pair_diff(n, p, ki.1, old, new, &mut adds, &mut subs, (na, ns));
+            crate::pawnpairs::delta(old, new, p, ki.1, |f, add| {
+                if add {
+                    adds[na] = n.pp_base + f;
+                    na += 1;
+                } else {
+                    subs[ns] = n.pp_base + f;
+                    ns += 1;
+                }
+            });
         }
     }
     for c in 0..2 {
@@ -976,6 +954,35 @@ fn update<const H: usize>(
         let s0 = row(n, feat(p, ki, subs[0].0, subs[0].1), h);
         let src = parent.side(p, h);
         let dst = acc.side_mut(p, h);
+        // Pawn pairs change only when a pawn moves or one is captured, and
+        // then only the pairs of the pawns that left or arrived: those rows go
+        // into the same single pass as the move's own rows.
+        if pawns_change {
+            let mut ar: [&[i16]; 2 + 17] = [a0; 2 + 17];
+            let mut sr: [&[i16]; 2 + 34] = [s0; 2 + 34];
+            let (mut ka, mut ks) = (1, 1);
+            if na == 2 {
+                ar[1] = row(n, feat(p, ki, adds[1].0, adds[1].1), h);
+                ka = 2;
+            }
+            if ns == 2 {
+                sr[1] = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
+                ks = 2;
+            }
+            let old = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
+            let new = (child.pcs(WHITE, PAWN), child.pcs(BLACK, PAWN));
+            crate::pawnpairs::delta(old, new, p, ki.1, |f, add| {
+                if add {
+                    ar[ka] = row(n, n.pp_base + f, h);
+                    ka += 1;
+                } else {
+                    sr[ks] = row(n, n.pp_base + f, h);
+                    ks += 1;
+                }
+            });
+            add_sub_rows(dst, src, &ar[..ka], &sr[..ks]);
+            continue;
+        }
         if ns == 1 {
             add_sub(dst, src, [a0], [s0]);
         } else if na == 1 {
@@ -986,30 +993,32 @@ fn update<const H: usize>(
             let a1 = row(n, feat(p, ki, adds[1].0, adds[1].1), h);
             add_sub(dst, src, [a0, a1], [s0, s1]);
         }
-        // Pawn pairs change only when a pawn moves or one is captured.
-        if pawns_change {
-            let mut pa = [0usize; crate::pawnpairs::MAX_ACTIVE];
-            let mut ps = [0usize; crate::pawnpairs::MAX_ACTIVE];
-            let old = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
-            let new = (child.pcs(WHITE, PAWN), child.pcs(BLACK, PAWN));
-            let (ka, ks) = pair_diff(n, p, ki.1, old, new, &mut pa, &mut ps, (0, 0));
-            add_rows(acc.side_mut(p, h), n, h, &pa[..ka], &ps[..ks]);
-        }
     }
 }
 
-/// v += the rows `adds` - the rows `subs`, in place.
+/// dst = src + Σ adds − Σ subs for any number of rows, in one pass over dst:
+/// 32 values at a time held while every row is applied (the move's own rows
+/// plus the pawn pairs that change).
 #[inline(always)]
-fn add_rows(v: &mut [i16], n: &Network, h: usize, adds: &[usize], subs: &[usize]) {
-    for &f in adds {
-        for (x, &w) in v.iter_mut().zip(row(n, f, h)) {
-            *x = x.wrapping_add(w);
+fn add_sub_rows(dst: &mut [i16], src: &[i16], adds: &[&[i16]], subs: &[&[i16]]) {
+    const C: usize = 32;
+    let h = dst.len();
+    let mut o = 0;
+    while o < h {
+        let mut x = [0i16; C];
+        x.copy_from_slice(&src[o..o + C]);
+        for a in adds {
+            for (v, &w) in x.iter_mut().zip(&a[o..o + C]) {
+                *v = v.wrapping_add(w);
+            }
         }
-    }
-    for &f in subs {
-        for (x, &w) in v.iter_mut().zip(row(n, f, h)) {
-            *x = x.wrapping_sub(w);
+        for s in subs {
+            for (v, &w) in x.iter_mut().zip(&s[o..o + C]) {
+                *v = v.wrapping_sub(w);
+            }
         }
+        dst[o..o + C].copy_from_slice(&x);
+        o += C;
     }
 }
 
