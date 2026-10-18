@@ -123,6 +123,12 @@ struct Uci {
     /// 0 (default) = off; set it where moves really cost the overhead (online
     /// play), not in lag-free matches.
     reserve_moves: i64,
+    /// Measured lag: the clock we lose per move beyond our own thinking
+    /// time (network and GUI), an average over recent moves, in ms.
+    lag_ms: f64,
+    /// The previous move's clock, increment, own time and game length, to
+    /// measure the next move's lag from.
+    lag_prev: Option<(i64, i64, u64, usize)>,
 }
 
 impl Uci {
@@ -225,6 +231,15 @@ impl Uci {
             i += 2;
         }
         let (time, inc) = if self.pos.stm == WHITE { (wtime, winc) } else { (btime, binc) };
+        // Lag: what the clock lost since our last move, beyond that move's own
+        // time. Only between consecutive moves of one game; a jump over 1 s is
+        // a clock change (or a takeback), not lag.
+        if let (Some(t), Some((pt, pinc, pown, plen))) = (time, self.lag_prev.take()) {
+            let lag = pt.saturating_add(pinc).saturating_sub(pown as i64).saturating_sub(t);
+            if self.hist.len() == plen + 2 && (0..=1000).contains(&lag) {
+                self.lag_ms += (lag as f64 - self.lag_ms) / 8.0;
+            }
+        }
         // Our clock missing (or unparsable) but the other side's given: use
         // theirs rather than searching without a limit.
         let time = time.or(wtime).or(btime).or(if bad_clock && movetime.is_none() { Some(0) } else { None });
@@ -237,11 +252,14 @@ impl Uci {
             // Saturating arithmetic: absurd clock values must not wrap.
             let left = t.saturating_sub(self.overhead).max(1);
             // MoveReserve is for sudden death only (no movestogo).
-            let left = if mtg == 0 && inc < self.overhead {
-                left.saturating_sub(self.overhead.saturating_mul(self.reserve_moves)).max(1)
-            } else {
-                left
-            };
+            // Plus TmLagMoves moves at the measured lag: with a lag of L per
+            // move, a clock below L x moves left flags however fast we move
+            // (long lichess endgames at 1+0 to 10+0 flagged this way).
+            let reserve = self
+                .overhead
+                .saturating_mul(self.reserve_moves)
+                .max((self.lag_ms * params::tp(params::P::TmLagMoves) as f64) as i64);
+            let left = if mtg == 0 && inc < self.overhead { left.saturating_sub(reserve).max(1) } else { left };
             let soft = if mtg > 0 {
                 (left / mtg.saturating_add(1).min(40)).saturating_add(inc.saturating_mul(3) / 4)
             } else {
@@ -308,6 +326,10 @@ impl Uci {
         if let Some(own) = own {
             self.searcher.pt.record_spend(own, base_soft);
         }
+        self.lag_prev = match (time, own) {
+            (Some(t), Some(own)) if movetime.is_none() => Some((t, inc, own, self.hist.len())),
+            _ => None,
+        };
         let pm = self.searcher.ponder_move(m);
         let mut after = self.pos;
         let ok = pm != 0 && after.make_move(m) && after.is_pseudo_legal(pm) && {
@@ -581,6 +603,8 @@ fn main() {
         pool: smp::Pool::new(0),
         overhead: 20,
         reserve_moves: 0,
+        lag_ms: 0.0,
+        lag_prev: None,
     };
     uci.searcher.pt.hit = ponder_hit;
     let mut hash_mb = 16usize;
@@ -612,6 +636,7 @@ fn main() {
             }
             "isready" => println!("readyok"),
             "ucinewgame" => {
+                uci.lag_prev = None;
                 uci.searcher.clear();
                 uci.pool.each(|s| s.clear());
             }

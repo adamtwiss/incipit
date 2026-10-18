@@ -105,6 +105,9 @@ params! {
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
     TmFailLow = "TmFailLow", 28, 0, 100, 8;
     TmFeedMax = "TmFeedMax", 250, 100, 400, 20;
+    // Sudden death: keep this many moves' worth of the measured lag in reserve
+    // (round value; lag-free matches measure ~0, so OB can't tune it).
+    TmLagMoves = "TmLagMoves", 40, 0, 200, 10;
     // Depth gates (formerly constants).
     NmpDepth = "NmpDepth", 2, 2, 6, 1;
     // Verify a null-move cutoff with a reduced real search from this depth on
