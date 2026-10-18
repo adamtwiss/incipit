@@ -110,6 +110,9 @@ params! {
     TmNodeBase = "TmNodeBase", 150, 110, 250, 10;
     TmStabAmp = "TmStabAmp", 100, 0, 200, 15;
     TmFeedMax = "TmFeedMax", 250, 100, 400, 20;
+    // Ponder games: spend target (% of the base soft limit) for the extra
+    // time given to extended moves only; 100 = off (see PonderTime::surplus).
+    TmSurplusPct = "TmSurplusPct", 100, 100, 250, 10;
     // Sudden death: keep this many moves' worth of the measured lag in reserve
     // (round value; lag-free matches measure ~0, so OB can't tune it).
     TmLagMoves = "TmLagMoves", 40, 0, 200, 10;

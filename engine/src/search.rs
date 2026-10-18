@@ -261,6 +261,19 @@ impl PonderTm {
         (1.0 / self.spend_avg.max(0.01)).clamp(1.0, tp(P::TmFeedMax) as f64 / 100.0)
     }
 
+    /// Ponder games: the further factor that would bring our spend up to
+    /// TmSurplusPct% of the base soft limit (beyond what feed_scale already
+    /// restores), given only to moves the soft target extends (scale > 1).
+    /// Spending the surplus on every move lost Elo at 6+0.5 with ponder.
+    pub fn surplus(&self) -> f64 {
+        let t = tp(P::TmSurplusPct) as f64 / 100.0;
+        if t <= 1.0 || !on(P::UseTmFeed) || !self.ponder_seen {
+            return 1.0;
+        }
+        let max = tp(P::TmFeedMax) as f64 / 100.0;
+        (t / self.spend_avg.max(0.01)).clamp(1.0, max) / self.feed_scale()
+    }
+
     /// Records one move: our own clock time and the unscaled soft limit.
     pub fn record_spend(&mut self, own_ms: u64, base_soft_ms: u64) {
         if base_soft_ms > 0 {
@@ -1178,6 +1191,7 @@ impl Searcher {
                 // varied ~25x across the scale's range while the scale varied ~5x.
                 let scale = node_scale * stab_scale * ext;
                 let target = soft as f64 * scale.powf(tp(P::TmScalePow) as f64 / 100.0);
+                let target = if scale > 1.0 { target * self.pt.surplus() } else { target };
                 self.pt.target_ms = target;
                 (tm_target, tm_frac, tm_done) = (target, frac, d);
                 let el = self.elapsed_ms() as f64;
