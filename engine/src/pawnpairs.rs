@@ -15,7 +15,6 @@ use crate::position::*;
 use std::sync::OnceLock;
 
 pub const PAIRS: usize = 372;
-#[allow(dead_code)] // used by the net loader (next step)
 pub const FEATURES: usize = PAIRS * 4;
 const NONE: u16 = u16::MAX;
 
@@ -77,6 +76,63 @@ pub fn active(pos: &Position, persp: usize, xor: usize) -> Vec<usize> {
     }
     out.sort_unstable();
     out
+}
+
+/// Most pairs a position can have: every pair of 16 pawns.
+pub const MAX_ACTIVE: usize = 120;
+
+/// Active pair features for perspective `persp` (file mirror `xor`) from the
+/// white and black pawn bitboards, into `out` (unsorted); returns the count.
+/// No allocation: used by the accumulator updates.
+#[inline]
+pub fn active_bb(wp: u64, bp: u64, persp: usize, xor: usize, out: &mut [u16; MAX_ACTIVE]) -> usize {
+    let flip = if persp == WHITE { 0 } else { 56 };
+    let mut sq = [0usize; 16];
+    let mut col = [0usize; 16];
+    let mut k = 0;
+    for (c, mut bb) in [(WHITE, wp), (BLACK, bp)] {
+        while bb != 0 && k < 16 {
+            sq[k] = bb.trailing_zeros() as usize ^ flip ^ xor;
+            col[k] = c ^ persp;
+            bb &= bb - 1;
+            k += 1;
+        }
+    }
+    let t = pair_table();
+    let mut n = 0;
+    for i in 0..k {
+        for j in i + 1..k {
+            let (a, b) = (sq[i], sq[j]);
+            let (lo, clo, hi, chi) = if a < b { (a, col[i], b, col[j]) } else { (b, col[j], a, col[i]) };
+            let id = t[lo][hi];
+            if id != NONE {
+                out[n] = id * 4 + (clo * 2 + chi) as u16;
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// The pair features to add (in `new`, not `old`) and subtract (in `old`, not
+/// `new`), each passed to `f(feature, add)`. Sorts both lists in place.
+#[inline]
+pub fn diff(old: &mut [u16], new: &mut [u16], mut f: impl FnMut(usize, bool)) {
+    old.sort_unstable();
+    new.sort_unstable();
+    let (mut i, mut j) = (0, 0);
+    while i < old.len() || j < new.len() {
+        if j == new.len() || (i < old.len() && old[i] < new[j]) {
+            f(old[i] as usize, false);
+            i += 1;
+        } else if i == old.len() || new[j] < old[i] {
+            f(new[j] as usize, true);
+            j += 1;
+        } else {
+            i += 1;
+            j += 1;
+        }
+    }
 }
 
 /// The file mirror for perspective `persp` with a mirrored net: 7 when that
@@ -146,6 +202,29 @@ mod tests {
         let a = pos("4k3/1pp5/3p4/8/2P5/1P2P3/8/3K4 w - - 0 1");
         let m = pos("3k4/5pp1/4p3/8/5P2/3P2P1/8/4K3 w - - 0 1");
         assert_eq!(active(&a, WHITE, 0), active(&m, WHITE, 7));
+    }
+
+    /// The allocation-free version agrees with `active`, and `diff` gives
+    /// exactly the symmetric difference.
+    #[test]
+    fn active_bb_and_diff() {
+        crate::attacks::init();
+        for line in include_str!("../tests/pawnpairs_fixture.txt").lines().filter(|l| !l.starts_with('#')) {
+            let p = Position::from_fen(line.split('|').next().unwrap().trim()).unwrap();
+            for persp in [WHITE, BLACK] {
+                for xor in [0, 7] {
+                    let mut out = [0u16; MAX_ACTIVE];
+                    let n = active_bb(p.pcs(WHITE, PAWN), p.pcs(BLACK, PAWN), persp, xor, &mut out);
+                    let mut v: Vec<usize> = out[..n].iter().map(|&x| x as usize).collect();
+                    v.sort_unstable();
+                    assert_eq!(v, active(&p, persp, xor));
+                }
+            }
+        }
+        let (mut a, mut b) = ([5u16, 1, 9, 3], [3u16, 7, 9, 2]);
+        let (mut adds, mut subs) = (vec![], vec![]);
+        diff(&mut a, &mut b, |f, add| if add { adds.push(f) } else { subs.push(f) });
+        assert_eq!((adds, subs), (vec![2, 7], vec![1, 5]));
     }
 
     /// The checked-in fixture matches this implementation (the trainer's test

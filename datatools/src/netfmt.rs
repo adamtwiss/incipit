@@ -23,6 +23,10 @@ pub const TAG_LAYER_QUANT: u16 = 0x0007;
 pub const TAG_DESCRIPTION: u16 = 0x8001;
 
 pub const INPUT_PSQ768: u16 = 1;
+/// Pawn-pair inputs (the engine's src/pawnpairs.rs): rows shared by every king
+/// bucket, after all the king buckets' rows.
+pub const INPUT_PAWN_PAIRS: u16 = 2;
+pub const PAWN_PAIR_FEATURES: usize = 1488;
 pub const ACT_NONE: u8 = 0;
 pub const ACT_CRELU: u8 = 2;
 pub const ACT_SCRELU: u8 = 3;
@@ -58,6 +62,9 @@ pub struct Arch {
     /// The first l1_lin hidden neurons' pre-activations also go straight to
     /// the output, with a weight per output bucket (0 = none).
     pub l1_lin: usize,
+    /// Pawn-pair inputs (trainer pp=1): 1488 more FT rows after the king
+    /// buckets' rows (hidden-layer nets only).
+    pub pawn_pairs: bool,
     /// FT neuron order for a net with a hidden layer: new neuron k is old
     /// neuron perm[k] (empty = unchanged). Reordering the FT columns and the
     /// matching hidden-layer inputs together leaves every eval unchanged; the
@@ -190,15 +197,23 @@ fn assemble(
     weights: &[u8],
 ) -> Vec<u8> {
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
-    assert_eq!(ftw.len(), nkb * 768 * h);
+    let pp = if arch.pawn_pairs { PAWN_PAIR_FEATURES } else { 0 };
+    assert_eq!(ftw.len(), (nkb * 768 + pp) * h);
     assert_eq!(ftb.len(), h);
 
     let mut fields = Vec::new();
     let mut p = Vec::new();
-    p.extend_from_slice(&1u16.to_le_bytes());
-    p.extend_from_slice(&INPUT_PSQ768.to_le_bytes());
-    p.extend_from_slice(&0u16.to_le_bytes());
-    p.extend_from_slice(&768u32.to_le_bytes());
+    let sets: &[(u16, u32)] = if arch.pawn_pairs {
+        &[(INPUT_PSQ768, 768), (INPUT_PAWN_PAIRS, PAWN_PAIR_FEATURES as u32)]
+    } else {
+        &[(INPUT_PSQ768, 768)]
+    };
+    p.extend_from_slice(&(sets.len() as u16).to_le_bytes());
+    for &(kind, count) in sets {
+        p.extend_from_slice(&kind.to_le_bytes());
+        p.extend_from_slice(&0u16.to_le_bytes());
+        p.extend_from_slice(&count.to_le_bytes());
+    }
     field(&mut fields, TAG_INPUTS, &p);
 
     let mut p = vec![nkb as u8, arch.mirror as u8, 0, 0];
@@ -253,6 +268,9 @@ fn i16s(bytes: &[u8]) -> Vec<i16> {
 pub fn convert(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, String> {
     if arch.l1 > 0 {
         return convert_hidden(arch, source, data);
+    }
+    if arch.pawn_pairs {
+        return Err("--pawn-pairs needs a hidden layer (--l1)".into());
     }
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
     let n_ftw = nkb * 768 * h;
@@ -309,7 +327,8 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     }
     let (h, nkb, nb, l1) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets, arch.l1);
     let nb1 = if arch.l1_shared { 1 } else { nb };
-    let n_ftw = nkb * 768 * h;
+    // Bullet's l0w holds every king bucket's rows, then the pawn-pair rows.
+    let n_ftw = (nkb * 768 + if arch.pawn_pairs { PAWN_PAIR_FEATURES } else { 0 }) * h;
     let l2 = arch.l2;
     let last = if l2 > 0 { l2 } else { l1 };
     let pw = arch.activation == ACT_PAIRWISE;
@@ -430,13 +449,20 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
         let p32 = |i: usize| u32::from_le_bytes(p[i..i + 4].try_into().unwrap());
         match tag {
             TAG_INPUTS => {
-                let _ = writeln!(
-                    s,
-                    "inputs: {} set(s), first kind {} with {} features",
-                    u16::from_le_bytes([p[0], p[1]]),
-                    u16::from_le_bytes([p[2], p[3]]),
-                    p32(6)
-                );
+                let n = u16::from_le_bytes([p[0], p[1]]) as usize;
+                let sets: Vec<String> = (0..n)
+                    .filter(|i| 2 + 8 * i + 8 <= len)
+                    .map(|i| {
+                        let kind = u16::from_le_bytes([p[2 + 8 * i], p[3 + 8 * i]]);
+                        let name = match kind {
+                            INPUT_PSQ768 => "piece-square",
+                            INPUT_PAWN_PAIRS => "pawn pairs",
+                            _ => "unknown",
+                        };
+                        format!("{} ({}, {} features)", kind, name, p32(6 + 8 * i))
+                    })
+                    .collect();
+                let _ = writeln!(s, "inputs: {} set(s): {}", n, sets.join(", "));
             }
             TAG_KING_BUCKETS => {
                 let _ = writeln!(s, "king buckets: {}, mirrored: {}, table {:?}", p[0], p[1] != 0, &p[4..68]);
@@ -512,6 +538,7 @@ mod tests {
             l1_dual: true,
             l1_skip: false,
             l1_lin: 4,
+            pawn_pairs: false,
             perm: Vec::new(),
             l1_shift: 0,
             l2: 16,
@@ -526,7 +553,8 @@ mod tests {
     ) -> (Vec<u8>, Vec<i16>, Vec<i16>, Vec<i8>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
         let (h, nkb, nb, l1, l2) = (a.hidden, a.num_king_buckets(), a.output_buckets, a.l1, a.l2);
         let in2 = 2 * l1; // dual
-        let ftw: Vec<i16> = (0..nkb * 768 * h).map(|i| (i % 1001) as i16 - 500).collect();
+        let rows = nkb * 768 + if a.pawn_pairs { PAWN_PAIR_FEATURES } else { 0 };
+        let ftw: Vec<i16> = (0..rows * h).map(|i| (i % 1001) as i16 - 500).collect();
         let ftb: Vec<i16> = (0..h).map(|i| (i * 3) as i16 - 100).collect();
         let w1: Vec<i8> = (0..nb * l1 * h).map(|i| (i % 255) as i8).collect();
         let b1: Vec<f32> = (0..nb * l1).map(|i| i as f32 * 0.01).collect();
@@ -550,6 +578,44 @@ mod tests {
             d.push(0);
         }
         (d, ftw, ftb, w1, b1, wm, bm, w2, b2, linf)
+    }
+
+    /// Pawn pairs: the 1488 rows after the king buckets' rows are read and
+    /// written (the file grows by exactly 1488 x h i16), INPUTS lists both
+    /// sets, a permutation moves the pair rows' neurons too, and a file
+    /// without the pair rows is rejected.
+    #[test]
+    fn pawn_pairs_round_trip() {
+        let mut a = arch();
+        a.pawn_pairs = true;
+        let (d, ftw, ftb, w1, b1, wm, bm, w2, b2, linf) = bullet_file(&a);
+        let net = convert(&a, "bullet", &d).unwrap();
+        let mut plain = arch();
+        plain.pawn_pairs = false;
+        let (dp, ..) = bullet_file(&plain);
+        let base = convert(&plain, "bullet", &dp).unwrap();
+        // Header grows by one 8-byte input set (rounded to the header's padding).
+        let hdr = |n: &[u8]| u32::from_le_bytes(n[12..16].try_into().unwrap()) as usize;
+        assert_eq!(net.len() - hdr(&net), base.len() - hdr(&base) + 2 * PAWN_PAIR_FEATURES * a.hidden);
+        let info = describe(&net).unwrap();
+        assert!(info.contains("2 set(s)") && info.contains("pawn pairs, 1488 features"), "{info}");
+        let (nb, l1, nlin) = (a.output_buckets, a.l1, a.l1_lin);
+        let lin: Vec<f32> =
+            (0..nb * l1).map(|i| if i % l1 < nlin { linf[i / l1 * nlin + i % l1] } else { 0.0 }).collect();
+        assert_eq!(net, write_hidden(&a, &ftw, &ftb, &w1, &b1, Some((&wm, &bm)), &w2, &b2, &lin));
+        // A reversing permutation reverses every row, the pair rows included.
+        let h = a.hidden;
+        let mut rev = a.clone();
+        rev.perm = (0..h / 2).rev().collect();
+        let net_rev = convert(&rev, "bullet", &d).unwrap();
+        let full: Vec<usize> = rev.perm.iter().copied().chain(rev.perm.iter().map(|&i| i + h / 2)).collect();
+        let last_row = &ftw[ftw.len() - h..];
+        let want: Vec<i16> = full.iter().map(|&i| last_row[i]).collect();
+        let o = hdr(&net_rev) + 2 * (ftw.len() - h);
+        let got: Vec<i16> = net_rev[o..o + 2 * h].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(got, want);
+        // The plain file is too short for a pawn-pair net.
+        assert!(convert(&a, "bullet", &dp).is_err());
     }
 
     /// Converting a Bullet file gives exactly what write_hidden writes from
