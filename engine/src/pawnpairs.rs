@@ -1,0 +1,166 @@
+// Pawn-pair input features (design: incipit-research docs/pawn-features.md).
+//
+// One binary input per unordered pair of pawn squares on the same or adjacent
+// files, for each combination of the two pawns' colours, seen from a
+// perspective: squares in that perspective's frame (ranks flipped for black,
+// files mirrored when the net mirrors and that side's king is on files e-h),
+// colours as ours (0) / theirs (1). Pawns stand on ranks 2-7, so there are
+// 8 x C(6,2) same-file and 7 x 6 x 6 adjacent-file pairs: 372 pairs, 4 colour
+// combinations each, 1488 features. The feature transformer is linear, so
+// these give it the conjunction "pawn here and pawn there" directly.
+//
+// The trainer computes the same features; tests/pawnpairs_fixture.txt pins the
+// exact indices for both sides (see `fixture_line`).
+use crate::position::*;
+use std::sync::OnceLock;
+
+pub const PAIRS: usize = 372;
+#[allow(dead_code)] // used by the net loader (next step)
+pub const FEATURES: usize = PAIRS * 4;
+const NONE: u16 = u16::MAX;
+
+/// Pair index of squares (a, b), a < b, or NONE. Pairs are numbered in order
+/// of (a, b) over pawn squares (ranks 2-7) on the same or adjacent files.
+fn pair_table() -> &'static [[u16; 64]; 64] {
+    static T: OnceLock<Box<[[u16; 64]; 64]>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut t = Box::new([[NONE; 64]; 64]);
+        let mut id = 0u16;
+        for a in 8..56usize {
+            for b in a + 1..56 {
+                if (a % 8).abs_diff(b % 8) <= 1 {
+                    t[a][b] = id;
+                    id += 1;
+                }
+            }
+        }
+        assert_eq!(id as usize, PAIRS);
+        t
+    })
+}
+
+/// Feature index for pawns at frame squares `a` and `b` (any order) with
+/// relative colours `ca` and `cb` (0 = ours), or None if they don't pair.
+#[inline]
+pub fn feature(a: usize, ca: usize, b: usize, cb: usize) -> Option<usize> {
+    let ((lo, clo), (hi, chi)) = if a < b { ((a, ca), (b, cb)) } else { ((b, cb), (a, ca)) };
+    let id = pair_table()[lo][hi];
+    (id != NONE).then(|| id as usize * 4 + clo * 2 + chi)
+}
+
+/// The pawns of `pos` in perspective `persp`'s frame: (square, colour with
+/// 0 = ours). `xor` is the file mirror (7 or 0) that perspective's king sets.
+pub fn frame_pawns(pos: &Position, persp: usize, xor: usize) -> Vec<(usize, usize)> {
+    let flip = if persp == WHITE { 0 } else { 56 };
+    let mut v = Vec::with_capacity(16);
+    for c in [WHITE, BLACK] {
+        let mut bb = pos.pcs(c, PAWN);
+        while bb != 0 {
+            let sq = bb.trailing_zeros() as usize;
+            bb &= bb - 1;
+            v.push((sq ^ flip ^ xor, c ^ persp));
+        }
+    }
+    v
+}
+
+/// The active pair features of a position for perspective `persp`, sorted.
+pub fn active(pos: &Position, persp: usize, xor: usize) -> Vec<usize> {
+    let p = frame_pawns(pos, persp, xor);
+    let mut out = Vec::new();
+    for i in 0..p.len() {
+        for j in i + 1..p.len() {
+            if let Some(f) = feature(p[i].0, p[i].1, p[j].0, p[j].1) {
+                out.push(f);
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// The file mirror for perspective `persp` with a mirrored net: 7 when that
+/// side's king (in its own frame) is on files e-h.
+pub fn mirror_xor(pos: &Position, persp: usize) -> usize {
+    let k = pos.king_sq(persp) ^ if persp == WHITE { 0 } else { 56 };
+    if k & 7 >= 4 {
+        7
+    } else {
+        0
+    }
+}
+
+/// One fixture line: `fen | white-perspective features | black-perspective
+/// features`, for a mirrored net. The trainer's test reads the same lines.
+pub fn fixture_line(pos: &Position) -> String {
+    let side = |p| active(pos, p, mirror_xor(pos, p)).iter().map(|f| f.to_string()).collect::<Vec<_>>().join(" ");
+    format!("{} | {} | {}", pos.to_fen(), side(WHITE), side(BLACK))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pos(fen: &str) -> Position {
+        crate::attacks::init();
+        Position::from_fen(fen).unwrap()
+    }
+
+    #[test]
+    fn counts_and_index_range() {
+        let t = pair_table();
+        let n = (0..64).flat_map(|a| (0..64).map(move |b| (a, b))).filter(|&(a, b)| t[a][b] != NONE).count();
+        assert_eq!(n, PAIRS);
+        assert_eq!(feature(8, 0, 9, 1), Some(1)); // a2-b2, the first pair: ours-theirs
+        assert_eq!(feature(9, 1, 8, 0), Some(1)); // order of arguments doesn't matter
+        assert_eq!(feature(8, 0, 10, 0), None); // a2-c2: two files apart
+        assert_eq!(feature(0, 0, 8, 0), None); // rank 1 is not a pawn square
+        let last = feature(54, 1, 55, 1).unwrap(); // g7-h7 theirs-theirs
+        assert_eq!(last, FEATURES - 1);
+    }
+
+    /// The start position, from either side: 7 ours-ours pairs on rank 2, 7
+    /// theirs-theirs on rank 7, and ours-theirs across: 8 on the same file
+    /// (a2-a7 ...) and 2 x 7 on adjacent files.
+    #[test]
+    fn start_position_symmetry() {
+        let p = pos(START_FEN);
+        let w = active(&p, WHITE, mirror_xor(&p, WHITE));
+        let b = active(&p, BLACK, mirror_xor(&p, BLACK));
+        assert_eq!(w.len(), 7 + 7 + 8 + 14);
+        assert_eq!(w, b, "the start position looks the same from both sides");
+    }
+
+    /// Colour-swapped, rank-flipped positions look the same from the other side.
+    #[test]
+    fn colour_flip_swaps_perspectives() {
+        let a = pos("4k3/1pp5/3p4/8/2P5/1P2P3/8/4K3 w - - 0 1");
+        let b = pos("4k3/8/1p2p3/2p5/8/3P4/1PP5/4K3 b - - 0 1");
+        assert_eq!(active(&a, WHITE, 0), active(&b, BLACK, 0));
+        assert_eq!(active(&a, BLACK, 0), active(&b, WHITE, 0));
+    }
+
+    /// Mirroring the board left-right with mirror xor 7 gives the same features.
+    #[test]
+    fn mirror_invariance() {
+        let a = pos("4k3/1pp5/3p4/8/2P5/1P2P3/8/3K4 w - - 0 1");
+        let m = pos("3k4/5pp1/4p3/8/5P2/3P2P1/8/4K3 w - - 0 1");
+        assert_eq!(active(&a, WHITE, 0), active(&m, WHITE, 7));
+    }
+
+    /// The checked-in fixture matches this implementation (the trainer's test
+    /// checks the same file against its own implementation).
+    #[test]
+    fn fixture_matches() {
+        crate::attacks::init();
+        let text = include_str!("../tests/pawnpairs_fixture.txt");
+        let mut n = 0;
+        for line in text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
+            let fen = line.split('|').next().unwrap().trim();
+            let p = Position::from_fen(fen).unwrap();
+            assert_eq!(fixture_line(&p), line, "fixture mismatch");
+            n += 1;
+        }
+        assert!(n >= 50, "fixture too small: {n}");
+    }
+}
