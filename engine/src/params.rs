@@ -91,7 +91,7 @@ params! {
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
     // Exponent (x100) on the soft target's combined scale (node share x
     // stability x fail-lows): 100 = linear. SPSA #4304 (32k games, STC): 106.
-    TmScalePow = "TmScalePow", 106, 50, 250, 15;
+    TmScalePow = "TmScalePow", 150, 50, 250, 15;
     // On a ponder hit, move at once if we pondered at least PonderHitPct% of
     // the time we'd want for this move; otherwise keep thinking until pondering
     // + thinking reaches it (PonderCredit% of the pondering time counts).
