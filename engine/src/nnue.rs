@@ -221,6 +221,16 @@ fn init_net() {
 /// Parses and validates a network file.
 pub fn load(d: &[u8]) -> Result<Network, String> {
     let mut n = load_layers(d)?;
+    if FAKE_PP && !n.pp && n.l1.is_some() {
+        // EXPERIMENT: a zero pawn-pair block on a net without pairs: the same
+        // evals (and search tree), with all of the pair work.
+        let rows = n.nkb * 768 * n.h;
+        let mut v: Vec<i16> = n.ftw[..rows].to_vec();
+        v.resize(rows + crate::pawnpairs::FEATURES * n.h, 0);
+        n.ftw = Aligned::from(v.into_iter());
+        n.pp = true;
+        n.pp_base = n.nkb * 768;
+    }
     if n.pp {
         let start = n.pp_base * n.h;
         n.ftw = Aligned::from(n.ftw.iter().enumerate().map(|(i, &w)| if i >= start { w.clamp(-127, 127) } else { w }));
@@ -788,6 +798,9 @@ const PAIR_ENTRIES: usize = 4096;
 /// EXPERIMENT (pp-i8): 0 = pair-vector cache, 1 = direct i16 pair rows,
 /// 2 = direct i8 pair rows.
 const PP_MODE: u8 = 2;
+const FAKE_PP: bool = false;
+/// Values per pass chunk in add_sub_rows8.
+const PPC: usize = 128;
 
 /// Pair feature f's i8 row.
 #[inline(always)]
@@ -815,40 +828,52 @@ fn add_row8(v: &mut [i16], r: &[i8], add: bool) {
 }
 
 /// dst = src + Σ adds − Σ subs (i16 rows) + Σ adds8 − Σ subs8 (i8 rows), in
-/// one pass, 32 values at a time.
+/// one pass: PPC values at a time held in registers while every row is
+/// applied, so the per-row bookkeeping is paid once per PPC values. (32 at a
+/// time cost more in pointer loads and bounds checks than in additions.)
 #[inline(always)]
 fn add_sub_rows8(dst: &mut [i16], src: &[i16], adds: &[&[i16]], subs: &[&[i16]], adds8: &[&[i8]], subs8: &[&[i8]]) {
-    const C: usize = 32;
+    const C: usize = PPC;
     let h = dst.len();
+    assert!(src.len() >= h && h % C == 0);
+    for r in adds.iter().chain(subs) {
+        assert!(r.len() >= h);
+    }
+    for r in adds8.iter().chain(subs8) {
+        assert!(r.len() >= h);
+    }
     let mut o = 0;
-    while o < h {
-        let mut x: [i16; C] = src[o..o + C].try_into().unwrap();
-        for a in adds {
-            let w: [i16; C] = a[o..o + C].try_into().unwrap();
-            for k in 0..C {
-                x[k] = x[k].wrapping_add(w[k]);
+    // Safe: every row and src hold at least h values (checked above), and o + C <= h.
+    unsafe {
+        while o < h {
+            let mut x: [i16; C] = *(src.as_ptr().add(o) as *const [i16; C]);
+            for a in adds {
+                let w = &*(a.as_ptr().add(o) as *const [i16; C]);
+                for k in 0..C {
+                    x[k] = x[k].wrapping_add(w[k]);
+                }
             }
-        }
-        for s in subs {
-            let w: [i16; C] = s[o..o + C].try_into().unwrap();
-            for k in 0..C {
-                x[k] = x[k].wrapping_sub(w[k]);
+            for s in subs {
+                let w = &*(s.as_ptr().add(o) as *const [i16; C]);
+                for k in 0..C {
+                    x[k] = x[k].wrapping_sub(w[k]);
+                }
             }
-        }
-        for a in adds8 {
-            let w: [i8; C] = a[o..o + C].try_into().unwrap();
-            for k in 0..C {
-                x[k] = x[k].wrapping_add(w[k] as i16);
+            for a in adds8 {
+                let w = &*(a.as_ptr().add(o) as *const [i8; C]);
+                for k in 0..C {
+                    x[k] = x[k].wrapping_add(w[k] as i16);
+                }
             }
-        }
-        for s in subs8 {
-            let w: [i8; C] = s[o..o + C].try_into().unwrap();
-            for k in 0..C {
-                x[k] = x[k].wrapping_sub(w[k] as i16);
+            for s in subs8 {
+                let w = &*(s.as_ptr().add(o) as *const [i8; C]);
+                for k in 0..C {
+                    x[k] = x[k].wrapping_sub(w[k] as i16);
+                }
             }
+            *(dst.as_mut_ptr().add(o) as *mut [i16; C]) = x;
+            o += C;
         }
-        dst[o..o + C].copy_from_slice(&x);
-        o += C;
     }
 }
 
@@ -901,7 +926,7 @@ impl PairCache {
             let h = self.h;
             let mut pairs = [0u16; crate::pawnpairs::MAX_ACTIVE];
             let k = crate::pawnpairs::active_bb(pawns.0, pawns.1, p, x, &mut pairs);
-            if PP_MODE == 3 {
+            if PP_MODE == 3 || PP_MODE == 4 {
                 let mut rows: [&[i8]; crate::pawnpairs::MAX_ACTIVE] = [&[]; crate::pawnpairs::MAX_ACTIVE];
                 for (r, &f) in rows.iter_mut().zip(&pairs[..k]) {
                     *r = row8(n, f as usize, h);
@@ -915,6 +940,27 @@ impl PairCache {
             }
             add_sub_rows(&mut self.vecs[i * h..(i + 1) * h], &ZERO_ROW[..h], &rows[..k], &[]);
         }
+        i
+    }
+
+    /// The entry for `pawns`, built on a miss from the entry last used for
+    /// this (perspective, mirror) when its pawns are close, else from scratch.
+    #[inline(always)]
+    fn get_near(&mut self, n: &Network, pawns: (u64, u64), p: usize, x: usize, last: &mut [usize; 4]) -> usize {
+        let slot = p * 2 + (x != 0) as usize;
+        let tag = (pawns.0, pawns.1, p * 8 + x);
+        let i = self.slot(tag);
+        if self.tags[i] != tag {
+            let j = last[slot];
+            let (ow, ob, ot) = self.tags[j];
+            let near = j != i && ot == tag.2 && ow != !0 && ((ow ^ pawns.0) | (ob ^ pawns.1)).count_ones() <= 6;
+            if near {
+                self.get_from(n, j, (ow, ob), pawns, p, x);
+            } else {
+                self.get(n, pawns, p, x);
+            }
+        }
+        last[slot] = i;
         i
     }
 
@@ -941,7 +987,7 @@ impl PairCache {
             // The changing pairs' rows, then one pass: entry i = entry from +
             // the added rows - the removed ones.
             const M: usize = crate::pawnpairs::MAX_ACTIVE;
-            if PP_MODE == 3 {
+            if PP_MODE == 3 || PP_MODE == 4 {
                 let (mut ar, mut sr): ([&[i8]; M], [&[i8]; M]) = ([&[]; M], [&[]; M]);
                 let (mut ka, mut ks) = (0, 0);
                 crate::pawnpairs::delta(old, new, p, x, |f, add| {
@@ -1020,7 +1066,7 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
             *x = x.wrapping_add(w);
         }
     }
-    if n.pp {
+    if n.pp && PP_MODE != 4 {
         let mut pairs = [0u16; crate::pawnpairs::MAX_ACTIVE];
         let k = crate::pawnpairs::active_bb(pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN), p, ki.1, &mut pairs);
         for &f in &pairs[..k] {
@@ -1062,7 +1108,7 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
                     ns += 1;
                 }
             });
-        } else if old != new && PP_MODE != 9 {
+        } else if old != new && PP_MODE != 9 && PP_MODE != 4 {
             let pc = &mut cache.pairs;
             let io = pc.get(n, old, p, ki.1);
             if let Some(inew) = pc.get_from(n, io, old, new, p, ki.1) {
@@ -1227,7 +1273,7 @@ fn update<const H: usize>(
         if pawns_change {
             let old = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
             let new = (child.pcs(WHITE, PAWN), child.pcs(BLACK, PAWN));
-            if PP_MODE == 9 {
+            if PP_MODE == 9 || PP_MODE == 4 {
                 if ns == 1 {
                     add_sub(dst, src, [a0], [s0]);
                 } else {
@@ -1367,6 +1413,15 @@ pub struct Scratch {
     x: Inputs,
     /// Indices of the 4-input groups with any non-zero input (+ 8 of slack).
     nz: [u16; 2 * MAX_H / 4 + 8],
+    /// EXPERIMENT mode 4: pawn-pair vectors added at eval.
+    pairs: Option<Box<EvalPairs>>,
+}
+
+struct EvalPairs {
+    net: *const Network,
+    cache: PairCache,
+    last: [usize; 4],
+    sum: Acc,
 }
 
 #[repr(C, align(64))]
@@ -1374,16 +1429,41 @@ struct Inputs([u8; 2 * MAX_H]);
 
 impl Scratch {
     pub fn new() -> Box<Scratch> {
-        Box::new(Scratch { x: Inputs([0; 2 * MAX_H]), nz: [0; 2 * MAX_H / 4 + 8] })
+        Box::new(Scratch { x: Inputs([0; 2 * MAX_H]), nz: [0; 2 * MAX_H / 4 + 8], pairs: None })
     }
 }
 
 #[inline]
 pub fn evaluate(acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
     let n = net();
+    if PP_MODE == 4 && n.pp {
+        return eval_pairs(n, acc, pos, s);
+    }
     // Safe: pick_eval chose a function for this network's shape (and only a
     // wide one on a CPU that has the features).
     unsafe { (n.eval)(n, acc, pos, s) }
+}
+
+/// EXPERIMENT mode 4: the accumulator plus each perspective's pawn-pair
+/// vector (from a cache keyed on the pawns), then the network.
+#[inline(never)]
+fn eval_pairs(n: &Network, acc: &Acc, pos: &Position, s: &mut Scratch) -> i32 {
+    let h = n.h;
+    let mut e = match s.pairs.take() {
+        Some(e) if std::ptr::eq(e.net, n) => e,
+        _ => Box::new(EvalPairs { net: n, cache: PairCache::new(h, PAIR_ENTRIES), last: [0; 4], sum: Acc::new() }),
+    };
+    let pawns = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
+    for p in 0..2 {
+        let x = kinfo(n, p, pos.king_sq(p)).1;
+        let i = e.cache.get_near(n, pawns, p, x, &mut e.last);
+        let EvalPairs { cache, sum, .. } = &mut *e;
+        add_sub_rows8(sum.side_mut(p, h), acc.side(p, h), &[cache.vec(i)], &[], &[], &[]);
+    }
+    // Safe: pick_eval chose a function for this network's shape.
+    let r = unsafe { (n.eval)(n, &e.sum, pos, s) };
+    s.pairs = Some(e);
+    r
 }
 
 /// Network with one hidden layer: u8 inputs from both perspectives (side to
@@ -1485,7 +1565,7 @@ fn eval_hidden<const H: usize, const L: usize, const L2: usize, const PW: bool, 
     // Hidden-layer inputs: h per perspective (SCReLU) or h/2 (pairwise).
     let inl = if PW { h } else { 2 * h };
     let bucket = n.bucket_of[pos.occ().count_ones() as usize] as usize;
-    let Scratch { x, nz } = s;
+    let Scratch { x, nz, .. } = s;
     let nz = &mut nz[..];
     let count = if PW {
         let (us, them) = (acc.side(pos.stm, h), acc.side(pos.stm ^ 1, h));
