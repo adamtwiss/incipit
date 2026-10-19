@@ -41,7 +41,8 @@ const TAG_LAYER_QUANT: u16 = 0x0007;
 const OPTIONAL: u16 = 0x8000;
 const INPUT_PSQ768: u16 = 1;
 /// Pawn-pair inputs (src/pawnpairs.rs): shared by every king bucket, so their
-/// rows come once, after all the king buckets' rows.
+/// rows come once, after all the king buckets' rows. Kinds 2, 3 and 4 are
+/// pair windows 0, 1 and 2.
 const INPUT_PAWN_PAIRS: u16 = 2;
 const ACT_NONE: u8 = 0;
 const ACT_CRELU: u8 = 2;
@@ -77,6 +78,8 @@ pub struct Network {
     ftw: Aligned, // [king bucket][feature][h], then the pawn-pair rows [pair feature][h] when pp
     /// Pawn-pair inputs on: pair feature f is FT row pp_base + f.
     pp: bool,
+    /// The pawn-pair window (src/pawnpairs.rs) when pp.
+    ppw: usize,
     pp_base: usize,
     /// EXPERIMENT (pp-i8): the pair rows as i8, [pair feature][h]. The i16
     /// pair rows in ftw are clamped to the same values at load.
@@ -317,14 +320,19 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
 
     let missing = |name: &str| format!("missing {} field", name);
     let inputs = inputs.ok_or_else(|| missing("INPUTS"))?;
-    let pp = match inputs.as_slice() {
-        [(INPUT_PSQ768, 768)] => false,
-        [(INPUT_PSQ768, 768), (INPUT_PAWN_PAIRS, f)] if *f as usize == crate::pawnpairs::FEATURES => true,
+    let (pp, ppw) = match inputs.as_slice() {
+        [(INPUT_PSQ768, 768)] => (false, 0),
+        [(INPUT_PSQ768, 768), (k, f)]
+            if (INPUT_PAWN_PAIRS..INPUT_PAWN_PAIRS + crate::pawnpairs::WINDOWS as u16).contains(k)
+                && *f as usize == crate::pawnpairs::features((k - INPUT_PAWN_PAIRS) as usize) =>
+        {
+            (true, (k - INPUT_PAWN_PAIRS) as usize)
+        }
         _ => {
             return Err(format!(
-                "unsupported inputs {:?} (768 piece-square, optionally {} pawn pairs)",
+                "unsupported inputs {:?} (768 piece-square, optionally pawn pairs: kind 2, 3 or 4 with {:?} features)",
                 inputs,
-                crate::pawnpairs::FEATURES
+                crate::pawnpairs::WINDOW_PAIRS.map(|p| p * 4)
             ))
         }
     };
@@ -371,6 +379,7 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
             &layers,
             &layer_quant,
             pp,
+            ppw,
         );
     }
     if pp {
@@ -429,6 +438,7 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
         scale,
         ftw,
         pp: false,
+        ppw: 0,
         pp_base: 0,
         ppw8: Vec::new(),
         ftb,
@@ -457,6 +467,7 @@ fn load_hidden(
     layers: &[(usize, usize, u8, u8, u8, u8)],
     layer_quant: &[(u32, i32)],
     pp: bool,
+    ppw: usize,
 ) -> Result<Network, String> {
     let (l1, l2) = (layers[0], layers[layers.len() - 1]);
     // A middle layer: the second hidden layer.
@@ -531,7 +542,7 @@ fn load_hidden(
         ));
     }
     // The pawn-pair rows follow the king buckets' rows in the same block.
-    let n_ftw = (nkb * 768 + if pp { crate::pawnpairs::FEATURES } else { 0 }) * h;
+    let n_ftw = (nkb * 768 + if pp { crate::pawnpairs::features(ppw) } else { 0 }) * h;
     let expect = 2 * (n_ftw + h)
         + nb1 * ln * inl
         + 4 * (nb1 * ln + buckets * n2 * (in2 + 1) + buckets * (last_in + 1) + if lin { buckets * ln } else { 0 });
@@ -620,6 +631,7 @@ fn load_hidden(
         scale,
         ftw,
         pp,
+        ppw,
         pp_base: nkb * 768,
         ppw8: Vec::new(),
         ftb,
@@ -925,7 +937,7 @@ impl PairCache {
             self.tags[i] = tag;
             let h = self.h;
             let mut pairs = [0u16; crate::pawnpairs::MAX_ACTIVE];
-            let k = crate::pawnpairs::active_bb(pawns.0, pawns.1, p, x, &mut pairs);
+            let k = crate::pawnpairs::active_bb(n.ppw, pawns.0, pawns.1, p, x, &mut pairs);
             if PP_MODE == 3 || PP_MODE == 4 {
                 let mut rows: [&[i8]; crate::pawnpairs::MAX_ACTIVE] = [&[]; crate::pawnpairs::MAX_ACTIVE];
                 for (r, &f) in rows.iter_mut().zip(&pairs[..k]) {
@@ -990,7 +1002,7 @@ impl PairCache {
             if PP_MODE == 3 || PP_MODE == 4 {
                 let (mut ar, mut sr): ([&[i8]; M], [&[i8]; M]) = ([&[]; M], [&[]; M]);
                 let (mut ka, mut ks) = (0, 0);
-                crate::pawnpairs::delta(old, new, p, x, |f, add| {
+                crate::pawnpairs::delta(n.ppw, old, new, p, x, |f, add| {
                     if add {
                         ar[ka] = row8(n, f, h);
                         ka += 1;
@@ -1011,7 +1023,7 @@ impl PairCache {
             }
             let (mut ar, mut sr): ([&[i16]; M], [&[i16]; M]) = ([&[]; M], [&[]; M]);
             let (mut ka, mut ks) = (0, 0);
-            crate::pawnpairs::delta(old, new, p, x, |f, add| {
+            crate::pawnpairs::delta(n.ppw, old, new, p, x, |f, add| {
                 if add {
                     ar[ka] = row(n, n.pp_base + f, h);
                     ka += 1;
@@ -1068,7 +1080,7 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
     }
     if n.pp && PP_MODE != 4 {
         let mut pairs = [0u16; crate::pawnpairs::MAX_ACTIVE];
-        let k = crate::pawnpairs::active_bb(pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN), p, ki.1, &mut pairs);
+        let k = crate::pawnpairs::active_bb(n.ppw, pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN), p, ki.1, &mut pairs);
         for &f in &pairs[..k] {
             for (x, &w) in v.iter_mut().zip(row(n, n.pp_base + f as usize, h)) {
                 *x = x.wrapping_add(w);
@@ -1097,9 +1109,9 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
         let new = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
         if old != new && PP_MODE == 2 {
             let v = &mut e.acc[..h];
-            crate::pawnpairs::delta(old, new, p, ki.1, |f, add| add_row8(v, row8(n, f, h), add));
+            crate::pawnpairs::delta(n.ppw, old, new, p, ki.1, |f, add| add_row8(v, row8(n, f, h), add));
         } else if old != new && PP_MODE == 1 {
-            crate::pawnpairs::delta(old, new, p, ki.1, |f, add| {
+            crate::pawnpairs::delta(n.ppw, old, new, p, ki.1, |f, add| {
                 if add {
                     adds[na] = n.pp_base + f;
                     na += 1;
@@ -1115,7 +1127,7 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
                 add_row(&mut e.acc[..h], pc.vec(inew), true);
                 add_row(&mut e.acc[..h], pc.vec(io), false);
             } else {
-                crate::pawnpairs::delta(old, new, p, ki.1, |f, add| {
+                crate::pawnpairs::delta(n.ppw, old, new, p, ki.1, |f, add| {
                     if add {
                         adds[na] = n.pp_base + f;
                         na += 1;
@@ -1286,7 +1298,7 @@ fn update<const H: usize>(
                 const M: usize = 40;
                 let (mut a8, mut s8): ([&[i8]; M], [&[i8]; M]) = ([&[]; M], [&[]; M]);
                 let (mut k8a, mut k8s) = (0, 0);
-                crate::pawnpairs::delta(old, new, p, ki.1, |f, add| {
+                crate::pawnpairs::delta(n.ppw, old, new, p, ki.1, |f, add| {
                     if add {
                         a8[k8a] = row8(n, f, h);
                         k8a += 1;
@@ -1332,7 +1344,7 @@ fn update<const H: usize>(
                 sr[1] = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
                 ks = 2;
             }
-            crate::pawnpairs::delta(old, new, p, ki.1, |f, add| {
+            crate::pawnpairs::delta(n.ppw, old, new, p, ki.1, |f, add| {
                 if add {
                     ar[ka] = row(n, n.pp_base + f, h);
                     ka += 1;
@@ -3108,7 +3120,7 @@ mod tests {
     /// A small random network in the file format: FT 128 (pairwise), 32
     /// mirrored king buckets, optional pawn pairs, 16 -> 16 -> 1, 8 output
     /// buckets. Values are small, so the accumulators' i16 sums don't wrap.
-    fn synth_net(pp: bool, seed: u64) -> Vec<u8> {
+    fn synth_net(pp: Option<usize>, seed: u64) -> Vec<u8> {
         let (h, nkb, nb, l1, l2) = (128usize, 32usize, 8usize, 16usize, 16usize);
         let mut r = seed | 1;
         let mut next = move || {
@@ -3124,10 +3136,9 @@ mod tests {
             out.extend_from_slice(p);
         };
         let mut f = Vec::new();
-        let sets: Vec<(u16, u32)> = if pp {
-            vec![(INPUT_PSQ768, 768), (INPUT_PAWN_PAIRS, crate::pawnpairs::FEATURES as u32)]
-        } else {
-            vec![(INPUT_PSQ768, 768)]
+        let sets: Vec<(u16, u32)> = match pp {
+            Some(w) => vec![(INPUT_PSQ768, 768), (INPUT_PAWN_PAIRS + w as u16, crate::pawnpairs::features(w) as u32)],
+            None => vec![(INPUT_PSQ768, 768)],
         };
         let mut p = (sets.len() as u16).to_le_bytes().to_vec();
         for (k, c) in &sets {
@@ -3169,7 +3180,7 @@ mod tests {
         d.extend_from_slice(&(header as u32).to_le_bytes());
         d.extend_from_slice(&f);
         d.resize(header, 0);
-        let rows = nkb * 768 + if pp { crate::pawnpairs::FEATURES } else { 0 };
+        let rows = nkb * 768 + pp.map_or(0, crate::pawnpairs::features);
         for _ in 0..rows * h + h {
             d.extend_from_slice(&((next() % 401) as i16 - 200).to_le_bytes());
         }
@@ -3199,9 +3210,11 @@ mod tests {
             "4k3/p1p1p1p1/1p1p1p1p/P1P1P1P1/1P1P1P1P/8/8/4K3 w - - 0 1",
             "bqnb1rkr/pp3ppp/3ppn2/2p5/5P2/P2P4/NPP1P1PP/BQ1BNRKR w HFhf - 2 9",
         ];
-        for (pp, pair_entries) in [(false, 0), (true, PAIR_ENTRIES), (true, 2)] {
+        let cases =
+            [(None, 0), (Some(0), PAIR_ENTRIES), (Some(0), 2), (Some(1), PAIR_ENTRIES), (Some(2), PAIR_ENTRIES)];
+        for (pp, pair_entries) in cases {
             let n = load(&synth_net(pp, 0x1234_5678)).unwrap();
-            assert_eq!(n.pp, pp);
+            assert_eq!((n.pp, n.ppw), (pp.is_some(), pp.unwrap_or(0)));
             let mut cache = RefreshCache::with_pair_entries(&n, pair_entries);
             let mut seed = 0x9E37_79B9_7F4A_7C15u64;
             let mut checked = 0;
@@ -3238,7 +3251,7 @@ mod tests {
                     }
                     assert!(
                         inc.v[..256] == full.v[..256],
-                        "pp {} ({} pair entries): incremental != refresh after {} in {}",
+                        "pp {:?} ({} pair entries): incremental != refresh after {} in {}",
                         pp,
                         pair_entries,
                         pos.move_uci(m),

@@ -71,6 +71,9 @@ usage:
       --l1-dual            the second hidden layer takes SCReLU and CReLU of the first (needs --l2)
       --l1-lin N           the first N hidden neurons' pre-activations also feed the output (trainer l1lin=N)
       --pawn-pairs         1488 pawn-pair input rows after the king buckets' rows (trainer pp=1)
+      --pawn-pair-window N pawn pairs in window N: 0 = 1488 rows (as --pawn-pairs), 1 = 928
+                           (same file any distance, adjacent files within one rank), 2 = 608
+                           (within one rank) (trainer pp=1 ppw=N)
       --l1-skip            the hidden layer's last neuron is a linear skip to the output (trainer l1skip=1; needs --l2)
       --description TEXT   training run, data and settings
       --permute FILE       FT neuron order (hidden-layer nets; from the engine's l1perm)
@@ -684,6 +687,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         l1_skip: false,
         l1_lin: 0,
         pawn_pairs: false,
+        pawn_pair_window: 0,
         perm: Vec::new(),
         l1_shift: 0,
         l2: 0,
@@ -715,6 +719,17 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         if flag == "--pawn-pairs" {
             arch.pawn_pairs = true;
             i += 1;
+            continue;
+        }
+        if flag == "--pawn-pair-window" {
+            let w: usize = opts
+                .get(i + 1)
+                .and_then(|v| v.parse().ok())
+                .filter(|&w| w < 3)
+                .ok_or("--pawn-pair-window needs 0, 1 or 2")?;
+            arch.pawn_pairs = true;
+            arch.pawn_pair_window = w;
+            i += 2;
             continue;
         }
         let val = opts.get(i + 1).ok_or_else(|| format!("{} needs a value", flag))?;

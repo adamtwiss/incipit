@@ -24,9 +24,12 @@ pub const TAG_DESCRIPTION: u16 = 0x8001;
 
 pub const INPUT_PSQ768: u16 = 1;
 /// Pawn-pair inputs (the engine's src/pawnpairs.rs): rows shared by every king
-/// bucket, after all the king buckets' rows.
+/// bucket, after all the king buckets' rows. Kinds 2, 3 and 4 are pair windows
+/// 0 (any rank distance), 1 (same file any, adjacent files within one rank) and
+/// 2 (within one rank).
 pub const INPUT_PAWN_PAIRS: u16 = 2;
-pub const PAWN_PAIR_FEATURES: usize = 1488;
+/// Features in each pair window.
+pub const PAWN_PAIR_WINDOW_FEATURES: [usize; 3] = [1488, 928, 608];
 pub const ACT_NONE: u8 = 0;
 pub const ACT_CRELU: u8 = 2;
 pub const ACT_SCRELU: u8 = 3;
@@ -62,9 +65,11 @@ pub struct Arch {
     /// The first l1_lin hidden neurons' pre-activations also go straight to
     /// the output, with a weight per output bucket (0 = none).
     pub l1_lin: usize,
-    /// Pawn-pair inputs (trainer pp=1): 1488 more FT rows after the king
-    /// buckets' rows (hidden-layer nets only).
+    /// Pawn-pair inputs (trainer pp=1): more FT rows after the king buckets'
+    /// rows (hidden-layer nets only), for pair window pawn_pair_window
+    /// (trainer ppw=).
     pub pawn_pairs: bool,
+    pub pawn_pair_window: usize,
     /// FT neuron order for a net with a hidden layer: new neuron k is old
     /// neuron perm[k] (empty = unchanged). Reordering the FT columns and the
     /// matching hidden-layer inputs together leaves every eval unchanged; the
@@ -81,6 +86,15 @@ pub struct Arch {
 impl Arch {
     pub fn num_king_buckets(&self) -> usize {
         *self.king_buckets.iter().max().unwrap() as usize + 1
+    }
+
+    /// Pawn-pair FT rows (0 without pawn pairs).
+    pub fn pair_features(&self) -> usize {
+        if self.pawn_pairs {
+            PAWN_PAIR_WINDOW_FEATURES[self.pawn_pair_window]
+        } else {
+            0
+        }
     }
 }
 
@@ -197,14 +211,14 @@ fn assemble(
     weights: &[u8],
 ) -> Vec<u8> {
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
-    let pp = if arch.pawn_pairs { PAWN_PAIR_FEATURES } else { 0 };
+    let pp = arch.pair_features();
     assert_eq!(ftw.len(), (nkb * 768 + pp) * h);
     assert_eq!(ftb.len(), h);
 
     let mut fields = Vec::new();
     let mut p = Vec::new();
     let sets: &[(u16, u32)] = if arch.pawn_pairs {
-        &[(INPUT_PSQ768, 768), (INPUT_PAWN_PAIRS, PAWN_PAIR_FEATURES as u32)]
+        &[(INPUT_PSQ768, 768), (INPUT_PAWN_PAIRS + arch.pawn_pair_window as u16, pp as u32)]
     } else {
         &[(INPUT_PSQ768, 768)]
     };
@@ -328,7 +342,7 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     let (h, nkb, nb, l1) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets, arch.l1);
     let nb1 = if arch.l1_shared { 1 } else { nb };
     // Bullet's l0w holds every king bucket's rows, then the pawn-pair rows.
-    let n_ftw = (nkb * 768 + if arch.pawn_pairs { PAWN_PAIR_FEATURES } else { 0 }) * h;
+    let n_ftw = (nkb * 768 + arch.pair_features()) * h;
     let l2 = arch.l2;
     let last = if l2 > 0 { l2 } else { l1 };
     let pw = arch.activation == ACT_PAIRWISE;
@@ -457,6 +471,8 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
                         let name = match kind {
                             INPUT_PSQ768 => "piece-square",
                             INPUT_PAWN_PAIRS => "pawn pairs",
+                            3 => "pawn pairs, window 1",
+                            4 => "pawn pairs, window 2",
                             _ => "unknown",
                         };
                         format!("{} ({}, {} features)", kind, name, p32(6 + 8 * i))
@@ -539,6 +555,7 @@ mod tests {
             l1_skip: false,
             l1_lin: 4,
             pawn_pairs: false,
+            pawn_pair_window: 0,
             perm: Vec::new(),
             l1_shift: 0,
             l2: 16,
@@ -553,7 +570,7 @@ mod tests {
     ) -> (Vec<u8>, Vec<i16>, Vec<i16>, Vec<i8>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
         let (h, nkb, nb, l1, l2) = (a.hidden, a.num_king_buckets(), a.output_buckets, a.l1, a.l2);
         let in2 = 2 * l1; // dual
-        let rows = nkb * 768 + if a.pawn_pairs { PAWN_PAIR_FEATURES } else { 0 };
+        let rows = nkb * 768 + a.pair_features();
         let ftw: Vec<i16> = (0..rows * h).map(|i| (i % 1001) as i16 - 500).collect();
         let ftb: Vec<i16> = (0..h).map(|i| (i * 3) as i16 - 100).collect();
         let w1: Vec<i8> = (0..nb * l1 * h).map(|i| (i % 255) as i8).collect();
@@ -596,9 +613,18 @@ mod tests {
         let base = convert(&plain, "bullet", &dp).unwrap();
         // Header grows by one 8-byte input set (rounded to the header's padding).
         let hdr = |n: &[u8]| u32::from_le_bytes(n[12..16].try_into().unwrap()) as usize;
-        assert_eq!(net.len() - hdr(&net), base.len() - hdr(&base) + 2 * PAWN_PAIR_FEATURES * a.hidden);
+        assert_eq!(net.len() - hdr(&net), base.len() - hdr(&base) + 2 * PAWN_PAIR_WINDOW_FEATURES[0] * a.hidden);
         let info = describe(&net).unwrap();
         assert!(info.contains("2 set(s)") && info.contains("pawn pairs, 1488 features"), "{info}");
+        // A smaller pair window: kind 4, 608 rows.
+        let mut a2 = arch();
+        a2.pawn_pairs = true;
+        a2.pawn_pair_window = 2;
+        let (d2, ..) = bullet_file(&a2);
+        let net2 = convert(&a2, "bullet", &d2).unwrap();
+        assert_eq!(net2.len() - hdr(&net2), base.len() - hdr(&base) + 2 * 608 * a2.hidden);
+        let info2 = describe(&net2).unwrap();
+        assert!(info2.contains("4 (pawn pairs, window 2, 608 features)"), "{info2}");
         let (nb, l1, nlin) = (a.output_buckets, a.l1, a.l1_lin);
         let lin: Vec<f32> =
             (0..nb * l1).map(|i| if i % l1 < nlin { linf[i / l1 * nlin + i % l1] } else { 0.0 }).collect();
