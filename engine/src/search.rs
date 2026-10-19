@@ -1861,7 +1861,7 @@ impl Searcher {
                 } else if on(P::UseSeNegExt) && tt_score >= beta {
                     // Not singular and expected to fail high: at a cut node,
                     // where the fail-high is expected anyway, two plies less.
-                    ext = if on(P::UseSeNeg2) && cut_node { -2 } else { -1 };
+                    ext = if on(P::UseSeNeg2) && (cut_node || (on(P::UseSeNeg2All) && !pv_node)) { -2 } else { -1 };
                     self.stats.se_negative += 1;
                 }
             }
