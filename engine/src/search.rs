@@ -1447,6 +1447,7 @@ impl Searcher {
         let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
         let prev4 = if ply >= 4 { self.stack[ply - 4].cont_idx } else { 0 };
         let prev6 = if ply >= 6 { self.stack[ply - 6].cont_idx } else { 0 };
+        let prev3 = if ply >= 3 { self.stack[ply - 3].cont_idx } else { 0 };
         let static_eval;
         let mut eval;
         let mut raw_eval = -INF;
@@ -1644,7 +1645,7 @@ impl Searcher {
         } else {
             stage = STAGE_NOISY;
             pos.gen(&mut list, GEN_NOISY | GEN_UNDERPROMO);
-            self.score_moves(pos, list.as_slice(), &mut scores, 0, killers, prev1, prev2, prev4, prev6);
+            self.score_moves(pos, list.as_slice(), &mut scores, 0, killers, prev1, prev2, prev4, prev6, prev3);
         }
         let mut best_score = -INF;
         let mut best_move = 0;
@@ -1679,6 +1680,7 @@ impl Searcher {
                         prev2,
                         prev4,
                         prev6,
+                        prev3,
                     );
                 } else if !skip_quiets {
                     n = self.gen_stage(
@@ -1692,6 +1694,7 @@ impl Searcher {
                         prev2,
                         prev4,
                         prev6,
+                        prev3,
                     );
                 }
                 compacted = false;
@@ -1733,6 +1736,7 @@ impl Searcher {
                             prev2,
                             prev4,
                             prev6,
+                            prev3,
                         );
                     }
                     continue;
@@ -2002,9 +2006,9 @@ impl Searcher {
                     self.killers[ply][1] = self.killers[ply][0];
                     self.killers[ply][0] = m;
                 }
-                self.update_quiet(pos, m, bonus, prev1, prev2, prev4, prev6);
+                self.update_quiet(pos, m, bonus, prev1, prev2, prev4, prev6, prev3);
                 for k in 0..nq {
-                    self.update_quiet(pos, quiets[k], -bonus, prev1, prev2, prev4, prev6);
+                    self.update_quiet(pos, quiets[k], -bonus, prev1, prev2, prev4, prev6, prev3);
                 }
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
@@ -2023,7 +2027,6 @@ impl Searcher {
             if pm != 0 && !is_noisy(pm) {
                 let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
                 let bonus = bonus * tp(P::PriorBonusPct) / 100;
-                let prev3 = if ply >= 3 { self.stack[ply - 3].cont_idx } else { 0 };
                 let prev5 = if ply >= 5 { self.stack[ply - 5].cont_idx } else { 0 };
                 upd(&mut self.hist[pos.stm ^ 1][mfrom(pm)][mto(pm)], bonus);
                 // Its continuation entries, as seen from the opponent's node: their
@@ -2076,6 +2079,7 @@ impl Searcher {
         prev2: usize,
         prev4: usize,
         prev6: usize,
+        prev3: usize,
     ) {
         let pc = pos.board[mfrom(m)] as usize;
         let ci = pc * 64 + mto(m);
@@ -2091,6 +2095,9 @@ impl Searcher {
         }
         if on(P::UseCont6) && prev6 != 0 {
             upd_shared(&self.sh.cont[prev6][ci], bonus);
+        }
+        if on(P::UseCont3) && prev3 != 0 {
+            upd_shared(&self.sh.cont[prev3][ci], bonus);
         }
     }
 
@@ -2112,6 +2119,7 @@ impl Searcher {
         prev2: usize,
         prev4: usize,
         prev6: usize,
+        prev3: usize,
     ) -> usize {
         let old = list.len();
         debug_assert_eq!(scores.len(), old);
@@ -2123,7 +2131,7 @@ impl Searcher {
             }
         }
         let n = list.len();
-        self.score_moves(pos, &list.as_slice()[old..n], scores, tt_move, killers, prev1, prev2, prev4, prev6);
+        self.score_moves(pos, &list.as_slice()[old..n], scores, tt_move, killers, prev1, prev2, prev4, prev6, prev3);
         n
     }
 
@@ -2140,6 +2148,7 @@ impl Searcher {
         prev2: usize,
         prev4: usize,
         prev6: usize,
+        prev3: usize,
     ) {
         let us = pos.stm;
         for &m in moves {
@@ -2175,6 +2184,7 @@ impl Searcher {
                     + self.sh.cont[prev2][ci].load(Ordering::Relaxed) as i32
                     + self.sh.cont[prev4][ci].load(Ordering::Relaxed) as i32 / 2
                     + if on(P::UseCont6) { self.sh.cont[prev6][ci].load(Ordering::Relaxed) as i32 / 2 } else { 0 }
+                    + if on(P::UseCont3) { self.sh.cont[prev3][ci].load(Ordering::Relaxed) as i32 / 2 } else { 0 }
             };
             scores.push(score);
         }
