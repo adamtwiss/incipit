@@ -1034,9 +1034,12 @@ fn update<const H: usize>(
         ns = 2;
     }
     // Pawn pairs change when a pawn moves (promotions included) or a pawn is
-    // captured (en passant included); castling never touches pawns.
-    let captured_pawn = ns == 2 && !is_castle(m) && pc_type(subs[1].0) == PAWN;
-    let pawns_change = n.pp && (pc_type(pc) == PAWN || captured_pawn);
+    // captured (en passant included); castling never touches pawns. That case
+    // has its own function, so this loop stays as tight as without pairs.
+    if n.pp && (pc_type(pc) == PAWN || (ns == 2 && !is_castle(m) && pc_type(subs[1].0) == PAWN)) {
+        update_pawns::<H>(acc, n, parent, pos, child, adds[0], subs, ns, cache);
+        return;
+    }
     for p in 0..2 {
         let ki = kinfo(n, p, pos.king_sq(p));
         if n.refresh_on_king_move && p == us && pc_type(pc) == KING && kinfo(n, p, to) != ki {
@@ -1047,35 +1050,6 @@ fn update<const H: usize>(
         let s0 = row(n, feat(p, ki, subs[0].0, subs[0].1), h);
         let src = parent.side(p, h);
         let dst = acc.side_mut(p, h);
-        // Pawn pairs change only when a pawn moves or one is captured, and
-        // then only the pairs of the pawns that left or arrived: those rows go
-        // into the same single pass as the move's own rows.
-        if pawns_change {
-            let old = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
-            let new = (child.pcs(WHITE, PAWN), child.pcs(BLACK, PAWN));
-            // At most two pawns leave (the mover and a captured pawn), each
-            // with at most 17 partners, and one arrives.
-            const M: usize = 34;
-            let (mut a8, mut s8): ([&[i8]; M], [&[i8]; M]) = ([&[]; M], [&[]; M]);
-            let (mut ka, mut ks) = (0, 0);
-            crate::pawnpairs::delta(n.ppw, old, new, p, ki.1, |f, add| {
-                if add {
-                    a8[ka] = row8(n, f, h);
-                    ka += 1;
-                } else {
-                    s8[ks] = row8(n, f, h);
-                    ks += 1;
-                }
-            });
-            // A pawn move is never a castle: one row added, one or two removed.
-            if ns == 1 {
-                add_sub_rows8(dst, src, &[a0], &[s0], &a8[..ka], &s8[..ks]);
-            } else {
-                let s1 = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
-                add_sub_rows8(dst, src, &[a0], &[s0, s1], &a8[..ka], &s8[..ks]);
-            }
-            continue;
-        }
         if ns == 1 {
             add_sub(dst, src, [a0], [s0]);
         } else if na == 1 {
@@ -1085,6 +1059,58 @@ fn update<const H: usize>(
             let s1 = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
             let a1 = row(n, feat(p, ki, adds[1].0, adds[1].1), h);
             add_sub(dst, src, [a0, a1], [s0, s1]);
+        }
+    }
+}
+
+/// `update` for a move that changes pawns, with pawn pairs: the move's own
+/// rows plus only the pairs of the pawns that left or arrived, in one pass.
+/// (A pawn move is never a castle: one row added, one or two removed.)
+#[inline(never)]
+fn update_pawns<const H: usize>(
+    acc: &mut Acc,
+    n: &Network,
+    parent: &Acc,
+    pos: &Position,
+    child: &Position,
+    add: (u8, usize),
+    subs: [(u8, usize); 2],
+    ns: usize,
+    cache: &mut RefreshCache,
+) {
+    let h = hidden::<H>(n);
+    let old = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
+    let new = (child.pcs(WHITE, PAWN), child.pcs(BLACK, PAWN));
+    let us = pos.stm;
+    for p in 0..2 {
+        let ki = kinfo(n, p, pos.king_sq(p));
+        // A king capturing a pawn may change its bucket or mirror state.
+        if n.refresh_on_king_move && p == us && pc_type(subs[0].0) == KING && kinfo(n, p, add.1) != ki {
+            refresh_cached::<H>(acc, n, p, child, cache);
+            continue;
+        }
+        // At most two pawns leave (the mover and a captured pawn), each with
+        // at most 17 partners, and one arrives.
+        const M: usize = 34;
+        let (mut a8, mut s8): ([&[i8]; M], [&[i8]; M]) = ([&[]; M], [&[]; M]);
+        let (mut ka, mut ks) = (0, 0);
+        crate::pawnpairs::delta(n.ppw, old, new, p, ki.1, |f, add| {
+            if add {
+                a8[ka] = row8(n, f, h);
+                ka += 1;
+            } else {
+                s8[ks] = row8(n, f, h);
+                ks += 1;
+            }
+        });
+        let a0 = row(n, feat(p, ki, add.0, add.1), h);
+        let s0 = row(n, feat(p, ki, subs[0].0, subs[0].1), h);
+        let (src, dst) = (parent.side(p, h), acc.side_mut(p, h));
+        if ns == 1 {
+            add_sub_rows8(dst, src, &[a0], &[s0], &a8[..ka], &s8[..ks]);
+        } else {
+            let s1 = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
+            add_sub_rows8(dst, src, &[a0], &[s0, s1], &a8[..ka], &s8[..ks]);
         }
     }
 }
