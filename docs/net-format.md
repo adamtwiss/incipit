@@ -43,8 +43,12 @@ weights appear in each king bucket's block.
 | 8 each | Kind (u16), reserved (u16), number of features (u32) |
 
 Kinds: `1` = piece-square (768 features: `colour·384 + piece·64 + square`,
-from the perspective's point of view; see [Inputs](#inputs)). Threat and pawn
-features will be new kinds.
+from the perspective's point of view; see [Inputs](#inputs)); `2`, `3`, `4` =
+pawn pairs in windows 0, 1, 2 (1488, 928 and 608 features, see
+[Pawn pairs](#pawn-pairs)). Threat features will be a new
+kind. Pawn pairs are shared by every king bucket: their rows are not repeated
+per bucket but come once, after all the king buckets' rows (hidden-layer nets
+only).
 
 **`0x0002` KING_BUCKETS** (required).
 
@@ -128,7 +132,8 @@ Codes used above:
 
 Directly after the header, with no padding between blocks:
 
-1. Feature transformer weights: `[king bucket][input feature][hidden]`.
+1. Feature transformer weights: `[king bucket][input feature][hidden]`, then,
+   with pawn pairs, `[pair feature][hidden]`.
 2. Feature transformer biases: `[hidden]`.
 3. For each LAYER: weights `[output bucket][output][input]` (or `[output][input]`
    if not bucketed), then biases `[output bucket][output]` (or `[output]`).
@@ -147,6 +152,29 @@ where `F` is the number of features per bucket, `s'` is `s` for white and
 perspective's own king square seen the same way, and `m` is 7 if mirroring is on
 and `k` is on files e–h, otherwise 0. This matches Bullet's `Chess768`,
 `ChessBuckets` and `ChessBucketsMirrored` inputs.
+
+## Pawn pairs
+
+One feature per unordered pair of pawn squares on ranks 2–7 that are on the
+same file or adjacent files, per colour combination, from the perspective's
+point of view: squares as for piece-square inputs (`s ^ 56` for black, then
+`^ m` with the mirror), colours as ours (0) / theirs (1). The 372 square pairs
+are numbered in order of `(a, b)`, `a < b`, over those squares; the feature is
+`pair · 4 + colour(a) · 2 + colour(b)`.
+
+Windows keep fewer pairs (a pawn move then changes fewer features), numbered
+the same way over the pairs they keep:
+
+| Kind | Window | Pairs kept | Pairs | Features |
+|---|---|---|---|---|
+| 2 | 0 | all | 372 | 1488 |
+| 3 | 1 | same file at any distance; adjacent files at most one rank apart | 232 | 928 |
+| 4 | 2 | at most one rank apart | 152 | 608 |
+
+The engine's `src/pawnpairs.rs` is the reference, and
+`engine/tests/pawnpairs_fixture.txt` (window 0) and
+`pawnpairs_fixture_w1.txt` / `_w2.txt` list the exact features of 71 positions
+for both perspectives.
 
 ## Evaluation
 

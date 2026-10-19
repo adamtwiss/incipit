@@ -4,6 +4,7 @@ mod epd;
 mod eval;
 mod nnue;
 mod params;
+mod pawnpairs;
 mod position;
 mod san;
 mod search;
@@ -426,6 +427,23 @@ fn main() {
                 if let Err(e) = nnue::l1stats(&args[2], &args[3]) {
                     eprintln!("error: {}", e);
                     std::process::exit(1);
+                }
+                return;
+            }
+            "pawnpairs-fixture" if args.len() >= 3 => {
+                // Developer tool: fixture lines (fen | white features | black
+                // features) for each FEN in the file, for the trainer and engine tests.
+                // An optional second argument picks the pair window (default 0).
+                let w: usize = args.get(3).and_then(|x| x.parse().ok()).unwrap_or(0).min(pawnpairs::WINDOWS - 1);
+                let text = std::fs::read_to_string(&args[2]).unwrap_or_else(|e| {
+                    eprintln!("{}: {}", args[2], e);
+                    std::process::exit(2);
+                });
+                for fen in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                    match Position::from_fen(fen) {
+                        Some(p) => println!("{}", pawnpairs::fixture_line(w, &p)),
+                        None => eprintln!("skipped invalid FEN: {}", fen),
+                    }
                 }
                 return;
             }

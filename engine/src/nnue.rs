@@ -40,6 +40,10 @@ const TAG_QUANT: u16 = 0x0006;
 const TAG_LAYER_QUANT: u16 = 0x0007;
 const OPTIONAL: u16 = 0x8000;
 const INPUT_PSQ768: u16 = 1;
+/// Pawn-pair inputs (src/pawnpairs.rs): shared by every king bucket, so their
+/// rows come once, after all the king buckets' rows. Kinds 2, 3 and 4 are
+/// pair windows 0, 1 and 2.
+const INPUT_PAWN_PAIRS: u16 = 2;
 const ACT_NONE: u8 = 0;
 const ACT_CRELU: u8 = 2;
 const ACT_SCRELU: u8 = 3;
@@ -71,7 +75,15 @@ pub struct Network {
     qa: i32,
     qb: i32,
     scale: i32,
-    ftw: Aligned, // [king bucket][feature][h]
+    ftw: Aligned, // [king bucket][feature][h], then the pawn-pair rows [pair feature][h] when pp
+    /// Pawn-pair inputs on: pair feature f is FT row pp_base + f.
+    pp: bool,
+    /// The pawn-pair window (src/pawnpairs.rs) when pp.
+    ppw: usize,
+    pp_base: usize,
+    /// The pawn-pair rows as i8, [pair feature][h]: a pawn move reads half the
+    /// bytes. The i16 copies in ftw are clamped to the same values at load.
+    ppw8: Vec<i8>,
     ftb: Aligned, // [h]
     ow: Aligned,  // [output bucket][2h], side to move first
     ob: Vec<i32>, // [output bucket]
@@ -212,6 +224,13 @@ fn init_net() {
 /// Parses and validates a network file.
 pub fn load(d: &[u8]) -> Result<Network, String> {
     let mut n = load_layers(d)?;
+    // Pawn-pair weights are small (about 0.1-0.2% of a trained net's exceed
+    // i8): clamp them to i8 and keep an i8 copy for the incremental updates.
+    if n.pp {
+        let start = n.pp_base * n.h;
+        n.ftw = Aligned::from(n.ftw.iter().enumerate().map(|(i, &w)| if i >= start { w.clamp(-127, 127) } else { w }));
+        n.ppw8 = n.ftw[start..].iter().map(|&w| w as i8).collect();
+    }
     n.eval = pick_eval(&n);
     Ok(n)
 }
@@ -293,9 +312,22 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
 
     let missing = |name: &str| format!("missing {} field", name);
     let inputs = inputs.ok_or_else(|| missing("INPUTS"))?;
-    if inputs != [(INPUT_PSQ768, 768)] {
-        return Err(format!("unsupported inputs {:?} (only a single 768 piece-square set)", inputs));
-    }
+    let (pp, ppw) = match inputs.as_slice() {
+        [(INPUT_PSQ768, 768)] => (false, 0),
+        [(INPUT_PSQ768, 768), (k, f)]
+            if (INPUT_PAWN_PAIRS..INPUT_PAWN_PAIRS + crate::pawnpairs::WINDOWS as u16).contains(k)
+                && *f as usize == crate::pawnpairs::features((k - INPUT_PAWN_PAIRS) as usize) =>
+        {
+            (true, (k - INPUT_PAWN_PAIRS) as usize)
+        }
+        _ => {
+            return Err(format!(
+                "unsupported inputs {:?} (768 piece-square, optionally pawn pairs: kind 2, 3 or 4 with {:?} features)",
+                inputs,
+                crate::pawnpairs::WINDOW_PAIRS.map(|p| p * 4)
+            ))
+        }
+    };
     let (nkb, mirror, king_bucket) = kb.ok_or_else(|| missing("KING_BUCKETS"))?;
     if nkb == 0 || king_bucket.iter().any(|&b| b as usize >= nkb) {
         return Err(format!("king bucket table doesn't match {} bucket(s)", nkb));
@@ -324,7 +356,26 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
         return Err("a pairwise feature transformer needs a hidden layer".into());
     }
     if layers.len() == 2 || layers.len() == 3 {
-        return load_hidden(d, header, h, nkb, mirror, king_bucket, act, buckets, qa, qb, scale, &layers, &layer_quant);
+        return load_hidden(
+            d,
+            header,
+            h,
+            nkb,
+            mirror,
+            king_bucket,
+            act,
+            buckets,
+            qa,
+            qb,
+            scale,
+            &layers,
+            &layer_quant,
+            pp,
+            ppw,
+        );
+    }
+    if pp {
+        return Err("pawn-pair inputs need a hidden layer".into());
     }
     let &[(lin, lout, lact, lwt, lbt, lflags)] = layers.as_slice() else {
         return Err(format!("{} layers after the feature transformer; one to three are supported", layers.len()));
@@ -378,6 +429,10 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
         qb,
         scale,
         ftw,
+        pp: false,
+        ppw: 0,
+        pp_base: 0,
+        ppw8: Vec::new(),
         ftb,
         ow,
         ob,
@@ -403,6 +458,8 @@ fn load_hidden(
     scale: i32,
     layers: &[(usize, usize, u8, u8, u8, u8)],
     layer_quant: &[(u32, i32)],
+    pp: bool,
+    ppw: usize,
 ) -> Result<Network, String> {
     let (l1, l2) = (layers[0], layers[layers.len() - 1]);
     // A middle layer: the second hidden layer.
@@ -476,7 +533,8 @@ fn load_hidden(
             shift, w_scale
         ));
     }
-    let n_ftw = nkb * 768 * h;
+    // The pawn-pair rows follow the king buckets' rows in the same block.
+    let n_ftw = (nkb * 768 + if pp { crate::pawnpairs::features(ppw) } else { 0 }) * h;
     let expect = 2 * (n_ftw + h)
         + nb1 * ln * inl
         + 4 * (nb1 * ln + buckets * n2 * (in2 + 1) + buckets * (last_in + 1) + if lin { buckets * ln } else { 0 });
@@ -564,6 +622,10 @@ fn load_hidden(
         qb,
         scale,
         ftw,
+        pp,
+        ppw,
+        pp_base: nkb * 768,
+        ppw8: Vec::new(),
         ftb,
         ow: Aligned::from(std::iter::empty()),
         ob: Vec::new(),
@@ -707,7 +769,11 @@ struct CacheEntry {
 impl RefreshCache {
     /// A cache for the loaded network: every entry is the bias with no pieces.
     pub fn new() -> Self {
-        let n = net();
+        Self::with_net(net())
+    }
+
+    /// A cache for network `n` (tests use networks other than the loaded one).
+    fn with_net(n: &Network) -> Self {
         let entries = (0..2 * n.nkb * 2)
             .map(|_| {
                 let mut e = CacheEntry { acc: [0; MAX_H], bb: [0; 12] };
@@ -716,6 +782,80 @@ impl RefreshCache {
             })
             .collect();
         RefreshCache { entries }
+    }
+}
+
+/// Pair feature f's i8 row.
+#[inline(always)]
+fn row8(n: &Network, f: usize, h: usize) -> &[i8] {
+    &n.ppw8[f * h..(f + 1) * h]
+}
+
+/// v += r or v -= r for an i8 row, 32 values at a time.
+#[inline(always)]
+fn add_row8(v: &mut [i16], r: &[i8], add: bool) {
+    for (y, w) in v.chunks_exact_mut(32).zip(r.chunks_exact(32)) {
+        let mut a: [i16; 32] = (*y).try_into().unwrap();
+        let w: [i8; 32] = (*w).try_into().unwrap();
+        if add {
+            for k in 0..32 {
+                a[k] = a[k].wrapping_add(w[k] as i16);
+            }
+        } else {
+            for k in 0..32 {
+                a[k] = a[k].wrapping_sub(w[k] as i16);
+            }
+        }
+        y.copy_from_slice(&a);
+    }
+}
+
+/// dst = src + Σ adds − Σ subs (i16 rows) + Σ adds8 − Σ subs8 (i8 pawn-pair
+/// rows), in one pass: 32 values at a time held while every row is applied
+/// (the move's own rows plus the pawn pairs that change).
+#[inline(always)]
+fn add_sub_rows8(dst: &mut [i16], src: &[i16], adds: &[&[i16]], subs: &[&[i16]], adds8: &[&[i8]], subs8: &[&[i8]]) {
+    const C: usize = 32;
+    let h = dst.len();
+    assert!(src.len() >= h && h % C == 0);
+    for r in adds.iter().chain(subs) {
+        assert!(r.len() >= h);
+    }
+    for r in adds8.iter().chain(subs8) {
+        assert!(r.len() >= h);
+    }
+    let mut o = 0;
+    // Safe: every row and src hold at least h values (checked above), and o + C <= h.
+    unsafe {
+        while o < h {
+            let mut x: [i16; C] = *(src.as_ptr().add(o) as *const [i16; C]);
+            for a in adds {
+                let w = &*(a.as_ptr().add(o) as *const [i16; C]);
+                for k in 0..C {
+                    x[k] = x[k].wrapping_add(w[k]);
+                }
+            }
+            for s in subs {
+                let w = &*(s.as_ptr().add(o) as *const [i16; C]);
+                for k in 0..C {
+                    x[k] = x[k].wrapping_sub(w[k]);
+                }
+            }
+            for a in adds8 {
+                let w = &*(a.as_ptr().add(o) as *const [i8; C]);
+                for k in 0..C {
+                    x[k] = x[k].wrapping_add(w[k] as i16);
+                }
+            }
+            for s in subs8 {
+                let w = &*(s.as_ptr().add(o) as *const [i8; C]);
+                for k in 0..C {
+                    x[k] = x[k].wrapping_sub(w[k] as i16);
+                }
+            }
+            *(dst.as_mut_ptr().add(o) as *mut [i16; C]) = x;
+            o += C;
+        }
     }
 }
 
@@ -731,6 +871,15 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
             *x = x.wrapping_add(w);
         }
     }
+    if n.pp {
+        let mut pairs = [0u16; crate::pawnpairs::MAX_ACTIVE];
+        let k = crate::pawnpairs::active_bb(n.ppw, pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN), p, ki.1, &mut pairs);
+        for &f in &pairs[..k] {
+            for (x, &w) in v.iter_mut().zip(row(n, n.pp_base + f as usize, h)) {
+                *x = x.wrapping_add(w);
+            }
+        }
+    }
 }
 
 /// Rebuilds perspective p of `acc` for `pos` through the cache entry for p's
@@ -743,6 +892,17 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
     let ki = kinfo(n, p, pos.king_sq(p));
     let idx = (p * n.nkb + ki.0 / 768) * 2 + (ki.1 != 0) as usize;
     let e = &mut cache.entries[idx];
+    // The pawn pairs that changed since the entry was last used (pair rows
+    // don't depend on the king bucket, so this entry's are still right for its
+    // pawns).
+    if n.pp {
+        let old = (e.bb[make_pc(PAWN, WHITE) as usize], e.bb[make_pc(PAWN, BLACK) as usize]);
+        let new = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
+        if old != new {
+            let v = &mut e.acc[..h];
+            crate::pawnpairs::delta(n.ppw, old, new, p, ki.1, |f, add| add_row8(v, row8(n, f, h), add));
+        }
+    }
     // Feature rows to add and subtract (at most 32 pieces each way).
     let mut adds = [0usize; 32];
     let mut subs = [0usize; 32];
@@ -873,6 +1033,10 @@ fn update<const H: usize>(
         subs[1] = (pos.board[to], to);
         ns = 2;
     }
+    // Pawn pairs change when a pawn moves (promotions included) or a pawn is
+    // captured (en passant included); castling never touches pawns.
+    let captured_pawn = ns == 2 && !is_castle(m) && pc_type(subs[1].0) == PAWN;
+    let pawns_change = n.pp && (pc_type(pc) == PAWN || captured_pawn);
     for p in 0..2 {
         let ki = kinfo(n, p, pos.king_sq(p));
         if n.refresh_on_king_move && p == us && pc_type(pc) == KING && kinfo(n, p, to) != ki {
@@ -883,6 +1047,35 @@ fn update<const H: usize>(
         let s0 = row(n, feat(p, ki, subs[0].0, subs[0].1), h);
         let src = parent.side(p, h);
         let dst = acc.side_mut(p, h);
+        // Pawn pairs change only when a pawn moves or one is captured, and
+        // then only the pairs of the pawns that left or arrived: those rows go
+        // into the same single pass as the move's own rows.
+        if pawns_change {
+            let old = (pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN));
+            let new = (child.pcs(WHITE, PAWN), child.pcs(BLACK, PAWN));
+            // At most two pawns leave (the mover and a captured pawn), each
+            // with at most 17 partners, and one arrives.
+            const M: usize = 34;
+            let (mut a8, mut s8): ([&[i8]; M], [&[i8]; M]) = ([&[]; M], [&[]; M]);
+            let (mut ka, mut ks) = (0, 0);
+            crate::pawnpairs::delta(n.ppw, old, new, p, ki.1, |f, add| {
+                if add {
+                    a8[ka] = row8(n, f, h);
+                    ka += 1;
+                } else {
+                    s8[ks] = row8(n, f, h);
+                    ks += 1;
+                }
+            });
+            // A pawn move is never a castle: one row added, one or two removed.
+            if ns == 1 {
+                add_sub_rows8(dst, src, &[a0], &[s0], &a8[..ka], &s8[..ks]);
+            } else {
+                let s1 = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
+                add_sub_rows8(dst, src, &[a0], &[s0, s1], &a8[..ka], &s8[..ks]);
+            }
+            continue;
+        }
         if ns == 1 {
             add_sub(dst, src, [a0], [s0]);
         } else if na == 1 {
@@ -2583,6 +2776,151 @@ unsafe fn dot<const SCRELU: bool>(a: &[i16], w: &[i16], qa: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A small random network in the file format: FT 128 (pairwise), 32
+    /// mirrored king buckets, optional pawn pairs, 16 -> 16 -> 1, 8 output
+    /// buckets. Values are small, so the accumulators' i16 sums don't wrap.
+    fn synth_net(pp: Option<usize>, seed: u64) -> Vec<u8> {
+        let (h, nkb, nb, l1, l2) = (128usize, 32usize, 8usize, 16usize, 16usize);
+        let mut r = seed | 1;
+        let mut next = move || {
+            r ^= r << 13;
+            r ^= r >> 7;
+            r ^= r << 17;
+            r
+        };
+        let field = |out: &mut Vec<u8>, tag: u16, p: &[u8]| {
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&(p.len() as u32).to_le_bytes());
+            out.extend_from_slice(p);
+        };
+        let mut f = Vec::new();
+        let sets: Vec<(u16, u32)> = match pp {
+            Some(w) => vec![(INPUT_PSQ768, 768), (INPUT_PAWN_PAIRS + w as u16, crate::pawnpairs::features(w) as u32)],
+            None => vec![(INPUT_PSQ768, 768)],
+        };
+        let mut p = (sets.len() as u16).to_le_bytes().to_vec();
+        for (k, c) in &sets {
+            p.extend_from_slice(&k.to_le_bytes());
+            p.extend_from_slice(&0u16.to_le_bytes());
+            p.extend_from_slice(&c.to_le_bytes());
+        }
+        field(&mut f, TAG_INPUTS, &p);
+        let mut p = vec![nkb as u8, 1, 0, 0];
+        p.extend((0..64).map(|sq| ((sq / 8) * 4 + (sq % 8).min(7 - sq % 8)) as u8));
+        field(&mut f, TAG_KING_BUCKETS, &p);
+        let mut p = (h as u32).to_le_bytes().to_vec();
+        p.extend_from_slice(&[ACT_PAIRWISE, TYPE_I16, TYPE_I16, 0]);
+        field(&mut f, TAG_FT, &p);
+        field(&mut f, TAG_OUTPUT_BUCKETS, &[OUTPUT_MATERIAL, nb as u8, 0, 0]);
+        for (i, o, a, w, b) in [
+            (h, l1, ACT_SCRELU, TYPE_I8, TYPE_F32),
+            (l1, l2, ACT_SCRELU, TYPE_F32, TYPE_F32),
+            (l2, 1, ACT_NONE, TYPE_F32, TYPE_F32),
+        ] {
+            let mut p = (i as u32).to_le_bytes().to_vec();
+            p.extend_from_slice(&(o as u32).to_le_bytes());
+            p.extend_from_slice(&[a, w, b, 1]);
+            field(&mut f, TAG_LAYER, &p);
+        }
+        let mut p = 255i32.to_le_bytes().to_vec();
+        p.extend_from_slice(&128i32.to_le_bytes());
+        p.extend_from_slice(&400i32.to_le_bytes());
+        field(&mut f, TAG_QUANT, &p);
+        let mut p = 9u32.to_le_bytes().to_vec();
+        p.extend_from_slice(&128i32.to_le_bytes());
+        p.extend_from_slice(&[0u8; 16]);
+        field(&mut f, TAG_LAYER_QUANT, &p);
+        f.extend_from_slice(&[0u8; 8]); // end of fields
+        let header = (16 + f.len()).div_ceil(64) * 64;
+        let mut d = MAGIC.to_vec();
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&0u16.to_le_bytes());
+        d.extend_from_slice(&(header as u32).to_le_bytes());
+        d.extend_from_slice(&f);
+        d.resize(header, 0);
+        let rows = nkb * 768 + pp.map_or(0, crate::pawnpairs::features);
+        for _ in 0..rows * h + h {
+            d.extend_from_slice(&((next() % 401) as i16 - 200).to_le_bytes());
+        }
+        d.extend((0..nb * l1 * h).map(|_| (next() % 41) as u8));
+        let n_f32 = nb * l1 + nb * l2 * (l1 + 1) + nb * (l2 + 1);
+        for _ in 0..n_f32 {
+            d.extend_from_slice(&(((next() % 2001) as f32 - 1000.0) / 1000.0).to_le_bytes());
+        }
+        d
+    }
+
+    /// Incremental accumulator updates equal a full rebuild, for both sides,
+    /// after every move of random games from varied positions (pawn moves,
+    /// captures, en passant, promotions, castling, king moves that change
+    /// bucket or mirror through the refresh cache), without pawn pairs and
+    /// with each pair window.
+    #[test]
+    fn incremental_matches_refresh() {
+        crate::attacks::init();
+        let starts = [
+            START_FEN,
+            "r3k2r/1pp2pp1/p2p3p/4p3/4P3/P2P3P/1PP2PP1/R3K2R w KQkq - 0 1",
+            "8/2P1P3/8/8/8/8/3p1p2/k6K w - - 0 1",
+            "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+            "4k3/p1p1p1p1/1p1p1p1p/P1P1P1P1/1P1P1P1P/8/8/4K3 w - - 0 1",
+            "bqnb1rkr/pp3ppp/3ppn2/2p5/5P2/P2P4/NPP1P1PP/BQ1BNRKR w HFhf - 2 9",
+        ];
+        let cases = [None, Some(0), Some(1), Some(2)];
+        for pp in cases {
+            let n = load(&synth_net(pp, 0x1234_5678)).unwrap();
+            assert_eq!((n.pp, n.ppw), (pp.is_some(), pp.unwrap_or(0)));
+            let mut cache = RefreshCache::with_net(&n);
+            let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+            let mut checked = 0;
+            for g in 0..60 {
+                let mut pos = Position::from_fen(starts[g % starts.len()]).unwrap();
+                let mut acc = Acc::new();
+                for p in 0..2 {
+                    refresh_persp::<128>(&mut acc, &n, p, &pos);
+                }
+                for _ in 0..120 {
+                    let mut list = MoveList::new();
+                    pos.gen_moves(&mut list, false);
+                    let legal: Vec<Move> = (0..list.len())
+                        .map(|i| list[i])
+                        .filter(|&m| {
+                            let mut c = pos;
+                            c.make_move(m)
+                        })
+                        .collect();
+                    if legal.is_empty() {
+                        break;
+                    }
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    let m = legal[(seed % legal.len() as u64) as usize];
+                    let mut child = pos;
+                    child.make_move(m);
+                    let mut inc = Acc::new();
+                    update::<128>(&mut inc, &n, &acc, &pos, &child, m, &mut cache);
+                    let mut full = Acc::new();
+                    for p in 0..2 {
+                        refresh_persp::<128>(&mut full, &n, p, &child);
+                    }
+                    assert!(
+                        inc.v[..256] == full.v[..256],
+                        "pawn pairs {:?}: incremental != refresh after {} in {}",
+                        pp,
+                        pos.move_uci(m),
+                        pos.to_fen()
+                    );
+                    checked += 1;
+                    pos = child;
+                    acc = inc;
+                }
+            }
+            assert!(checked > 3000, "only {} positions checked", checked);
+        }
+    }
 
     /// The SIMD `dot` matches the scalar reference, including where the
     /// 16-bit products and 32-bit sums wrap.
