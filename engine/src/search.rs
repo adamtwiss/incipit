@@ -2037,6 +2037,12 @@ impl Searcher {
                 if prev5 != 0 {
                     upd_shared(&self.sh.cont[prev5][prev1], bonus);
                 }
+                if on(P::UsePrior7) && ply >= 7 {
+                    let prev7 = self.stack[ply - 7].cont_idx;
+                    if prev7 != 0 {
+                        upd_shared(&self.sh.cont[prev7][prev1], bonus);
+                    }
+                }
             }
         }
 
