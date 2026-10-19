@@ -68,6 +68,10 @@ params! {
     HistMul = "HistMul", 305, 100, 500, 20;
     HistOff = "HistOff", 177, 0, 500, 25;
     HistMax = "HistMax", 2677, 1000, 4000, 150;
+    // Extra cutoff bonus per move searched before the cutoff move (capped
+    // at four), as a share of the bonus: a quarter, so the fifth move gets
+    // double.
+    HistLatePct = "HistLatePct", 25, 0, 100, 8;
     // Bonus for the opponent's previous quiet move when this node fails low (it refuted
     // every reply): PriorBonusPct% of the cutoff bonus at this depth. Half, as weaker
     // evidence than a cutoff; 0 disables it.
@@ -224,6 +228,7 @@ params! {
     // Continuation history keyed by our move three plies back (prev6), at
     // half weight in move scoring like the ply-4 table.
     UseCont6 = "UseCont6", 1, 0, 1, 0;
+    UseHistLate = "UseHistLate", 1, 0, 1, 0;
     // Correction history: incremental updates toward zero residual (1) or the
     // old average toward the residual (0).
     UseCorrIncr = "UseCorrIncr", 1, 0, 1, 0;

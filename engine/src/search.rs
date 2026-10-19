@@ -1996,20 +1996,24 @@ impl Searcher {
             // Never negative, whatever the tuned values: a cutoff must not
             // lower its move's history (nor raise the failed ones').
             let bonus = (tp(P::HistMul) * bdepth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
+            // A cutoff move that came late was badly ordered: its bonus grows
+            // with the moves searched before it (up to four), the refuted
+            // moves' malus does not.
+            let late = if on(P::UseHistLate) { bonus * (legal - 1).min(4) * tp(P::HistLatePct) / 100 } else { 0 };
             let m = best_move;
             if !is_noisy(m) {
                 if self.killers[ply][0] != m {
                     self.killers[ply][1] = self.killers[ply][0];
                     self.killers[ply][0] = m;
                 }
-                self.update_quiet(pos, m, bonus, prev1, prev2, prev4, prev6);
+                self.update_quiet(pos, m, bonus + late, prev1, prev2, prev4, prev6);
                 for k in 0..nq {
                     self.update_quiet(pos, quiets[k], -bonus, prev1, prev2, prev4, prev6);
                 }
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ct = pos.captured_type(m);
-                upd(&mut self.capt[pc][mto(m)][ct], bonus);
+                upd(&mut self.capt[pc][mto(m)][ct], bonus + late);
             }
             for k in 0..nc {
                 let cm = capts[k];
