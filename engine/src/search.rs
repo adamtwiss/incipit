@@ -462,9 +462,37 @@ fn wdl_ab(pos: &Position) -> (f64, f64) {
         .iter()
         .map(|&(pt, v)| v * pos.pieces[pt].count_ones())
         .sum();
-    let m = (mat as f64).clamp(17.0, 78.0) / 58.0;
+    wdl_ab_m((mat as f64).clamp(17.0, 78.0) / 58.0)
+}
+
+fn wdl_ab_m(m: f64) -> (f64, f64) {
     let poly = |c: &[f64; 4]| ((c[0] * m + c[1]) * m + c[2]) * m + c[3];
     (poly(&WDL_A), poly(&WDL_B))
+}
+
+/// The net's 50%-win score at full material (the WDL model's `a` at the
+/// top of its material range).
+fn wdl_a_full() -> f64 {
+    wdl_ab_m(78.0 / 58.0).0
+}
+
+/// Eval normalisation by material (percent): the 50%-win score at full
+/// material over the one at this position's material. The search
+/// multiplies every eval by it, so a score means the same chance of
+/// winning whatever the material, as the pruning margins and windows
+/// assume; at full material it is 100, so the middlegame is unchanged.
+fn norm_pct(pos: &Position) -> i32 {
+    (wdl_a_full() * 100.0 / wdl_ab(pos).0).round() as i32
+}
+
+/// A search-scale score back on the net's own scale (the output and
+/// datagen scale); mate and tablebase scores are untouched.
+pub(crate) fn to_raw(s: i32, pos: &Position) -> i32 {
+    if on(P::UseEvalNorm) && s.abs() < MATE_BOUND {
+        s * 100 / norm_pct(pos)
+    } else {
+        s
+    }
 }
 
 /// " wdl W D L" (permille, side to move, summing to 1000) when UCI_ShowWDL is
@@ -481,7 +509,7 @@ fn wdl_str(s: i32, pos: &Position) -> String {
         }
     } else {
         let (a, b) = wdl_ab(pos);
-        let x = s as f64;
+        let x = to_raw(s, pos) as f64;
         let w = 1000.0 / (1.0 + ((a - x) / b).exp());
         let l = 1000.0 / (1.0 + ((a + x) / b).exp());
         (w.round() as i32, l.round() as i32)
@@ -492,6 +520,7 @@ fn wdl_str(s: i32, pos: &Position) -> String {
 /// A score as printed: "mate N", a tablebase result as a large cp value, or
 /// cp, normalised (NormalizeScore) so 100 is a 50% chance of winning in `pos`.
 pub(crate) fn score_str(s: i32, pos: &Position) -> String {
+    let s = to_raw(s, pos);
     if s.abs() < MATE_BOUND && NORMALIZE_SCORE.load(std::sync::atomic::Ordering::Relaxed) {
         return format!("cp {}", (s as f64 * 100.0 / wdl_ab(pos).0).round() as i32);
     }
@@ -822,6 +851,9 @@ impl Searcher {
     /// (`prev1`: the previous move's piece-square, 0 for none).
     fn corrected(&self, pos: &Position, raw: i32, prev1: usize, prev2: usize) -> i32 {
         let m = CORR_SIZE - 1;
+        // The net's score on the search scale (see norm_pct); the
+        // correction tables learn in that scale.
+        let raw = if on(P::UseEvalNorm) { raw * norm_pct(pos) / 100 } else { raw };
         if !on(P::UseCorrHist) {
             return Self::damp(pos, raw).clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
         }
@@ -2370,8 +2402,10 @@ mod tests {
         let pos = Position::from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4").unwrap();
         let a = wdl_ab(&pos).0;
         assert!((150.0..200.0).contains(&a), "a {a}");
-        assert_eq!(score_str(a.round() as i32, &pos), "cp 100");
-        assert_eq!(score_str(-(a.round() as i32), &pos), "cp -100");
+        // The search-scale score whose raw value is `a`.
+        let sa = if on(P::UseEvalNorm) { (a * norm_pct(&pos) as f64 / 100.0).round() as i32 } else { a.round() as i32 };
+        assert_eq!(score_str(sa, &pos), "cp 100");
+        assert_eq!(score_str(-sa, &pos), "cp -100");
         assert_eq!(score_str(0, &pos), "cp 0");
         // An endgame needs a larger raw score for the same 50%.
         let end = Position::from_fen("8/5pk1/6p1/8/8/6P1/5PK1/3R4 w - - 0 40").unwrap();
