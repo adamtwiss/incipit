@@ -73,6 +73,8 @@ params! {
     // evidence than a cutoff; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 54, 0, 150, 8;
     SeDouble = "SeDouble", 13, 5, 50, 2;
+    // Triple extension margin: three times SeDouble, rounded.
+    SeTriple = "SeTriple", 40, 10, 100, 5;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
     LmrDeeper = "LmrDeeper", 49, 10, 200, 10;
@@ -190,6 +192,7 @@ params! {
     UseSeeNoisy = "UseSeeNoisy", 1, 0, 1, 0;
     UseSe = "UseSe", 1, 0, 1, 0;
     UseSeDoubleExt = "UseSeDoubleExt", 1, 0, 1, 0;
+    UseSeTriple = "UseSeTriple", 1, 0, 1, 0;
     UseMulticut = "UseMulticut", 1, 0, 1, 0;
     UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;
     UseSeNeg2 = "UseSeNeg2", 1, 0, 1, 0;

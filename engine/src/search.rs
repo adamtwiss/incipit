@@ -1852,6 +1852,10 @@ impl Searcher {
                     if on(P::UseSeDoubleExt) && !pv_node && v < sbeta - tp(P::SeDouble) {
                         ext = 2;
                         self.stats.se_double += 1;
+                        // Far more singular still: a third ply.
+                        if on(P::UseSeTriple) && v < sbeta - tp(P::SeTriple) {
+                            ext = 3;
+                        }
                     } else {
                         self.stats.se_single += 1;
                     }
