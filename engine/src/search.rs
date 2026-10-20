@@ -35,6 +35,9 @@ struct Frame {
     cont_idx: usize, // piece*64+to of the move made at this ply
     excluded: Move,
     mv: Move,
+    // Replies at the next ply that refuted a move of this node at once (a
+    // TT cutoff, a static cut, or a cutoff on their first move).
+    quick_cuts: i32,
 }
 
 /// Search statistics, cumulative until reset (bench sums them over its
@@ -1413,6 +1416,9 @@ impl Searcher {
                     upd(&mut self.hist[pos.stm][mfrom(tt_move)][mto(tt_move)], bonus);
                 }
                 self.stats.tt_cutoffs += 1;
+                if ply >= 1 {
+                    self.stack[ply - 1].quick_cuts += 1;
+                }
                 return tt_score;
             }
         }
@@ -1502,6 +1508,7 @@ impl Searcher {
                 && eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta
             {
                 self.stats.rfp += 1;
+                self.stack[ply - 1].quick_cuts += 1;
                 return (eval + beta) / 2;
             }
             // razoring
@@ -1510,6 +1517,7 @@ impl Searcher {
                 let v = self.qsearch(pos, alpha, alpha + 1, ply);
                 if v <= alpha {
                     self.stats.razor_cuts += 1;
+                    self.stack[ply - 1].quick_cuts += 1;
                     return v;
                 }
             }
@@ -1562,6 +1570,7 @@ impl Searcher {
                     };
                     if v >= beta {
                         self.stats.nmp_cuts += 1;
+                        self.stack[ply - 1].quick_cuts += 1;
                         return if v >= MATE_BOUND { beta } else { v };
                     }
                 }
@@ -1617,6 +1626,7 @@ impl Searcher {
                         let ss = if v >= MATE_BOUND { v + ply as i32 } else { v };
                         self.tt.store(pos.hash, m, ss, raw_eval, depth - 3, BOUND_LOWER, pv_node || tt_pv);
                         self.stats.probcut_cuts += 1;
+                        self.stack[ply - 1].quick_cuts += 1;
                         return v;
                     }
                 }
@@ -1628,6 +1638,7 @@ impl Searcher {
             depth -= 1;
         }
 
+        self.stack[ply].quick_cuts = 0;
         let mut list = MoveList::new();
         let mut scores = Stack256::<i32>::new();
         let us = pos.stm;
@@ -1845,8 +1856,10 @@ impl Searcher {
                 self.stats.se_tries += 1;
                 let sbeta = tt_score - depth * tp(P::SeMul) / 16;
                 self.stack[ply].excluded = m;
+                let saved_cuts = self.stack[ply].quick_cuts;
                 let v = self.negamax(pos, sbeta - 1, sbeta, (depth - 1) / 2, ply, cut_node);
                 self.stack[ply].excluded = 0;
+                self.stack[ply].quick_cuts = saved_cuts;
                 // The exclusion search ran at this ply: its PV is not ours.
                 self.pv_len[ply] = 0;
                 if self.stopped {
@@ -1901,6 +1914,11 @@ impl Searcher {
                         }
                     }
                     if !improving {
+                        r += 1;
+                    }
+                    // The moves before this one were refuted at once: the
+                    // node is going nowhere, so the rest get a ply less.
+                    if on(P::UseCutCnt) && self.stack[ply].quick_cuts >= tp(P::CutCntMin) {
                         r += 1;
                     }
                     if child.checkers != 0 {
@@ -1965,6 +1983,9 @@ impl Searcher {
                     }
                     if alpha >= beta {
                         let k = legal as u64;
+                        if k == 1 && excluded == 0 && ply >= 1 {
+                            self.stack[ply - 1].quick_cuts += 1;
+                        }
                         self.stats.beta_cuts += 1;
                         self.stats.cut_pos_sum += k;
                         self.stats.cut_pos_sq_sum += k * k;

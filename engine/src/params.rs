@@ -76,6 +76,9 @@ params! {
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
     LmrDeeper = "LmrDeeper", 49, 10, 200, 10;
+    // Quick refutations of a node's earlier moves before its later ones are
+    // reduced a ply more (a round start: three, the LMR table's first ply).
+    CutCntMin = "CutCntMin", 3, 1, 8, 1;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;
@@ -199,6 +202,8 @@ params! {
     UseLmr = "UseLmr", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
+    // LMR adds a ply once CutCntMin earlier moves were refuted at once.
+    UseCutCnt = "UseCutCnt", 1, 0, 1, 0;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
