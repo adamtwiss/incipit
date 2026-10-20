@@ -1489,6 +1489,9 @@ impl Searcher {
                 false
             };
         self.killers[ply + 1] = [0, 0];
+        // The square of our piece the opponent would take if we passed
+        // (from the failed null move's refutation); 64 when unknown.
+        let mut threat_sq = 64usize;
 
         // No static pruning at the root of a null-move verification search:
         // there it must search the position, or a reverse-futility or
@@ -1563,6 +1566,16 @@ impl Searcher {
                     if v >= beta {
                         self.stats.nmp_cuts += 1;
                         return if v >= MATE_BOUND { beta } else { v };
+                    }
+                }
+                if on(P::UseNmpThreat) && v < beta {
+                    // The null move failed: the reply that refuted it, if a
+                    // capture, names a piece of ours that is hanging. Moves
+                    // of that piece are ordered with the killers.
+                    if let Some(e) = self.tt.probe(child.hash) {
+                        if e.mv != 0 && child.captured_type(e.mv) < 6 {
+                            threat_sq = mto(e.mv);
+                        }
                     }
                 }
             }
@@ -1649,7 +1662,7 @@ impl Searcher {
         } else {
             stage = STAGE_NOISY;
             pos.gen(&mut list, GEN_NOISY | GEN_UNDERPROMO);
-            self.score_moves(pos, list.as_slice(), &mut scores, 0, killers, prev1, prev2, prev4, prev6);
+            self.score_moves(pos, list.as_slice(), &mut scores, 0, killers, threat_sq, prev1, prev2, prev4, prev6);
         }
         let mut best_score = -INF;
         let mut best_move = 0;
@@ -1680,6 +1693,7 @@ impl Searcher {
                         GEN_NOISY | GEN_UNDERPROMO,
                         tt_move,
                         killers,
+                        threat_sq,
                         prev1,
                         prev2,
                         prev4,
@@ -1693,6 +1707,7 @@ impl Searcher {
                         GEN_QUIET,
                         tt_move,
                         killers,
+                        threat_sq,
                         prev1,
                         prev2,
                         prev4,
@@ -1734,6 +1749,7 @@ impl Searcher {
                             GEN_QUIET,
                             tt_move,
                             killers,
+                            threat_sq,
                             prev1,
                             prev2,
                             prev4,
@@ -2113,6 +2129,7 @@ impl Searcher {
         want: u8,
         tt_move: Move,
         killers: [Move; 2],
+        threat_sq: usize,
         prev1: usize,
         prev2: usize,
         prev4: usize,
@@ -2128,7 +2145,18 @@ impl Searcher {
             }
         }
         let n = list.len();
-        self.score_moves(pos, &list.as_slice()[old..n], scores, tt_move, killers, prev1, prev2, prev4, prev6);
+        self.score_moves(
+            pos,
+            &list.as_slice()[old..n],
+            scores,
+            tt_move,
+            killers,
+            threat_sq,
+            prev1,
+            prev2,
+            prev4,
+            prev6,
+        );
         n
     }
 
@@ -2141,6 +2169,7 @@ impl Searcher {
         scores: &mut Stack256<i32>,
         tt_move: Move,
         killers: [Move; 2],
+        threat_sq: usize,
         prev1: usize,
         prev2: usize,
         prev4: usize,
@@ -2172,6 +2201,9 @@ impl Searcher {
                 (1 << 27) + 2
             } else if m == killers[1] {
                 (1 << 27) + 1
+            } else if mfrom(m) == threat_sq {
+                // Moves the piece the null move showed to be hanging.
+                1 << 27
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ci = pc * 64 + mto(m);
