@@ -1774,7 +1774,11 @@ impl Searcher {
                         skip_quiets = true;
                         continue;
                     }
-                    let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
+                    // The reduction this move would get: by its place in the
+                    // order (moves seen before it, pruned ones included) or
+                    // by the moves searched before it.
+                    let seen = if on(P::UseLmrIndex) { i as i32 - 1 } else { legal };
+                    let lmr_d = (depth - self.lmr[depth.min(63) as usize][seen.min(63) as usize]).max(0);
                     if on(P::UseFut)
                         && !in_check
                         && lmr_d <= tp(P::FutDepth)
@@ -1884,7 +1888,8 @@ impl Searcher {
             } else {
                 let mut r = 0;
                 if on(P::UseLmr) && depth >= 3 && legal > 1 + root as i32 {
-                    r = self.lmr[depth.min(63) as usize][legal.min(63) as usize];
+                    let seen = if on(P::UseLmrIndex) { i as i32 } else { legal };
+                    r = self.lmr[depth.min(63) as usize][seen.min(63) as usize];
                     // Good captures are reduced too, one ply less than quiets
                     // and losing captures; capture history then adjusts.
                     if !quiet && mscore >= 0 {

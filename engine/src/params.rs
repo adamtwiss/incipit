@@ -197,6 +197,9 @@ params! {
     UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;
     UseSeNeg2 = "UseSeNeg2", 1, 0, 1, 0;
     UseLmr = "UseLmr", 1, 0, 1, 0;
+    // LMR table indexed by the move's place in the order (pruned moves
+    // counted) instead of the moves searched before it.
+    UseLmrIndex = "UseLmrIndex", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
