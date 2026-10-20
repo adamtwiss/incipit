@@ -106,6 +106,7 @@ pub fn run(threads: usize, prefix: &str, nodes: u64, seconds: u64, seed: u64) {
                 s.clear();
                 s.hash_hist = hist.clone();
                 let (_, sc) = s.search(&pos, &lim);
+                let sc = crate::search::to_raw(sc, &pos);
                 if sc.abs() > 500 {
                     continue;
                 }
@@ -149,6 +150,7 @@ pub fn run(threads: usize, prefix: &str, nodes: u64, seconds: u64, seed: u64) {
                     }
                     s.hash_hist = hist.clone();
                     let (m, sc) = s.search(&pos, &lim);
+                    let sc = crate::search::to_raw(sc, &pos);
                     if m == NO_MOVE {
                         result = 1;
                         break;
@@ -333,6 +335,7 @@ pub fn genfens(toks: &[&str]) {
         s.clear();
         s.hash_hist.clear();
         let (_, sc) = s.search(&pos, &lim);
+        let sc = crate::search::to_raw(sc, &pos);
         if sc.abs() > maxeval {
             continue;
         }
