@@ -181,6 +181,8 @@ params! {
     UseNmp = "UseNmp", 1, 0, 1, 0;
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
     UseIir = "UseIir", 1, 0, 1, 0;
+    // Internal iterative reduction at all-nodes too, not only PV and cut nodes.
+    UseIirAll = "UseIirAll", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
     UseFutHist = "UseFutHist", 1, 0, 1, 0;

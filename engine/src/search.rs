@@ -1618,7 +1618,7 @@ impl Searcher {
             }
         }
         // internal iterative reduction
-        if on(P::UseIir) && depth >= tp(P::IirDepth) && tt_move == 0 && (pv_node || cut_node) {
+        if on(P::UseIir) && depth >= tp(P::IirDepth) && tt_move == 0 && (pv_node || cut_node || on(P::UseIirAll)) {
             self.stats.iir += 1;
             depth -= 1;
         }
