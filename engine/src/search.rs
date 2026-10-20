@@ -1626,7 +1626,15 @@ impl Searcher {
         let mut list = MoveList::new();
         let mut scores = Stack256::<i32>::new();
         let us = pos.stm;
-        let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
+        // The third killer is the first killer two plies up: our move that
+        // cut off in the grandparent's siblings.
+        let killers = if on(P::UseKillers) {
+            let k = self.killers[ply];
+            let gp = if on(P::UseKillerGp) && ply >= 2 { self.killers[ply - 2][0] } else { 0 };
+            [k[0], k[1], gp]
+        } else {
+            [0, 0, 0]
+        };
         // Moves come in stages: the TT move, the noisy moves, the quiets,
         // each generated and scored when the stage before is used up, so a
         // node that cuts on the TT move or a capture never generates or
@@ -2107,7 +2115,7 @@ impl Searcher {
         scores: &mut Stack256<i32>,
         want: u8,
         tt_move: Move,
-        killers: [Move; 2],
+        killers: [Move; 3],
         prev1: usize,
         prev2: usize,
         prev4: usize,
@@ -2135,7 +2143,7 @@ impl Searcher {
         moves: &[Move],
         scores: &mut Stack256<i32>,
         tt_move: Move,
-        killers: [Move; 2],
+        killers: [Move; 3],
         prev1: usize,
         prev2: usize,
         prev4: usize,
@@ -2167,6 +2175,8 @@ impl Searcher {
                 (1 << 27) + 2
             } else if m == killers[1] {
                 (1 << 27) + 1
+            } else if killers[2] != 0 && m == killers[2] {
+                1 << 27
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ci = pc * 64 + mto(m);
