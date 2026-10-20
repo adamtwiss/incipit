@@ -1557,7 +1557,14 @@ impl Searcher {
                     };
                     if v >= beta {
                         self.stats.nmp_cuts += 1;
-                        return if v >= MATE_BOUND { beta } else { v };
+                        let v = if v >= MATE_BOUND { beta } else { v };
+                        // A lower bound at this depth: the next visit cuts
+                        // on the TT instead of repeating the null search.
+                        // The stored move stays the old entry's.
+                        if on(P::UseNmpStore) && v.abs() < MATE_BOUND {
+                            self.tt.store(pos.hash, 0, v, raw_eval, depth, BOUND_LOWER, pv_node || tt_pv);
+                        }
+                        return v;
                     }
                 }
             }

@@ -179,6 +179,8 @@ params! {
     UseRfp = "UseRfp", 1, 0, 1, 0;
     UseRazor = "UseRazor", 1, 0, 1, 0;
     UseNmp = "UseNmp", 1, 0, 1, 0;
+    // A null-move cutoff is stored in the TT as a lower bound at depth.
+    UseNmpStore = "UseNmpStore", 1, 0, 1, 0;
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
