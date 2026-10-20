@@ -482,7 +482,20 @@ fn wdl_a_full() -> f64 {
 /// winning whatever the material, as the pruning margins and windows
 /// assume; at full material it is 100, so the middlegame is unchanged.
 fn norm_pct(pos: &Position) -> i32 {
-    (wdl_a_full() * 100.0 / wdl_ab(pos).0).round() as i32
+    static TABLE: std::sync::OnceLock<[i32; 79]> = std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| {
+        let mut t = [100; 79];
+        for (mat, e) in t.iter_mut().enumerate() {
+            let m = (mat as f64).clamp(17.0, 78.0) / 58.0;
+            *e = (wdl_a_full() * 100.0 / wdl_ab_m(m).0).round() as i32;
+        }
+        t
+    });
+    let mat = (pos.pieces[PAWN].count_ones()
+        + 3 * (pos.pieces[KNIGHT].count_ones() + pos.pieces[BISHOP].count_ones())
+        + 5 * pos.pieces[ROOK].count_ones()
+        + 9 * pos.pieces[QUEEN].count_ones()) as usize;
+    t[mat.min(78)]
 }
 
 /// A search-scale score back on the net's own scale (the output and
