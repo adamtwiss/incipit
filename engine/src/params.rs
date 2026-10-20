@@ -179,6 +179,8 @@ params! {
     // Feature switches for ablation tests (1 = on, 0 = off). Step 0 keeps them out of
     // tune-spec; OpenBench builds advertise them, so a test can set e.g. UseProbcut=0.
     UseTtCut = "UseTtCut", 1, 0, 1, 0;
+    // TT cutoffs at PV nodes (below the root) on an exact stored score.
+    UseTtCutPv = "UseTtCutPv", 1, 0, 1, 0;
     UseRfp = "UseRfp", 1, 0, 1, 0;
     UseRazor = "UseRazor", 1, 0, 1, 0;
     UseNmp = "UseNmp", 1, 0, 1, 0;

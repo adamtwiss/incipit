@@ -1396,7 +1396,10 @@ impl Searcher {
             }
             tt_depth = e.depth as i32;
             tt_bound = e.bound;
-            if !pv_node
+            // A PV node cuts only on an exact score, and keeps its move as
+            // the line.
+            let pv_cut = on(P::UseTtCutPv) && !root && tt_bound == BOUND_EXACT;
+            if (!pv_node || pv_cut)
                 && on(P::UseTtCut)
                 && tt_depth >= depth
                 // Near the fifty-move draw a stored score may be stale (the
@@ -1413,6 +1416,10 @@ impl Searcher {
                     upd(&mut self.hist[pos.stm][mfrom(tt_move)][mto(tt_move)], bonus);
                 }
                 self.stats.tt_cutoffs += 1;
+                if pv_node && tt_move != 0 {
+                    self.pv[ply][0] = tt_move;
+                    self.pv_len[ply] = 1;
+                }
                 return tt_score;
             }
         }
