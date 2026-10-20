@@ -35,6 +35,9 @@ struct Frame {
     cont_idx: usize, // piece*64+to of the move made at this ply
     excluded: Move,
     mv: Move,
+    // The eval the improving test compares: the static eval, or the TT
+    // score where it bounds the static eval (UseImprTt).
+    impr_eval: i32,
 }
 
 /// Search statistics, cumulative until reset (bench sums them over its
@@ -1479,12 +1482,16 @@ impl Searcher {
             }
         }
         self.stack[ply].static_eval = static_eval;
+        if excluded == 0 {
+            self.stack[ply].impr_eval = if on(P::UseImprTt) { eval } else { static_eval };
+        }
         // Compare with our previous move's eval; if we were in check then, with the one before.
+        let me = self.stack[ply].impr_eval;
         let improving = !in_check
-            && if ply >= 2 && self.stack[ply - 2].static_eval != -INF {
-                static_eval > self.stack[ply - 2].static_eval
-            } else if ply >= 4 && self.stack[ply - 4].static_eval != -INF {
-                static_eval > self.stack[ply - 4].static_eval
+            && if ply >= 2 && self.stack[ply - 2].impr_eval != -INF {
+                me > self.stack[ply - 2].impr_eval
+            } else if ply >= 4 && self.stack[ply - 4].impr_eval != -INF {
+                me > self.stack[ply - 4].impr_eval
             } else {
                 false
             };
