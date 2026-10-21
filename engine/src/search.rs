@@ -1524,7 +1524,10 @@ impl Searcher {
                 && pos.has_non_pawns(pos.stm)
             {
                 self.stats.nmp_tries += 1;
-                let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(3);
+                // The depth divisor was 3; SPSA #4456 (with it exposed as a
+                // parameter) moved it to 3.6, so 4. It stays a constant:
+                // exposing it cost speed on the fleet.
+                let r = tp(P::NmpBase) + depth / 4 + ((eval - beta) / tp(P::NmpEvalDiv)).min(3);
                 let mut child = *pos;
                 child.make_null();
                 self.tt.prefetch(child.hash);
