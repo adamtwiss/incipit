@@ -1036,7 +1036,7 @@ impl Searcher {
                 } else {
                     break;
                 }
-                delta += delta / 2;
+                delta += delta * tp(P::AspGrowPct) / 100;
                 if delta > 1000 {
                     a = -INF;
                     b = INF;
@@ -1257,7 +1257,7 @@ impl Searcher {
             } else {
                 return s;
             }
-            delta += delta / 2;
+            delta += delta * tp(P::AspGrowPct) / 100;
             if delta > 1000 {
                 a = -INF;
                 b = INF;

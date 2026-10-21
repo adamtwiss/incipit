@@ -65,6 +65,9 @@ params! {
     LmrDivX100 = "LmrDivX100", 298, 150, 350, 10;
     LmrHistDiv = "LmrHistDiv", 9359, 3000, 16000, 650;
     AspDelta = "AspDelta", 16, 3, 40, 2;
+    // How much a failed aspiration window grows its delta, in percent
+    // (50 is the old "half again"); read once per fail, so free.
+    AspGrowPct = "AspGrowPct", 50, 10, 200, 10;
     HistMul = "HistMul", 338, 100, 500, 20;
     HistOff = "HistOff", 146, 0, 500, 25;
     HistMax = "HistMax", 2796, 1000, 4000, 150;
