@@ -318,6 +318,10 @@ pub struct Searcher {
     tb_hits: u64,
     // Per ply.
     killers: Align64<[[Move; 2]; MAX_PLY + 4]>,
+    // Countermoves: the last quiet move that cut after each previous
+    // move's piece-square (the continuation index); ordered after the
+    // killers, kept for the whole game like the histories.
+    counter: Box<[Move; 768]>,
     stack: Align64<[Frame; MAX_PLY + 8]>,
     pv_len: Align64<[usize; MAX_PLY + 2]>,
     pub stats: Stats,
@@ -540,6 +544,7 @@ impl Searcher {
             sh: SharedHist::new(),
             capt: Box::new([[[0; 7]; 64]; 12]),
             killers: Align64([[0; 2]; MAX_PLY + 4]),
+            counter: Box::new([0; 768]),
             stack: Align64([Frame::default(); MAX_PLY + 8]),
             pv: Box::new([[0; MAX_PLY + 2]; MAX_PLY + 2]),
             pv_len: Align64([0; MAX_PLY + 2]),
@@ -630,6 +635,7 @@ impl Searcher {
         Arc::get_mut(&mut self.sh).expect("histories cleared during a search").clear();
         *self.capt = [[[0; 7]; 64]; 12];
         self.killers = Align64([[0; 2]; MAX_PLY + 4]);
+        *self.counter = [0; 768];
     }
 
     #[inline(always)]
@@ -1632,6 +1638,8 @@ impl Searcher {
         let mut scores = Stack256::<i32>::new();
         let us = pos.stm;
         let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
+        // The two killers and the countermove, scored in that order.
+        let killers = [killers[0], killers[1], if on(P::UseCounter) { self.counter[prev1] } else { 0 }];
         // Moves come in stages: the TT move, the noisy moves, the quiets,
         // each generated and scored when the stage before is used up, so a
         // node that cuts on the TT move or a capture never generates or
@@ -2007,6 +2015,9 @@ impl Searcher {
                     self.killers[ply][1] = self.killers[ply][0];
                     self.killers[ply][0] = m;
                 }
+                if on(P::UseCounter) && prev1 != 0 {
+                    self.counter[prev1] = m;
+                }
                 self.update_quiet(pos, m, bonus, prev1, prev2, prev4, prev6);
                 for k in 0..nq {
                     self.update_quiet(pos, quiets[k], -bonus, prev1, prev2, prev4, prev6);
@@ -2112,7 +2123,7 @@ impl Searcher {
         scores: &mut Stack256<i32>,
         want: u8,
         tt_move: Move,
-        killers: [Move; 2],
+        killers: [Move; 3],
         prev1: usize,
         prev2: usize,
         prev4: usize,
@@ -2140,7 +2151,7 @@ impl Searcher {
         moves: &[Move],
         scores: &mut Stack256<i32>,
         tt_move: Move,
-        killers: [Move; 2],
+        killers: [Move; 3],
         prev1: usize,
         prev2: usize,
         prev4: usize,
@@ -2172,6 +2183,8 @@ impl Searcher {
                 (1 << 27) + 2
             } else if m == killers[1] {
                 (1 << 27) + 1
+            } else if m == killers[2] {
+                1 << 27
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ci = pc * 64 + mto(m);
