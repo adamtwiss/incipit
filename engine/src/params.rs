@@ -227,6 +227,10 @@ params! {
     // Continuation history keyed by our move three plies back (prev6), at
     // half weight in move scoring like the ply-4 table.
     UseCont6 = "UseCont6", 1, 0, 1, 0;
+    // Capture continuation history (previous move's piece-square x the
+    // capture's piece-square) added to the capture history in ordering,
+    // LMR and updates.
+    UseCaptCont = "UseCaptCont", 1, 0, 1, 0;
     // Correction history: incremental updates toward zero residual (1) or the
     // old average toward the residual (0).
     UseCorrIncr = "UseCorrIncr", 1, 0, 1, 0;

@@ -309,6 +309,9 @@ pub struct Searcher {
     /// threads while they search (see SharedHist).
     pub sh: Arc<SharedHist>,
     capt: Box<[[[i16; 7]; 64]; 12]>,
+    // Capture continuation history: by the previous move's piece-square
+    // and the capture's piece-square (the captured piece is not keyed).
+    capt_cont: Box<[[i16; 768]]>,
     pv: Box<[[Move; MAX_PLY + 2]; MAX_PLY + 2]>,
     lmr: Box<[[i32; 64]; 64]>,
     root_node_counts: Box<[[u64; 64]; 64]>,
@@ -539,6 +542,7 @@ impl Searcher {
             hist: Box::new([[[0; 64]; 64]; 2]),
             sh: SharedHist::new(),
             capt: Box::new([[[0; 7]; 64]; 12]),
+            capt_cont: vec![[0; 768]; 768].into_boxed_slice(),
             killers: Align64([[0; 2]; MAX_PLY + 4]),
             stack: Align64([Frame::default(); MAX_PLY + 8]),
             pv: Box::new([[0; MAX_PLY + 2]; MAX_PLY + 2]),
@@ -629,6 +633,7 @@ impl Searcher {
         *self.hist = [[[0; 64]; 64]; 2];
         Arc::get_mut(&mut self.sh).expect("histories cleared during a search").clear();
         *self.capt = [[[0; 7]; 64]; 12];
+        self.capt_cont.fill([0; 768]);
         self.killers = Align64([[0; 2]; MAX_PLY + 4]);
     }
 
@@ -1920,7 +1925,8 @@ impl Searcher {
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {
-                        let ch = self.capt[pc][mto(m)][pos.captured_type(m)] as i32;
+                        let ch = self.capt[pc][mto(m)][pos.captured_type(m)] as i32
+                            + if on(P::UseCaptCont) { self.capt_cont[prev1][pc * 64 + mto(m)] as i32 } else { 0 };
                         r -= ch / tp(P::CapLmrDiv);
                     }
                     r = r.clamp(0, (new_depth - 1).max(0));
@@ -2015,12 +2021,18 @@ impl Searcher {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ct = pos.captured_type(m);
                 upd(&mut self.capt[pc][mto(m)][ct], bonus);
+                if on(P::UseCaptCont) && prev1 != 0 {
+                    upd(&mut self.capt_cont[prev1][pc * 64 + mto(m)], bonus);
+                }
             }
             for k in 0..nc {
                 let cm = capts[k];
                 let pc = pos.board[mfrom(cm)] as usize;
                 let ct = pos.captured_type(cm);
                 upd(&mut self.capt[pc][mto(cm)][ct], -bonus);
+                if on(P::UseCaptCont) && prev1 != 0 {
+                    upd(&mut self.capt_cont[prev1][pc * 64 + mto(cm)], -bonus);
+                }
             }
         } else if alpha == orig_alpha && excluded == 0 && ply >= 1 && tp(P::PriorBonusPct) > 0 {
             // Fail low: the opponent's last move, if quiet, held against every reply.
@@ -2155,7 +2167,9 @@ impl Searcher {
                 let pc = pos.board[mfrom(m)] as usize;
                 let base = see_vals()[ct.min(5)] * 16 * (ct < 6) as i32
                     + if is_promo(m) && promo_pt(m) == QUEEN { 8000 } else { 0 }
-                    + self.capt[pc][mto(m)][ct] as i32 / 16;
+                    + (self.capt[pc][mto(m)][ct] as i32
+                        + if on(P::UseCaptCont) { self.capt_cont[prev1][pc * 64 + mto(m)] as i32 } else { 0 })
+                        / 16;
                 if is_promo(m) && promo_pt(m) != QUEEN {
                     // Underpromotions last: the queen promotion of the same
                     // pawn is nearly always at least as good, and a negative
