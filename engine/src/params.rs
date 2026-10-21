@@ -76,6 +76,8 @@ params! {
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
     LmrDeeper = "LmrDeeper", 49, 10, 200, 10;
+    // Each search keeps 1 - 1/HistDecayDiv of the histories (2: half).
+    HistDecayDiv = "HistDecayDiv", 2, 1, 16, 1;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;
@@ -224,6 +226,9 @@ params! {
     // GUI ponders (without pondering spend already meets the budget).
     UseTmFeed = "UseTmFeed", 1, 0, 1, 0;
     UseKillers = "UseKillers", 1, 0, 1, 0;
+    // Histories decay at the start of each search instead of persisting
+    // whole for the game.
+    UseHistDecay = "UseHistDecay", 1, 0, 1, 0;
     // Continuation history keyed by our move three plies back (prev6), at
     // half weight in move scoring like the ply-4 table.
     UseCont6 = "UseCont6", 1, 0, 1, 0;

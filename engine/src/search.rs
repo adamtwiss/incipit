@@ -930,6 +930,25 @@ impl Searcher {
         for r in self.root_node_counts.iter_mut() {
             *r = [0; 64];
         }
+        if on(P::UseHistDecay) {
+            // The histories carry over from the previous searches of the
+            // game; each new search keeps 1 - 1/HistDecayDiv of them, so
+            // what the last move's tree learned outweighs older moves. The
+            // shared continuation table is decayed by the main thread only.
+            let d = tp(P::HistDecayDiv);
+            for v in self.hist.iter_mut().flatten().flatten() {
+                *v -= *v / d as i16;
+            }
+            for v in self.capt.iter_mut().flatten().flatten() {
+                *v -= *v / d as i16;
+            }
+            if self.thread_id == 0 {
+                for a in self.sh.cont.iter().flatten() {
+                    let v = a.load(Ordering::Relaxed);
+                    a.store(v - v / d as i16, Ordering::Relaxed);
+                }
+            }
+        }
         // fallback move, and the number of root moves (MultiPV can't report more lines)
         let mut list = MoveList::new();
         root.gen_moves(&mut list, false);
