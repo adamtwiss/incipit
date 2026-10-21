@@ -192,6 +192,8 @@ params! {
     UseSeeHist = "UseSeeHist", 1, 0, 1, 0;
     UseSeeNoisy = "UseSeeNoisy", 1, 0, 1, 0;
     UseSe = "UseSe", 1, 0, 1, 0;
+    // Singular exclusion search at depth / 2 instead of (depth - 1) / 2.
+    UseSeHalfDepth = "UseSeHalfDepth", 1, 0, 1, 0;
     UseSeDoubleExt = "UseSeDoubleExt", 1, 0, 1, 0;
     UseMulticut = "UseMulticut", 1, 0, 1, 0;
     UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;

@@ -1845,7 +1845,10 @@ impl Searcher {
                 self.stats.se_tries += 1;
                 let sbeta = tt_score - depth * tp(P::SeMul) / 16;
                 self.stack[ply].excluded = m;
-                let v = self.negamax(pos, sbeta - 1, sbeta, (depth - 1) / 2, ply, cut_node);
+                // The exclusion search at half depth (rounded up rather
+                // than down at even depths with UseSeHalfDepth).
+                let sd = if on(P::UseSeHalfDepth) { depth / 2 } else { (depth - 1) / 2 };
+                let v = self.negamax(pos, sbeta - 1, sbeta, sd, ply, cut_node);
                 self.stack[ply].excluded = 0;
                 // The exclusion search ran at this ply: its PV is not ours.
                 self.pv_len[ply] = 0;
