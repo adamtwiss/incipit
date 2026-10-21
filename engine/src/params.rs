@@ -76,6 +76,22 @@ params! {
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
     LmrDeeper = "LmrDeeper", 49, 10, 200, 10;
+    // Constants that were fixed in the code until now (defaults are the
+    // old values), all read at most once per node: the first depth with
+    // an aspiration window; the first depth with LMR; the null move
+    // reduction's depth divisor and the cap on its eval term; the
+    // fail-high margin that counts as a ply more for the history bonus;
+    // ProbCut's trust depth for a TT score below its beta; and the legal
+    // evasions searched in qsearch before quiet ones are skipped.
+    // (Per-move constants such as the continuation weights stay fixed:
+    // a parameter read there costs measurable speed in the tune build.)
+    AspDepth = "AspDepth", 4, 2, 8, 1;
+    LmrMinDepth = "LmrMinDepth", 3, 2, 6, 1;
+    NmpDepthDiv = "NmpDepthDiv", 3, 2, 6, 1;
+    NmpEvalMax = "NmpEvalMax", 3, 1, 6, 1;
+    HistBigCut = "HistBigCut", 80, 0, 300, 20;
+    ProbcutTtDepth = "ProbcutTtDepth", 3, 0, 6, 1;
+    QsEvasions = "QsEvasions", 3, 1, 6, 1;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;
