@@ -39,32 +39,32 @@ macro_rules! params {
 
 // name = UCI name, default, min, max, SPSA step (c_end). Step = (max - min) / 20, at least 1.
 params! {
-    RfpMargin = "RfpMargin", 67, 30, 150, 6;
+    RfpMargin = "RfpMargin", 55, 30, 150, 6;
     // Razoring at any depth: eval + RazorBase + RazorMul * depth^2 <= alpha. Starting values
     // fit the old tuned linear margin (242 + 312 * depth, depth <= 3) at depths 1 and 3.
-    RazorBase = "RazorBase", 362, 100, 800, 35;
-    RazorMul = "RazorMul", 74, 20, 200, 9;
-    NmpEvalDiv = "NmpEvalDiv", 154, 100, 400, 15;
-    ProbcutMargin = "ProbcutMargin", 236, 100, 350, 13;
-    FutBase = "FutBase", 70, 30, 250, 11;
-    FutMul = "FutMul", 62, 40, 200, 8;
+    RazorBase = "RazorBase", 400, 100, 800, 35;
+    RazorMul = "RazorMul", 93, 20, 200, 9;
+    NmpEvalDiv = "NmpEvalDiv", 165, 100, 400, 15;
+    ProbcutMargin = "ProbcutMargin", 221, 100, 350, 13;
+    FutBase = "FutBase", 66, 30, 250, 11;
+    FutMul = "FutMul", 68, 40, 200, 8;
     // Futility margin by quiet history: a quiet's history sum (the ordering
     // score, four tables of +-16384) over this is added to the margin, so a
     // well-scored quiet survives a margin a badly scored one does not. Start:
     // 128, so a move at one table's ceiling adds 128 cp, about one depth of
     // FutMul.
-    FutHistDiv = "FutHistDiv", 118, 32, 512, 12;
+    FutHistDiv = "FutHistDiv", 124, 32, 512, 12;
     HistPrune = "HistPrune", 3106, 500, 5000, 225;
     SeeQuiet = "SeeQuiet", 10, 0, 80, 4;
     // Quiet SEE bar by history: the history sum over this is subtracted from
     // the bar. Start 128, the same scale as FutHistDiv (a table ceiling of
     // 16384 moves the bar by 128 cp).
-    SeeHistDiv = "SeeHistDiv", 137, 32, 512, 12;
-    SeeNoisy = "SeeNoisy", 116, 10, 200, 10;
+    SeeHistDiv = "SeeHistDiv", 164, 32, 512, 12;
+    SeeNoisy = "SeeNoisy", 95, 10, 200, 10;
     LmrBaseX100 = "LmrBaseX100", 44, 30, 130, 5;
     LmrDivX100 = "LmrDivX100", 298, 150, 350, 10;
     LmrHistDiv = "LmrHistDiv", 9359, 3000, 16000, 650;
-    AspDelta = "AspDelta", 16, 3, 40, 2;
+    AspDelta = "AspDelta", 15, 3, 40, 2;
     HistMul = "HistMul", 338, 100, 500, 20;
     HistOff = "HistOff", 146, 0, 500, 25;
     HistMax = "HistMax", 2796, 1000, 4000, 150;
@@ -75,16 +75,16 @@ params! {
     SeDouble = "SeDouble", 13, 5, 50, 2;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
-    LmrDeeper = "LmrDeeper", 49, 10, 200, 10;
+    LmrDeeper = "LmrDeeper", 40, 10, 200, 10;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
-    NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;
-    NmpMarginBase = "NmpMarginBase", 134, 0, 400, 20;
+    NmpDepthMul = "NmpDepthMul", 26, 0, 60, 3;
+    NmpMarginBase = "NmpMarginBase", 122, 0, 400, 20;
     // Largest |TT score| still used for a cutoff at halfmove >= 90 (half a pawn).
-    HmGuard = "HmGuard", 43, 0, 300, 15;
+    HmGuard = "HmGuard", 39, 0, 300, 15;
     NmpBase = "NmpBase", 5, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
-    SeMul = "SeMul", 37, 8, 40, 2;
+    SeMul = "SeMul", 33, 8, 40, 2;
     CapLmrDiv = "CapLmrDiv", 3530, 2000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
@@ -155,8 +155,8 @@ params! {
     // +-CorrDiffClamp cp) by min(depth + 1, CorrUpdateCap) / 256; entries are
     // kept within +-CorrLimit cp.
     CorrUpdateCap = "CorrUpdateCap", 13, 4, 64, 3;
-    CorrDiffClamp = "CorrDiffClamp", 363, 100, 1000, 45;
-    CorrLimit = "CorrLimit", 48, 16, 256, 12;
+    CorrDiffClamp = "CorrDiffClamp", 411, 100, 1000, 45;
+    CorrLimit = "CorrLimit", 34, 16, 256, 12;
     // Weight of the continuation correction (keyed by the previous move's
     // piece and square): half the pawn table's original weight of 128, as
     // one non-pawn table had, until SPSA says otherwise.
