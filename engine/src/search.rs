@@ -1513,6 +1513,9 @@ impl Searcher {
                 false
             };
         self.killers[ply + 1] = [0, 0];
+        // Passing would get us mated (the null move search said so): the
+        // quiets are not pruned here, one of them may be the only defence.
+        let mut mate_threat = false;
 
         // No static pruning at the root of a null-move verification search:
         // there it must search the position, or a reverse-futility or
@@ -1588,6 +1591,9 @@ impl Searcher {
                         self.stats.nmp_cuts += 1;
                         return if v >= MATE_BOUND { beta } else { v };
                     }
+                }
+                if on(P::UseMateThreat) && v <= -MATE_BOUND {
+                    mate_threat = true;
                 }
             }
             // probcut
@@ -1798,7 +1804,7 @@ impl Searcher {
             let hist_score = if quiet && mscore < (1 << 27) { mscore } else { 0 };
             if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
                 if quiet {
-                    if on(P::UseLmp) && legal >= lmp_limit && !in_check {
+                    if on(P::UseLmp) && legal >= lmp_limit && !in_check && !mate_threat {
                         self.stats.lmp += 1;
                         skip_quiets = true;
                         continue;
@@ -1806,6 +1812,7 @@ impl Searcher {
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
                     if on(P::UseFut)
                         && !in_check
+                        && !mate_threat
                         && lmr_d <= tp(P::FutDepth)
                         && static_eval
                             + tp(P::FutBase)
@@ -1819,6 +1826,7 @@ impl Searcher {
                     }
                     if on(P::UseHistPrune)
                         && !in_check
+                        && !mate_threat
                         && lmr_d <= tp(P::HistPruneDepth)
                         && hist_score < -tp(P::HistPrune) * depth
                     {
@@ -1834,7 +1842,7 @@ impl Searcher {
                     } else {
                         -tp(P::SeeQuiet) * lmr_d * lmr_d
                     };
-                    if on(P::UseSeeQuiet) && !in_check && !pos.see_ge(m, see_bar, &see_vals()) {
+                    if on(P::UseSeeQuiet) && !in_check && !mate_threat && !pos.see_ge(m, see_bar, &see_vals()) {
                         self.stats.see_quiet += 1;
                         continue;
                     }
