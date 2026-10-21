@@ -182,6 +182,9 @@ params! {
     UseRfp = "UseRfp", 1, 0, 1, 0;
     UseRazor = "UseRazor", 1, 0, 1, 0;
     UseNmp = "UseNmp", 1, 0, 1, 0;
+    // A null move search that returns a mate against us turns off the
+    // quiet pruning at that node.
+    UseMateThreat = "UseMateThreat", 1, 0, 1, 0;
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
