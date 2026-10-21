@@ -1003,7 +1003,8 @@ impl Searcher {
             let nodes_at_start = self.nodes;
             self.root_depth = d;
             let mut delta = tp(P::AspDelta);
-            let (mut a, mut b) = if d >= 4 && on(P::UseAsp) { (score - delta, score + delta) } else { (-INF, INF) };
+            let (mut a, mut b) =
+                if d >= tp(P::AspDepth) && on(P::UseAsp) { (score - delta, score + delta) } else { (-INF, INF) };
             let mut fh_move: Move = 0;
             let mut fh_score = 0;
             self.pt.root_fail_low = false;
@@ -1242,8 +1243,11 @@ impl Searcher {
     /// line's previous score, widened on a fail as the main iteration does.
     fn search_line(&mut self, root: &Position, d: i32, prev: i32) -> i32 {
         let mut delta = tp(P::AspDelta);
-        let (mut a, mut b) =
-            if d >= 4 && on(P::UseAsp) && prev.abs() < MATE_BOUND { (prev - delta, prev + delta) } else { (-INF, INF) };
+        let (mut a, mut b) = if d >= tp(P::AspDepth) && on(P::UseAsp) && prev.abs() < MATE_BOUND {
+            (prev - delta, prev + delta)
+        } else {
+            (-INF, INF)
+        };
         loop {
             let s = self.negamax(root, a, b, d, 0, false);
             if self.stopped {
@@ -1524,7 +1528,9 @@ impl Searcher {
                 && pos.has_non_pawns(pos.stm)
             {
                 self.stats.nmp_tries += 1;
-                let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(3);
+                let r = tp(P::NmpBase)
+                    + depth / tp(P::NmpDepthDiv)
+                    + ((eval - beta) / tp(P::NmpEvalDiv)).min(tp(P::NmpEvalMax));
                 let mut child = *pos;
                 child.make_null();
                 self.tt.prefetch(child.hash);
@@ -1571,7 +1577,7 @@ impl Searcher {
             if on(P::UseProbcut)
                 && depth >= tp(P::ProbcutDepth)
                 && beta.abs() < MATE_BOUND
-                && !(tte.is_some() && tt_depth >= depth - 3 && tt_score < pc_beta)
+                && !(tte.is_some() && tt_depth >= depth - tp(P::ProbcutTtDepth) && tt_score < pc_beta)
             {
                 let mut list = MoveList::new();
                 pos.gen_moves(&mut list, true);
@@ -1883,7 +1889,7 @@ impl Searcher {
                 score = -self.negamax(&child, -beta, -alpha, new_depth, ply + 1, !pv_node && !cut_node);
             } else {
                 let mut r = 0;
-                if on(P::UseLmr) && depth >= 3 && legal > 1 + root as i32 {
+                if on(P::UseLmr) && depth >= tp(P::LmrMinDepth) && legal > 1 + root as i32 {
                     r = self.lmr[depth.min(63) as usize][legal.min(63) as usize];
                     // Good captures are reduced too, one ply less than quiets
                     // and losing captures; capture history then adjusts.
@@ -1997,7 +2003,7 @@ impl Searcher {
         }
 
         if best_score >= beta {
-            let bdepth = depth + (best_score > beta + 80) as i32;
+            let bdepth = depth + (best_score > beta + tp(P::HistBigCut)) as i32;
             // Never negative, whatever the tuned values: a cutoff must not
             // lower its move's history (nor raise the failed ones').
             let bonus = (tp(P::HistMul) * bdepth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
@@ -2155,7 +2161,7 @@ impl Searcher {
                 let pc = pos.board[mfrom(m)] as usize;
                 let base = see_vals()[ct.min(5)] * 16 * (ct < 6) as i32
                     + if is_promo(m) && promo_pt(m) == QUEEN { 8000 } else { 0 }
-                    + self.capt[pc][mto(m)][ct] as i32 / 16;
+                    + self.capt[pc][mto(m)][ct] as i32 / tp(P::CaptHistDiv);
                 if is_promo(m) && promo_pt(m) != QUEEN {
                     // Underpromotions last: the queen promotion of the same
                     // pawn is nearly always at least as good, and a negative
@@ -2178,8 +2184,12 @@ impl Searcher {
                 self.hist[us][mfrom(m)][mto(m)] as i32
                     + self.sh.cont[prev1][ci].load(Ordering::Relaxed) as i32
                     + self.sh.cont[prev2][ci].load(Ordering::Relaxed) as i32
-                    + self.sh.cont[prev4][ci].load(Ordering::Relaxed) as i32 / 2
-                    + if on(P::UseCont6) { self.sh.cont[prev6][ci].load(Ordering::Relaxed) as i32 / 2 } else { 0 }
+                    + self.sh.cont[prev4][ci].load(Ordering::Relaxed) as i32 * tp(P::Cont4Pct) / 100
+                    + if on(P::UseCont6) {
+                        self.sh.cont[prev6][ci].load(Ordering::Relaxed) as i32 * tp(P::Cont6Pct) / 100
+                    } else {
+                        0
+                    }
             };
             scores.push(score);
         }
@@ -2285,7 +2295,12 @@ impl Searcher {
                 if on(P::UseQsSee) && !pos.see_ge(m, 0, &see_vals()) {
                     continue;
                 }
-            } else if on(P::UseQsEvasionLimit) && legal > 0 && best > -MATE_BOUND && !is_noisy(m) && legal >= 3 {
+            } else if on(P::UseQsEvasionLimit)
+                && legal > 0
+                && best > -MATE_BOUND
+                && !is_noisy(m)
+                && legal >= tp(P::QsEvasions)
+            {
                 // limit quiet evasions
                 continue;
             }

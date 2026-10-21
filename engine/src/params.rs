@@ -76,6 +76,26 @@ params! {
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth (half a pawn, round value).
     LmrDeeper = "LmrDeeper", 49, 10, 200, 10;
+    // Constants that were fixed in the code until now (defaults are the
+    // old values): the first depth with an aspiration window; the first
+    // depth with LMR; the null move reduction's depth divisor and the cap
+    // on its eval term; the fail-high margin that counts as a ply more
+    // for the history bonus; ProbCut's trust depth for a TT score below
+    // its beta; the capture history's divisor in capture ordering; the
+    // weights of the ply-4 and ply-6 continuation tables; the legal
+    // evasions searched in qsearch before quiet ones are skipped; and the
+    // TT replacement's plies per generation of age.
+    AspDepth = "AspDepth", 4, 2, 8, 1;
+    LmrMinDepth = "LmrMinDepth", 3, 2, 6, 1;
+    NmpDepthDiv = "NmpDepthDiv", 3, 2, 6, 1;
+    NmpEvalMax = "NmpEvalMax", 3, 1, 6, 1;
+    HistBigCut = "HistBigCut", 80, 0, 300, 20;
+    ProbcutTtDepth = "ProbcutTtDepth", 3, 0, 6, 1;
+    CaptHistDiv = "CaptHistDiv", 16, 4, 64, 4;
+    Cont4Pct = "Cont4Pct", 50, 0, 100, 10;
+    Cont6Pct = "Cont6Pct", 50, 0, 100, 10;
+    QsEvasions = "QsEvasions", 3, 1, 6, 1;
+    TtAgeWeight = "TtAgeWeight", 8, 1, 16, 1;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;

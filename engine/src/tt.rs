@@ -232,7 +232,7 @@ impl TT {
             let q = if bd & 3 == BOUND_NONE {
                 i32::MIN
             } else {
-                ((d >> 48) as u8 & 127) as i32 - 8 * age(bd)
+                ((d >> 48) as u8 & 127) as i32 - tp(P::TtAgeWeight) * age(bd)
                     + if on(P::UseTtPvKeep) && (d >> 55) & 1 != 0 { tp(P::TtPvKeep) } else { 0 }
             };
             if q < worst {
