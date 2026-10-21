@@ -199,6 +199,11 @@ params! {
     UseLmr = "UseLmr", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
+    // LMR reduces a ply less when the static eval moved by LmrVolatile
+    // or more since our previous move (start: two pawns, 200; one pawn
+    // grew the tree by 5% at fixed depth, two kept it level).
+    UseLmrVolatile = "UseLmrVolatile", 1, 0, 1, 0;
+    LmrVolatile = "LmrVolatile", 200, 20, 400, 20;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;

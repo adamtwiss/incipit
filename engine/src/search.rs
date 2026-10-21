@@ -1906,6 +1906,15 @@ impl Searcher {
                     if child.checkers != 0 {
                         r -= 1;
                     }
+                    // A volatile node (static eval swung by two pawns or more
+                    // since our last move) is tactical: reduce less.
+                    if on(P::UseLmrVolatile)
+                        && ply >= 2
+                        && self.stack[ply - 2].static_eval != -INF
+                        && (static_eval - self.stack[ply - 2].static_eval).abs() >= tp(P::LmrVolatile)
+                    {
+                        r -= 1;
+                    }
                     // Killers (good captures have their own term above).
                     if quiet && mscore >= (1 << 27) {
                         r -= 1;
