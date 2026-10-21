@@ -96,6 +96,16 @@ params! {
     Cont6Pct = "Cont6Pct", 50, 0, 100, 10;
     QsEvasions = "QsEvasions", 3, 1, 6, 1;
     TtAgeWeight = "TtAgeWeight", 8, 1, 16, 1;
+    // LMR terms in hundredths of a ply (100 = the whole ply each was).
+    LmrGoodCapt = "LmrGoodCapt", 100, -100, 300, 20;
+    LmrNonPv = "LmrNonPv", 100, -100, 300, 20;
+    LmrCut = "LmrCut", 100, -100, 300, 20;
+    LmrCutNoTt = "LmrCutNoTt", 100, -100, 300, 20;
+    LmrNotImpr = "LmrNotImpr", 100, -100, 300, 20;
+    LmrCheck = "LmrCheck", 100, -100, 300, 20;
+    LmrKiller = "LmrKiller", 100, -100, 300, 20;
+    LmrTtCapt = "LmrTtCapt", 100, -100, 300, 20;
+    LmrTtPv = "LmrTtPv", 100, -100, 300, 20;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;

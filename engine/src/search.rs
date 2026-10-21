@@ -573,9 +573,11 @@ impl Searcher {
     pub fn init_lmr(&mut self) {
         for d in 1..64 {
             for m in 1..64 {
-                self.lmr[d][m] = (tp(P::LmrBaseX100) as f64 / 100.0
+                // In hundredths of a ply; the whole plies of the old table
+                // are this / 100.
+                self.lmr[d][m] = ((tp(P::LmrBaseX100) as f64 / 100.0
                     + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDivX100) as f64 / 100.0))
-                    as i32;
+                    * 100.0) as i32;
             }
         }
     }
@@ -1780,7 +1782,7 @@ impl Searcher {
                         skip_quiets = true;
                         continue;
                     }
-                    let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
+                    let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize] / 100).max(0);
                     if on(P::UseFut)
                         && !in_check
                         && lmr_d <= tp(P::FutDepth)
@@ -1890,46 +1892,50 @@ impl Searcher {
             } else {
                 let mut r = 0;
                 if on(P::UseLmr) && depth >= tp(P::LmrMinDepth) && legal > 1 + root as i32 {
-                    r = self.lmr[depth.min(63) as usize][legal.min(63) as usize];
-                    // Good captures are reduced too, one ply less than quiets
-                    // and losing captures; capture history then adjusts.
+                    // The reduction is summed in hundredths of a ply and
+                    // truncated to plies at the end, so each term can be a
+                    // fraction of a ply.
+                    let mut r100 = self.lmr[depth.min(63) as usize][legal.min(63) as usize];
+                    // Good captures are reduced too, less than quiets and
+                    // losing captures; capture history then adjusts.
                     if !quiet && mscore >= 0 {
-                        r -= 1;
+                        r100 -= tp(P::LmrGoodCapt);
                     }
                     if !pv_node {
-                        r += 1;
+                        r100 += tp(P::LmrNonPv);
                     }
                     if cut_node {
-                        r += 1;
-                        // Expected to fail high and no TT move to do it: one more.
+                        r100 += tp(P::LmrCut);
+                        // Expected to fail high and no TT move to do it: more.
                         if on(P::UseLmrCutNoTt) && tt_move == 0 {
-                            r += 1;
+                            r100 += tp(P::LmrCutNoTt);
                         }
                     }
                     if !improving {
-                        r += 1;
+                        r100 += tp(P::LmrNotImpr);
                     }
                     if child.checkers != 0 {
-                        r -= 1;
+                        r100 -= tp(P::LmrCheck);
                     }
                     // Killers (good captures have their own term above).
                     if quiet && mscore >= (1 << 27) {
-                        r -= 1;
+                        r100 -= tp(P::LmrKiller);
                     }
                     if tt_capture {
-                        r += 1;
+                        r100 += tp(P::LmrTtCapt);
                     }
                     // A node that was on the PV before deserves a closer look.
                     if on(P::UseTtPv) && tt_pv && !pv_node {
-                        r -= 1;
+                        r100 -= tp(P::LmrTtPv);
                     }
+                    // The history terms stay in whole plies.
                     if quiet {
-                        r -= hist_score / tp(P::LmrHistDiv);
+                        r100 -= hist_score / tp(P::LmrHistDiv) * 100;
                     } else {
                         let ch = self.capt[pc][mto(m)][pos.captured_type(m)] as i32;
-                        r -= ch / tp(P::CapLmrDiv);
+                        r100 -= ch / tp(P::CapLmrDiv) * 100;
                     }
-                    r = r.clamp(0, (new_depth - 1).max(0));
+                    r = (r100 / 100).clamp(0, (new_depth - 1).max(0));
                 }
                 if r > 0 {
                     self.stats.lmr_searches += 1;
