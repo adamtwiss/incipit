@@ -229,6 +229,8 @@ params! {
     UseLmr = "UseLmr", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
+    // The LMR history terms in hundredths of a ply (off: whole plies).
+    UseLmrHistFine = "UseLmrHistFine", 1, 0, 1, 0;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;

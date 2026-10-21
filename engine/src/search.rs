@@ -1928,12 +1928,21 @@ impl Searcher {
                     if on(P::UseTtPv) && tt_pv && !pv_node {
                         r100 -= tp(P::LmrTtPv);
                     }
-                    // The history terms stay in whole plies.
+                    // The history terms: in hundredths of a ply too, or in
+                    // whole plies as before.
                     if quiet {
-                        r100 -= hist_score / tp(P::LmrHistDiv) * 100;
+                        r100 -= if on(P::UseLmrHistFine) {
+                            hist_score * 100 / tp(P::LmrHistDiv)
+                        } else {
+                            hist_score / tp(P::LmrHistDiv) * 100
+                        };
                     } else {
                         let ch = self.capt[pc][mto(m)][pos.captured_type(m)] as i32;
-                        r100 -= ch / tp(P::CapLmrDiv) * 100;
+                        r100 -= if on(P::UseLmrHistFine) {
+                            ch * 100 / tp(P::CapLmrDiv)
+                        } else {
+                            ch / tp(P::CapLmrDiv) * 100
+                        };
                     }
                     r = (r100 / 100).clamp(0, (new_depth - 1).max(0));
                 }
