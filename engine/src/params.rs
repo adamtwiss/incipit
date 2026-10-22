@@ -87,11 +87,11 @@ params! {
     SeMul = "SeMul", 39, 8, 40, 2;
     CapLmrDiv = "CapLmrDiv", 3281, 2000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
-    TmIncPct = "TmIncPct", 79, 40, 100, 3;
+    TmIncPct = "TmIncPct", 78, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
     // Exponent (x100) on the soft target's combined scale (node share x
     // stability x fail-lows): 100 = linear. SPSA #4304 (32k games, STC): 106.
-    TmScalePow = "TmScalePow", 106, 50, 250, 15;
+    TmScalePow = "TmScalePow", 100, 50, 250, 15;
     // On a ponder hit, move at once if we pondered at least PonderHitPct% of
     // the time we'd want for this move; otherwise keep thinking until pondering
     // + thinking reaches it (PonderCredit% of the pondering time counts).
@@ -103,12 +103,12 @@ params! {
     // instant moves at 2-4%, like other engines that ponder.
     PonderMinPct = "PonderMinPct", 30, 0, 100, 5;
     TmFinishPct = "TmFinishPct", 100, 50, 150, 10;
-    TmFailLow = "TmFailLow", 28, 0, 100, 8;
+    TmFailLow = "TmFailLow", 34, 0, 100, 8;
     // Node-share scale (TmNodeBase/100 - best move's share of root nodes):
     // a larger base flattens it. Stability scale: the table's distance from 1
     // times TmStabAmp/100. Hand-set shapes, exposed so tune rounds can move them.
-    TmNodeBase = "TmNodeBase", 150, 110, 250, 10;
-    TmStabAmp = "TmStabAmp", 100, 0, 200, 15;
+    TmNodeBase = "TmNodeBase", 148, 110, 250, 10;
+    TmStabAmp = "TmStabAmp", 104, 0, 200, 15;
     TmFeedMax = "TmFeedMax", 250, 100, 400, 20;
     // Soft-target extensions stop at |score| >= TmDecided (internal cp; round
     // value at the start of the bucket where extension gained nothing).
