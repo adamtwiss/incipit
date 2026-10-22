@@ -1,8 +1,69 @@
 // Search: iterative deepening PVS with the usual pruning/reduction heuristics.
+use crate::attacks::{between, bishop_attacks, king_attacks, knight_attacks, rook_attacks, zob_piece, zob_stm};
 use crate::nnue::{self, Acc};
 use crate::params::{on, tp, P};
 use crate::position::*;
 use crate::tt::*;
+use std::sync::OnceLock;
+
+/// Upcoming-repetition table: every reversible non-pawn move, both colours,
+/// one entry per square pair, keyed by the hash difference the move makes
+/// (piece off one square, onto the other, side to move flipped). A cuckoo
+/// table with two hash functions, so a node can ask in two probes whether
+/// the hash difference to an earlier position is one reversible move away.
+struct Cuckoo {
+    keys: Vec<u64>,
+    moves: Vec<u32>,
+}
+const CUCKOO_SIZE: usize = 8192;
+fn cuckoo_h1(k: u64) -> usize {
+    (k & (CUCKOO_SIZE as u64 - 1)) as usize
+}
+fn cuckoo_h2(k: u64) -> usize {
+    ((k >> 16) & (CUCKOO_SIZE as u64 - 1)) as usize
+}
+fn cuckoo() -> &'static Cuckoo {
+    static C: OnceLock<Cuckoo> = OnceLock::new();
+    C.get_or_init(|| {
+        let mut keys = vec![0u64; CUCKOO_SIZE];
+        let mut moves = vec![0u32; CUCKOO_SIZE];
+        for c in 0..2 {
+            for pt in KNIGHT..=KING {
+                let pc = make_pc(pt, c);
+                for from in 0..64 {
+                    let att = match pt {
+                        KNIGHT => knight_attacks(from),
+                        BISHOP => bishop_attacks(from, 0),
+                        ROOK => rook_attacks(from, 0),
+                        QUEEN => bishop_attacks(from, 0) | rook_attacks(from, 0),
+                        _ => king_attacks(from),
+                    };
+                    // Each pair once: the key is the same in both directions.
+                    let mut bb = att & !((2u64 << from) - 1);
+                    while bb != 0 {
+                        let to = bb.trailing_zeros() as usize;
+                        bb &= bb - 1;
+                        let mut k = zob_piece(pc as usize, from) ^ zob_piece(pc as usize, to) ^ zob_stm();
+                        let mut m = (from | to << 6 | (pc as usize) << 12) as u32;
+                        let mut i = cuckoo_h1(k);
+                        let mut hops = 0;
+                        loop {
+                            std::mem::swap(&mut keys[i], &mut k);
+                            std::mem::swap(&mut moves[i], &mut m);
+                            if k == 0 {
+                                break;
+                            }
+                            i = if i == cuckoo_h1(k) { cuckoo_h2(k) } else { cuckoo_h1(k) };
+                            hops += 1;
+                            assert!(hops < 1000, "cuckoo table cycle");
+                        }
+                    }
+                }
+            }
+        }
+        Cuckoo { keys, moves }
+    })
+}
 use std::sync::atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -881,6 +942,51 @@ impl Searcher {
         (2..=lim).step_by(2).any(|k| self.hash_hist.get(n + 1 - k) == Some(&c.hash))
     }
 
+    /// Can the side to move repeat an earlier position with one reversible
+    /// move? Then a draw is theirs for the taking. Earlier positions with
+    /// the opponent to move are an odd number of plies back, within the
+    /// reversible window; a hash difference that is one move in the cuckoo
+    /// table, with the piece in place, the path empty and the move legal,
+    /// is a hit.
+    fn upcoming_repetition(&self, pos: &Position) -> bool {
+        let n = self.hash_hist.len();
+        let lim = (pos.halfmove as usize).min(n);
+        if lim < 3 {
+            return false;
+        }
+        let ck = cuckoo();
+        let occ = pos.occ();
+        let mut i = 3;
+        while i <= lim {
+            let d = pos.hash ^ self.hash_hist[n - i];
+            let mut j = cuckoo_h1(d);
+            if ck.keys[j] != d {
+                j = cuckoo_h2(d);
+            }
+            if ck.keys[j] == d {
+                let mv = ck.moves[j] as usize;
+                let (a, b, pc) = (mv & 63, (mv >> 6) & 63, (mv >> 12) as u8);
+                if pc_color(pc) == pos.stm && between(a, b) & occ == 0 {
+                    let (from, to) = if pos.board[a] == pc && pos.board[b] == NONE_PC {
+                        (a, b)
+                    } else if pos.board[b] == pc && pos.board[a] == NONE_PC {
+                        (b, a)
+                    } else {
+                        (64, 64)
+                    };
+                    if from < 64 {
+                        let mut c = *pos;
+                        if c.make_move(mk(from, to, 0)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            i += 2;
+        }
+        false
+    }
+
     fn is_repetition(&self, pos: &Position) -> bool {
         let n = self.hash_hist.len();
         let lim = (pos.halfmove as usize).min(n);
@@ -1354,9 +1460,19 @@ impl Searcher {
             self.seldepth = ply;
         }
         let in_check = pos.checkers != 0;
+        let mut draw_floor = false;
         if !root {
             if self.is_repetition(pos) || pos.insufficient_material() {
                 return 0;
+            }
+            // A repetition one reversible move away: the draw is ours for
+            // the taking, so the score is at least 0 whatever the moves say.
+            if on(P::UseUpcomingRep) && alpha < 0 && !in_check && self.upcoming_repetition(pos) {
+                if beta <= 0 {
+                    return 0;
+                }
+                alpha = 0;
+                draw_floor = true;
             }
             // Fifty-move rule, unless the side to move is checkmated.
             if pos.halfmove >= 100 {
@@ -1651,7 +1767,7 @@ impl Searcher {
             pos.gen(&mut list, GEN_NOISY | GEN_UNDERPROMO);
             self.score_moves(pos, list.as_slice(), &mut scores, 0, killers, prev1, prev2, prev4, prev6);
         }
-        let mut best_score = -INF;
+        let mut best_score = if draw_floor { 0 } else { -INF };
         let mut best_move = 0;
         let mut legal = 0;
         let mut quiets: [Move; 64] = [0; 64];
