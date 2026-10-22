@@ -1,4 +1,5 @@
 // Search: iterative deepening PVS with the usual pruning/reduction heuristics.
+use crate::attacks::{bishop_attacks, king_attacks, knight_attacks, pawn_attacks, rook_attacks};
 use crate::nnue::{self, Acc};
 use crate::params::{on, tp, P};
 use crate::position::*;
@@ -33,16 +34,66 @@ pub const CORR_GRAIN: i32 = 256;
 /// the square it leaves, bit 1 when it attacks the square it goes to
 /// (UseThreatHist2 off: only the first; UseThreatHist off: 0).
 #[inline(always)]
-fn th(threats: u64, from: usize, to: usize) -> usize {
+fn th(threats: u64, from: usize, to: usize, mk: usize) -> usize {
     if !on(P::UseThreatHist) {
         return 0;
     }
     let f = ((threats >> from) & 1) as usize;
-    if on(P::UseThreatHist2) {
-        f | (((threats >> to) & 1) as usize) << 1
+    let t = if on(P::UseThreatHist2) { f | (((threats >> to) & 1) as usize) << 1 } else { f };
+    // Third bit: the move attacks a more valuable enemy piece (off: 0).
+    if on(P::UseThreatMake) {
+        t | mk << 2
     } else {
-        f
+        t
     }
+}
+
+/// Does the piece of type `pt` on `sq`, with `occ` occupied, attack an
+/// enemy (colour `them`) piece worth more than itself? Pawns count any
+/// non-pawn, kings nothing.
+#[inline(always)]
+fn attacks_higher(pos: &Position, pt: usize, sq: usize, occ: u64, them: usize) -> usize {
+    let targets = match pt {
+        PAWN => pos.colors[them] & !pos.pcs(them, PAWN),
+        KNIGHT | BISHOP => pos.pcs(them, ROOK) | pos.pcs(them, QUEEN),
+        ROOK => pos.pcs(them, QUEEN),
+        _ => 0,
+    };
+    if targets == 0 {
+        return 0;
+    }
+    let att = match pt {
+        PAWN => pawn_attacks(them ^ 1, sq),
+        KNIGHT => knight_attacks(sq),
+        BISHOP => bishop_attacks(sq, occ),
+        ROOK => rook_attacks(sq, occ),
+        QUEEN => bishop_attacks(sq, occ) | rook_attacks(sq, occ),
+        _ => king_attacks(sq),
+    };
+    (att & targets != 0) as usize
+}
+
+/// The "makes a threat" bit of a quiet move about to be made in `pos`.
+#[inline(always)]
+fn makes_threat(pos: &Position, m: Move) -> usize {
+    if !on(P::UseThreatMake) {
+        return 0;
+    }
+    let (from, to) = (mfrom(m), mto(m));
+    let pt = pc_type(pos.board[from]);
+    let occ = (pos.occ() ^ (1u64 << from)) | (1u64 << to);
+    attacks_higher(pos, pt, to, occ, pos.stm ^ 1)
+}
+
+/// The same for the move just made (`pos` is the position after it).
+#[inline(always)]
+fn made_threat(pos: &Position, m: Move) -> usize {
+    if !on(P::UseThreatMake) {
+        return 0;
+    }
+    let to = mto(m);
+    let pt = pc_type(pos.board[to]);
+    attacks_higher(pos, pt, to, pos.occ(), pos.stm)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -323,7 +374,7 @@ pub struct Searcher {
     pub tt: Arc<TT>,
     // Quiet history by side, whether the moving piece stands on a square
     // the opponent attacks, from and to.
-    hist: Box<[[[[i16; 64]; 64]; 4]; 2]>,
+    hist: Box<[[[[i16; 64]; 64]; 8]; 2]>,
     /// Continuation and correction history: one set shared by all Lazy SMP
     /// threads while they search (see SharedHist).
     pub sh: Arc<SharedHist>,
@@ -555,7 +606,7 @@ impl Searcher {
             start: Instant::now(),
             hard_ms: None,
             node_limit: None,
-            hist: Box::new([[[[0; 64]; 64]; 4]; 2]),
+            hist: Box::new([[[[0; 64]; 64]; 8]; 2]),
             sh: SharedHist::new(),
             capt: Box::new([[[0; 7]; 64]; 12]),
             killers: Align64([[0; 2]; MAX_PLY + 4]),
@@ -645,7 +696,7 @@ impl Searcher {
         // this is the only one.
         Arc::get_mut(&mut self.tt).expect("TT cleared during a search").clear();
         self.eval_cache.fill(0);
-        *self.hist = [[[[0; 64]; 64]; 4]; 2];
+        *self.hist = [[[[0; 64]; 64]; 8]; 2];
         Arc::get_mut(&mut self.sh).expect("histories cleared during a search").clear();
         *self.capt = [[[0; 7]; 64]; 12];
         self.killers = Align64([[0; 2]; MAX_PLY + 4]);
@@ -1431,8 +1482,8 @@ impl Searcher {
                     let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
                     let threats = pos.attacks_by(pos.stm ^ 1);
                     upd(
-                        &mut self.hist[pos.stm][th(threats, mfrom(tt_move), mto(tt_move))][mfrom(tt_move)]
-                            [mto(tt_move)],
+                        &mut self.hist[pos.stm][th(threats, mfrom(tt_move), mto(tt_move), makes_threat(pos, tt_move))]
+                            [mfrom(tt_move)][mto(tt_move)],
                         bonus,
                     );
                 }
@@ -2060,7 +2111,10 @@ impl Searcher {
                 let prev3 = if ply >= 3 { self.stack[ply - 3].cont_idx } else { 0 };
                 let prev5 = if ply >= 5 { self.stack[ply - 5].cont_idx } else { 0 };
                 let pt = self.stack[ply - 1].threats;
-                upd(&mut self.hist[pos.stm ^ 1][th(pt, mfrom(pm), mto(pm))][mfrom(pm)][mto(pm)], bonus);
+                upd(
+                    &mut self.hist[pos.stm ^ 1][th(pt, mfrom(pm), mto(pm), made_threat(pos, pm))][mfrom(pm)][mto(pm)],
+                    bonus,
+                );
                 // Its continuation entries, as seen from the opponent's node: their
                 // previous moves were ours at ply-2, -3 (theirs) and -5.
                 if prev2 != 0 {
@@ -2115,7 +2169,7 @@ impl Searcher {
     ) {
         let pc = pos.board[mfrom(m)] as usize;
         let ci = pc * 64 + mto(m);
-        upd(&mut self.hist[pos.stm][th(threats, mfrom(m), mto(m))][mfrom(m)][mto(m)], bonus);
+        upd(&mut self.hist[pos.stm][th(threats, mfrom(m), mto(m), makes_threat(pos, m))][mfrom(m)][mto(m)], bonus);
         if prev1 != 0 {
             upd_shared(&self.sh.cont[prev1][ci], bonus);
         }
@@ -2208,7 +2262,7 @@ impl Searcher {
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
                 let ci = pc * 64 + mto(m);
-                self.hist[us][th(threats, mfrom(m), mto(m))][mfrom(m)][mto(m)] as i32
+                self.hist[us][th(threats, mfrom(m), mto(m), makes_threat(pos, m))][mfrom(m)][mto(m)] as i32
                     + self.sh.cont[prev1][ci].load(Ordering::Relaxed) as i32
                     + self.sh.cont[prev2][ci].load(Ordering::Relaxed) as i32
                     + self.sh.cont[prev4][ci].load(Ordering::Relaxed) as i32 / 2
