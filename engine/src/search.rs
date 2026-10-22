@@ -1684,6 +1684,7 @@ impl Searcher {
                         prev2,
                         prev4,
                         prev6,
+                        root,
                     );
                 } else if !skip_quiets {
                     n = self.gen_stage(
@@ -1697,6 +1698,7 @@ impl Searcher {
                         prev2,
                         prev4,
                         prev6,
+                        root,
                     );
                 }
                 compacted = false;
@@ -1738,6 +1740,7 @@ impl Searcher {
                             prev2,
                             prev4,
                             prev6,
+                            root,
                         );
                     }
                     continue;
@@ -1766,7 +1769,7 @@ impl Searcher {
             if quiet && skip_quiets {
                 continue;
             }
-            let hist_score = if quiet && mscore < (1 << 27) { mscore } else { 0 };
+            let hist_score = if quiet && mscore < (1 << 27) && !(root && on(P::UseRootNodes)) { mscore } else { 0 };
             if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
                 if quiet {
                     if on(P::UseLmp) && legal >= lmp_limit && !in_check {
@@ -2117,6 +2120,7 @@ impl Searcher {
         prev2: usize,
         prev4: usize,
         prev6: usize,
+        root: bool,
     ) -> usize {
         let old = list.len();
         debug_assert_eq!(scores.len(), old);
@@ -2129,6 +2133,25 @@ impl Searcher {
         }
         let n = list.len();
         self.score_moves(pos, &list.as_slice()[old..n], scores, tt_move, killers, prev1, prev2, prev4, prev6);
+        // Root moves searched in an earlier iteration are ordered by the
+        // nodes their subtree took, above the moves not yet explored and
+        // within their class (good captures keep their SEE check).
+        if root && on(P::UseRootNodes) {
+            for k in old..n {
+                let m = list[k];
+                let c = self.root_node_counts[mfrom(m)][mto(m)];
+                if c > 0 {
+                    let v = ((c >> 4) + (1 << 20)).min((1 << 27) - 1) as i32;
+                    scores[k] = if is_noisy(m) && scores[k] >= (1 << 28) {
+                        (1 << 28) + v
+                    } else if is_noisy(m) {
+                        scores[k]
+                    } else {
+                        v
+                    };
+                }
+            }
+        }
         n
     }
 
