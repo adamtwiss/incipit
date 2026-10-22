@@ -758,6 +758,173 @@ impl Acc {
 /// subtracts the pieces that differ from that entry, instead of every piece.
 pub struct RefreshCache {
     entries: Vec<CacheEntry>,
+    /// Pawn-pair sums by pawn structure (see PairCache).
+    pub pairs: PairCache,
+}
+
+/// Pawn-pair sum cache. The pair features depend only on the pawn
+/// structure, the perspective and the file mirror, and a structure recurs
+/// across many nodes of a tree, so their summed rows (i16, as in the
+/// accumulator) are kept per structure. A pawn move then takes the
+/// accumulator from the old structure's sum to the new one's with two i16
+/// rows, instead of applying every pair row that changes (up to fifty i8
+/// rows). Direct-mapped by a hash of the key; an entry is verified by its
+/// full key, and a missing entry is built from the previous structure's
+/// entry (the rows that change) or, failing that, from scratch.
+pub struct PairCache {
+    entries: Vec<PairEntry>,
+}
+
+const PAIR_SLOTS: usize = 2048;
+
+/// Pair cache counters (bench reports them): after pawn moves, the new
+/// structure's entry found, derived from the old one, or built from
+/// scratch; and old entries missing (built from scratch too).
+pub static PAIR_STATS: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+#[inline(always)]
+fn pair_count(i: usize) {
+    PAIR_STATS[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+/// Summary line for bench, per thousand of `nodes`.
+pub fn pair_cache_report(nodes: u64) -> String {
+    let v: Vec<u64> = PAIR_STATS.iter().map(|c| c.load(std::sync::atomic::Ordering::Relaxed)).collect();
+    let kn = nodes.max(1) as f64 / 1000.0;
+    format!(
+        "Pair cache:     pawn moves: new found {} ({:.1}/Kn), derived {} ({:.1}/Kn), scratch {} ({:.2}/Kn); old missing {}; {} slots",
+        v[0],
+        v[0] as f64 / kn,
+        v[1],
+        v[1] as f64 / kn,
+        v[2],
+        v[2] as f64 / kn,
+        v[3],
+        pair_slots()
+    )
+}
+/// The slot count: PAIR_SLOTS, or INCIPIT_PAIR_SLOTS from the environment
+/// (a power of two) for footprint experiments.
+fn pair_slots() -> usize {
+    std::env::var("INCIPIT_PAIR_SLOTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|s: &usize| s.is_power_of_two())
+        .unwrap_or(PAIR_SLOTS)
+}
+
+#[repr(C, align(64))]
+struct PairEntry {
+    wp: u64,
+    bp: u64,
+    key: u32, // 1 | perspective << 1 | mirror xor << 2; 0 when empty
+    acc: [i16; MAX_H],
+}
+
+#[inline(always)]
+fn pair_key(p: usize, xor: usize) -> u32 {
+    (1 | p << 1 | xor << 2) as u32
+}
+
+/// The pair sums of a structure for perspective p with mirror `xor`, from
+/// scratch.
+fn pair_sum(n: &Network, h: usize, wp: u64, bp: u64, p: usize, xor: usize, v: &mut [i16]) {
+    v.fill(0);
+    let mut pairs = [0u16; crate::pawnpairs::MAX_ACTIVE];
+    let k = crate::pawnpairs::active_bb(n.ppw, wp, bp, p, xor, &mut pairs);
+    for &f in &pairs[..k] {
+        for (x, &w) in v.iter_mut().zip(row(n, n.pp_base + f as usize, h)) {
+            *x = x.wrapping_add(w);
+        }
+    }
+}
+
+impl PairCache {
+    /// `slots` entries (a power of two) plus one spare for a structure whose
+    /// slot its predecessor occupies.
+    fn with_slots(slots: usize) -> Self {
+        assert!(slots.is_power_of_two());
+        let entries = (0..=slots).map(|_| PairEntry { wp: 0, bp: 0, key: 0, acc: [0; MAX_H] }).collect();
+        PairCache { entries }
+    }
+
+    #[inline(always)]
+    fn slot(&self, wp: u64, bp: u64, p: usize, xor: usize) -> usize {
+        let mut k = wp.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ bp.rotate_left(29).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+            ^ (pair_key(p, xor) as u64).wrapping_mul(0x1656_67B1_9E37_79F9);
+        k ^= k >> 29;
+        k = k.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        ((k >> 32) as usize) & (self.entries.len() - 2)
+    }
+
+    #[inline(always)]
+    fn find(&self, wp: u64, bp: u64, p: usize, xor: usize) -> Option<usize> {
+        let i = self.slot(wp, bp, p, xor);
+        let e = &self.entries[i];
+        if e.key == pair_key(p, xor) && e.wp == wp && e.bp == bp {
+            Some(i)
+        } else {
+            None
+        }
+    }
+
+    /// Fills the slot for a structure from scratch and returns it.
+    fn build(&mut self, n: &Network, h: usize, wp: u64, bp: u64, p: usize, xor: usize) -> usize {
+        let i = self.slot(wp, bp, p, xor);
+        let e = &mut self.entries[i];
+        pair_sum(n, h, wp, bp, p, xor, &mut e.acc[..h]);
+        e.wp = wp;
+        e.bp = bp;
+        e.key = pair_key(p, xor);
+        i
+    }
+
+    /// The entries of the structures before and after a pawn move: the old
+    /// one found or built from scratch, the new one found, derived from the
+    /// old by the pair delta, or built. Returns (old, new) slots; they
+    /// differ, as the structures do.
+    fn pair_of(
+        &mut self,
+        n: &Network,
+        h: usize,
+        old: (u64, u64),
+        new: (u64, u64),
+        p: usize,
+        xor: usize,
+    ) -> (usize, usize) {
+        let j = match self.find(old.0, old.1, p, xor) {
+            Some(j) => j,
+            None => {
+                pair_count(3);
+                self.build(n, h, old.0, old.1, p, xor)
+            }
+        };
+        let i = self.slot(new.0, new.1, p, xor);
+        if i == j {
+            // The two structures share a slot: the new one from scratch, in
+            // a spare entry at the end (the old one stays where it is).
+            pair_count(2);
+            let last = self.entries.len() - 1;
+            let e = &mut self.entries[last];
+            pair_sum(n, h, new.0, new.1, p, xor, &mut e.acc[..h]);
+            e.key = 0; // never found: a scratch entry
+            return (j, last);
+        }
+        let e = &self.entries[i];
+        if e.key == pair_key(p, xor) && e.wp == new.0 && e.bp == new.1 {
+            pair_count(0);
+            return (j, i);
+        }
+        pair_count(1);
+        let (a, b) = self.entries.split_at_mut(i.max(j));
+        let (src, dst) = if i < j { (&b[0], &mut a[i]) } else { (&a[j], &mut b[0]) };
+        dst.acc[..h].copy_from_slice(&src.acc[..h]);
+        let v = &mut dst.acc[..h];
+        crate::pawnpairs::delta(n.ppw, old, new, p, xor, |f, add| add_row8(v, row8(n, f, h), add));
+        dst.wp = new.0;
+        dst.bp = new.1;
+        dst.key = pair_key(p, xor);
+        (j, i)
+    }
 }
 
 #[repr(C, align(64))]
@@ -781,7 +948,7 @@ impl RefreshCache {
                 e
             })
             .collect();
-        RefreshCache { entries }
+        RefreshCache { entries, pairs: PairCache::with_slots(pair_slots()) }
     }
 }
 
@@ -1089,28 +1256,19 @@ fn update_pawns<const H: usize>(
             refresh_cached::<H>(acc, n, p, child, cache);
             continue;
         }
-        // At most two pawns leave (the mover and a captured pawn), each with
-        // at most 17 partners, and one arrives.
-        const M: usize = 34;
-        let (mut a8, mut s8): ([&[i8]; M], [&[i8]; M]) = ([&[]; M], [&[]; M]);
-        let (mut ka, mut ks) = (0, 0);
-        crate::pawnpairs::delta(n.ppw, old, new, p, ki.1, |f, add| {
-            if add {
-                a8[ka] = row8(n, f, h);
-                ka += 1;
-            } else {
-                s8[ks] = row8(n, f, h);
-                ks += 1;
-            }
-        });
+        // The pair sums of the structures before and after, from the cache:
+        // two i16 rows instead of every pair row that changes.
+        let (jo, jn) = cache.pairs.pair_of(n, h, old, new, p, ki.1);
+        let po = &cache.pairs.entries[jo].acc[..h];
+        let pn = &cache.pairs.entries[jn].acc[..h];
         let a0 = row(n, feat(p, ki, add.0, add.1), h);
         let s0 = row(n, feat(p, ki, subs[0].0, subs[0].1), h);
         let (src, dst) = (parent.side(p, h), acc.side_mut(p, h));
         if ns == 1 {
-            add_sub_rows8(dst, src, &[a0], &[s0], &a8[..ka], &s8[..ks]);
+            add_sub(dst, src, [a0, pn], [s0, po]);
         } else {
             let s1 = row(n, feat(p, ki, subs[1].0, subs[1].1), h);
-            add_sub_rows8(dst, src, &[a0], &[s0, s1], &a8[..ka], &s8[..ks]);
+            add_sub(dst, src, [a0, pn], [s0, s1, po]);
         }
     }
 }
@@ -2902,6 +3060,9 @@ mod tests {
             let mut seed = 0x9E37_79B9_7F4A_7C15u64;
             let mut checked = 0;
             for g in 0..60 {
+                // Every other game runs on a four-slot pair cache, so entries
+                // collide and are evicted within the game.
+                cache.pairs = PairCache::with_slots(if g % 2 == 1 { 4 } else { PAIR_SLOTS });
                 let mut pos = Position::from_fen(starts[g % starts.len()]).unwrap();
                 let mut acc = Acc::new();
                 for p in 0..2 {

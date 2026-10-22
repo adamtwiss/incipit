@@ -104,6 +104,7 @@ fn bench(depth: i32, eval_cache_kb: usize) {
     let el = t.elapsed().as_secs_f64();
     print!("\n=== Search stats (all bench positions, depth {}) ===\n{}", depth, s.stats.report(nodes));
     println!("slider indexing: {}, nnue kernels: {}", crate::attacks::slider_indexing(), nnue::kernel_isa());
+    println!("{}", nnue::pair_cache_report(nodes));
     // Keep this line last: OpenBench reads "<N> nodes <M> nps".
     println!("{} nodes {} nps", nodes, (nodes as f64 / el) as u64);
 }
