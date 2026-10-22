@@ -185,6 +185,9 @@ params! {
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
+    // Quiets that move an attacked piece to an unattacked square are not
+    // skipped by LMP, futility or history pruning.
+    UseEscapeNoPrune = "UseEscapeNoPrune", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
     UseFutHist = "UseFutHist", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;

@@ -1792,13 +1792,17 @@ impl Searcher {
                 continue;
             }
             let quiet = !is_noisy(m);
-            if quiet && skip_quiets {
+            // A quiet that takes an attacked piece to a safe square answers
+            // a threat: the margin-based prunings leave it alone.
+            let escape =
+                on(P::UseEscapeNoPrune) && quiet && (threats >> mfrom(m)) & 1 == 1 && (threats >> mto(m)) & 1 == 0;
+            if quiet && skip_quiets && !escape {
                 continue;
             }
             let hist_score = if quiet && mscore < (1 << 27) { mscore } else { 0 };
             if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
                 if quiet {
-                    if on(P::UseLmp) && legal >= lmp_limit && !in_check {
+                    if on(P::UseLmp) && legal >= lmp_limit && !in_check && !escape {
                         self.stats.lmp += 1;
                         skip_quiets = true;
                         continue;
@@ -1806,6 +1810,7 @@ impl Searcher {
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
                     if on(P::UseFut)
                         && !in_check
+                        && !escape
                         && lmr_d <= tp(P::FutDepth)
                         && static_eval
                             + tp(P::FutBase)
@@ -1819,6 +1824,7 @@ impl Searcher {
                     }
                     if on(P::UseHistPrune)
                         && !in_check
+                        && !escape
                         && lmr_d <= tp(P::HistPruneDepth)
                         && hist_score < -tp(P::HistPrune) * depth
                     {
