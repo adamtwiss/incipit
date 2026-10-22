@@ -45,6 +45,17 @@ fn th(threats: u64, from: usize, to: usize) -> usize {
     }
 }
 
+/// The continuation history's column offset for a move from `from`: the
+/// second half of the row when the opponent attacks the square (off: 0).
+#[inline(always)]
+fn thc(threats: u64, from: usize) -> usize {
+    if on(P::UseThreatCont) {
+        768 * ((threats >> from) & 1) as usize
+    } else {
+        0
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct Frame {
     static_eval: i32,
@@ -416,7 +427,9 @@ fn upd_shared(h: &AtomicI16, bonus: i32) {
 /// inline in the Arc's allocation, so a lookup is one pointer load and an
 /// offset, as with the per-thread tables.
 pub struct SharedHist {
-    cont: [[AtomicI16; 768]; 768],
+    // Rows: the earlier move's piece-square; columns: this move's, in the
+    // second half when the moving piece stands on an attacked square.
+    cont: [[AtomicI16; 1536]; 768],
     corr: [[AtomicI32; CORR_SIZE]; 2],
     corr_np: [[[AtomicI32; CORR_SIZE]; 2]; 2],
     /// Continuation correction: by side to move and the previous move's
@@ -2064,13 +2077,13 @@ impl Searcher {
                 // Its continuation entries, as seen from the opponent's node: their
                 // previous moves were ours at ply-2, -3 (theirs) and -5.
                 if prev2 != 0 {
-                    upd_shared(&self.sh.cont[prev2][prev1], bonus);
+                    upd_shared(&self.sh.cont[prev2][prev1 + thc(pt, mfrom(pm))], bonus);
                 }
                 if prev3 != 0 {
-                    upd_shared(&self.sh.cont[prev3][prev1], bonus);
+                    upd_shared(&self.sh.cont[prev3][prev1 + thc(pt, mfrom(pm))], bonus);
                 }
                 if prev5 != 0 {
-                    upd_shared(&self.sh.cont[prev5][prev1], bonus);
+                    upd_shared(&self.sh.cont[prev5][prev1 + thc(pt, mfrom(pm))], bonus);
                 }
             }
         }
@@ -2114,7 +2127,7 @@ impl Searcher {
         threats: u64,
     ) {
         let pc = pos.board[mfrom(m)] as usize;
-        let ci = pc * 64 + mto(m);
+        let ci = pc * 64 + mto(m) + thc(threats, mfrom(m));
         upd(&mut self.hist[pos.stm][th(threats, mfrom(m), mto(m))][mfrom(m)][mto(m)], bonus);
         if prev1 != 0 {
             upd_shared(&self.sh.cont[prev1][ci], bonus);
@@ -2207,7 +2220,7 @@ impl Searcher {
                 (1 << 27) + 1
             } else {
                 let pc = pos.board[mfrom(m)] as usize;
-                let ci = pc * 64 + mto(m);
+                let ci = pc * 64 + mto(m) + thc(threats, mfrom(m));
                 self.hist[us][th(threats, mfrom(m), mto(m))][mfrom(m)][mto(m)] as i32
                     + self.sh.cont[prev1][ci].load(Ordering::Relaxed) as i32
                     + self.sh.cont[prev2][ci].load(Ordering::Relaxed) as i32
