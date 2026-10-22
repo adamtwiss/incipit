@@ -185,6 +185,8 @@ params! {
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
+    // No LMP, futility, history or SEE pruning of moves at PV nodes.
+    UsePvNoPrune = "UsePvNoPrune", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
     UseFutHist = "UseFutHist", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;

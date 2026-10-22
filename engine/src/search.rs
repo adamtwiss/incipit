@@ -1767,7 +1767,10 @@ impl Searcher {
                 continue;
             }
             let hist_score = if quiet && mscore < (1 << 27) { mscore } else { 0 };
-            if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
+            // No move-loop pruning at PV nodes: they are few, and the
+            // line that is reported should not have its moves skipped on
+            // a margin.
+            if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) && !(pv_node && on(P::UsePvNoPrune)) {
                 if quiet {
                     if on(P::UseLmp) && legal >= lmp_limit && !in_check {
                         self.stats.lmp += 1;
