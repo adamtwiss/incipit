@@ -226,6 +226,8 @@ params! {
     UseKillers = "UseKillers", 1, 0, 1, 0;
     // Quiet history split by whether the moving piece is attacked.
     UseThreatHist = "UseThreatHist", 1, 0, 1, 0;
+    // Capture history split by whether the capturing piece is attacked.
+    UseThreatCapt = "UseThreatCapt", 1, 0, 1, 0;
     // Continuation history keyed by our move three plies back (prev6), at
     // half weight in move scoring like the ply-4 table.
     UseCont6 = "UseCont6", 1, 0, 1, 0;
