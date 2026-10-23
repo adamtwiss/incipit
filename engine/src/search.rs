@@ -859,9 +859,15 @@ impl Searcher {
         Self::damp(pos, raw + c / (128 * CORR_GRAIN)).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
-    fn update_corr(&mut self, pos: &Position, depth: i32, diff: i32, prev1: usize, prev2: usize) {
+    /// `decisive`: the score is a mate or tablebase result. Its gap to the
+    /// eval still says the eval underrates the position, which helps the
+    /// rest of the game, but at full strength one such search saturated
+    /// every entry it touched and skewed unrelated positions searched next
+    /// (a missed mate in two), so it moves entries a quarter as far.
+    fn update_corr(&mut self, pos: &Position, depth: i32, diff: i32, prev1: usize, prev2: usize, decisive: bool) {
         let w = (depth + 1).min(tp(P::CorrUpdateCap));
-        let target = diff.clamp(-tp(P::CorrDiffClamp), tp(P::CorrDiffClamp)) * CORR_GRAIN;
+        let clamp = if decisive { tp(P::CorrDiffClamp) / 4 } else { tp(P::CorrDiffClamp) };
+        let target = diff.clamp(-clamp, clamp) * CORR_GRAIN;
         let m = CORR_SIZE - 1;
         let lim = CORR_GRAIN * tp(P::CorrLimit);
         // Load then store, not an atomic read-modify-write: when two threads
@@ -2095,7 +2101,7 @@ impl Searcher {
                 && !(bound == BOUND_LOWER && best_score <= static_eval)
                 && !(bound == BOUND_UPPER && best_score >= static_eval)
             {
-                self.update_corr(pos, depth, best_score - static_eval, prev1, prev2);
+                self.update_corr(pos, depth, best_score - static_eval, prev1, prev2, best_score.abs() >= MATE_BOUND);
             }
         }
         best_score
@@ -2393,6 +2399,26 @@ mod tests {
             assert_eq!(sc, MATE - 1);
             assert!(s.root_excluded.is_empty());
         }
+    }
+
+    /// Mate scores train the correction history only weakly: at full
+    /// strength a search that scores most of its tree as mate (here a
+    /// back-rank mate in one) left the non-pawn tables saturated, and the
+    /// next search, of a different position on the same searcher (no
+    /// ucinewgame), then missed a mate in two (1.Ra6) even at depth 40.
+    #[test]
+    fn mate_scores_damped_in_correction() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let mut s = Searcher::new(16, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        let lim = Limits { soft_ms: None, hard_ms: None, depth: 64, nodes: Some(1_000_000) };
+        let first = Position::from_fen("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1").unwrap();
+        let (m, sc) = s.search(&first, &lim);
+        assert_eq!((first.move_uci(m).as_str(), sc), ("a1a8", MATE - 1));
+        let pos = Position::from_fen("kbK5/pp6/1P6/8/8/8/8/R7 w - - 0 1").unwrap();
+        let (m, sc) = s.search(&pos, &lim);
+        assert_eq!((pos.move_uci(m).as_str(), sc), ("a1a6", MATE - 3));
     }
 
     /// Printed scores: 100 at the WDL model's 50%-win score, scaled in
