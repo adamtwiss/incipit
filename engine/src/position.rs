@@ -775,6 +775,30 @@ impl Position {
         None
     }
 
+    /// Is the piece on `bit` (of `side`, not a king) pinned to its own king by
+    /// an enemy slider still on the board in `occupied`, with `target` off the
+    /// pin line, so that it cannot capture there? A pinned piece may still
+    /// capture along the line, including the pinner itself.
+    fn pinned_off_line(&self, bit: u64, side: usize, occupied: u64, target: usize) -> bool {
+        let ksq = self.king_sq(side);
+        let them = self.colors[side ^ 1] & occupied;
+        let seen = rook_attacks(ksq, occupied);
+        let pinner = if seen & bit != 0 {
+            rook_attacks(ksq, occupied ^ bit) & !seen & (self.pieces[ROOK] | self.pieces[QUEEN]) & them
+        } else {
+            let seen = bishop_attacks(ksq, occupied);
+            if seen & bit == 0 {
+                return false;
+            }
+            bishop_attacks(ksq, occupied ^ bit) & !seen & (self.pieces[BISHOP] | self.pieces[QUEEN]) & them
+        };
+        if pinner == 0 {
+            return false;
+        }
+        let p = pinner.trailing_zeros() as usize;
+        (between(ksq, p) | pinner) & (1u64 << target) == 0
+    }
+
     /// Static exchange evaluation as a yes/no question: does playing `m` and then
     /// letting both sides trade on the destination square (always with their cheapest
     /// piece) leave the mover with at least `threshold` centipawns of material gain?
@@ -790,7 +814,13 @@ impl Position {
     /// A king may only join in when the other side has no attackers left on the square.
     /// Castling, en passant and promotions are not examined and count as a zero gain.
     /// `val` holds the piece values by piece type (the search's SEE parameters).
+    #[inline(always)]
     pub fn see_ge(&self, m: Move, threshold: i32, val: &[i32; 7]) -> bool {
+        self.see_ge_impl(m, threshold, val, crate::params::on(crate::params::P::UsePinSee))
+    }
+
+    /// `see_ge` with the pin rule chosen by the caller (the tests compare both).
+    fn see_ge_impl(&self, m: Move, threshold: i32, val: &[i32; 7], pins: bool) -> bool {
         let flag = mflag(m);
         if is_promo(m) || flag == F_EP || flag == F_KCASTLE || flag == F_QCASTLE {
             return threshold <= 0;
@@ -826,6 +856,13 @@ impl Position {
             if pt == KING && pool & self.colors[last_capturer] != 0 {
                 // Taking with the king would walk into a recapture: not allowed.
                 return last_capturer == us;
+            }
+            // A piece pinned to its king cannot leave the pin line: it is
+            // out of the exchange while its pinner stands (the pinner joining
+            // the exchange, and so leaving `occupied`, frees it).
+            if pins && pt != KING && self.pinned_off_line(bit, recapturer, occupied, target) {
+                pool ^= bit;
+                continue;
             }
 
             // The recapture happens; the opponent of `recapturer` now decides whether
@@ -984,6 +1021,27 @@ pub fn perft(pos: &Position, depth: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SEE leaves pinned pieces out of the exchange: Bxd5 wins a pawn because
+    /// exd5 is illegal (the e6 pawn is pinned by Re1 against Ke8), and a pawn
+    /// pinned along a file may still capture on that file.
+    #[test]
+    fn see_pinned_pieces() {
+        crate::attacks::init();
+        let val = [100, 320, 330, 500, 950, 20000, 0];
+        let p = Position::from_fen("4k3/8/4p3/3p4/2B5/8/8/K3R3 w - - 0 1").unwrap();
+        let m = p.parse_move("c4d5").unwrap();
+        assert!(p.see_ge(m, 0, &val));
+        assert!(p.see_ge(m, 100, &val));
+        // No pin (king off the file): the pawn recaptures and Bxd5 loses.
+        let q = Position::from_fen("3k4/8/4p3/3p4/2B5/8/8/K3R3 w - - 0 1").unwrap();
+        assert!(!q.see_ge(q.parse_move("c4d5").unwrap(), 0, &val));
+        // Pinned along the file but capturing on the file: Rxe6 is taken back.
+        let r = Position::from_fen("4k3/8/4p3/4R3/8/8/8/K7 w - - 0 1").unwrap();
+        let r2 = Position::from_fen("4k3/4q3/4p3/4R3/8/8/8/K7 w - - 0 1").unwrap();
+        assert!(r.see_ge(r.parse_move("e5e6").unwrap(), 0, &val));
+        assert!(!r2.see_ge(r2.parse_move("e5e6").unwrap(), 0, &val));
+    }
 
     /// Chess960: which rook a castling right belongs to is part of the
     /// position, so it must be part of the hash (with RR on a1/b1, right A

@@ -195,6 +195,9 @@ params! {
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
+    // SEE leaves pieces pinned to their king out of the exchange while
+    // the pinner stands (external movegen audit, review round 4).
+    UsePinSee = "UsePinSee", 1, 0, 1, 0;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
     UseAsp = "UseAsp", 1, 0, 1, 0;
