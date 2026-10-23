@@ -182,6 +182,8 @@ params! {
     UseFutHist = "UseFutHist", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
     UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;
+    // Quiet moves giving direct check are exempt from the SEE prune.
+    UseSeeCheckExempt = "UseSeeCheckExempt", 1, 0, 1, 0;
     UseSeeHist = "UseSeeHist", 1, 0, 1, 0;
     UseSeeNoisy = "UseSeeNoisy", 1, 0, 1, 0;
     UseSe = "UseSe", 1, 0, 1, 0;
