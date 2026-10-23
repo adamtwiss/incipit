@@ -178,7 +178,7 @@ impl Stats {
         line("ProbCut:", format!("{} cutoffs ({:.1}/Kn)", self.probcut_cuts, kn(self.probcut_cuts)));
         line("IIR:", format!("{} reductions", self.iir));
         line("LMP:", format!("{} triggers (remaining quiets skipped)", self.lmp));
-        line("Futility:", format!("{} triggers (remaining quiets skipped)", self.futility));
+        line("Futility:", format!("{} triggers (move or remaining quiets skipped)", self.futility));
         line("History prune:", format!("{} moves ({:.1}/Kn)", self.hist_prunes, kn(self.hist_prunes)));
         line(
             "SEE prune:",
@@ -1795,7 +1795,15 @@ impl Searcher {
             if quiet && skip_quiets {
                 continue;
             }
-            let hist_score = if quiet && mscore < (1 << 27) { mscore } else { 0 };
+            // TT/killer priority is an ordering bonus, not a history value.
+            // Other quiets already carry their history in the ordering score.
+            let hist_score = if !quiet {
+                0
+            } else if mscore < (1 << 27) {
+                mscore
+            } else {
+                self.quiet_history(pos, m, [prev1, prev2, prev4, prev6], threats)
+            };
             if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
                 if quiet {
                     if on(P::UseLmp) && legal >= lmp_limit && !in_check {
@@ -1814,7 +1822,9 @@ impl Searcher {
                             <= alpha
                     {
                         self.stats.futility += 1;
-                        skip_quiets = true;
+                        // A boosted move can precede quiets with higher
+                        // history. Its failure cannot prune those moves too.
+                        skip_quiets = !on(P::UseFutHist) || mscore < (1 << 27);
                         continue;
                     }
                     if on(P::UseHistPrune)
@@ -2164,6 +2174,17 @@ impl Searcher {
         n
     }
 
+    #[inline(always)]
+    fn quiet_history(&self, pos: &Position, m: Move, prev: [usize; 4], threats: u64) -> i32 {
+        let pc = pos.board[mfrom(m)] as usize;
+        let ci = pc * 64 + mto(m);
+        self.hist[pos.stm][th(threats, mfrom(m), mto(m))][mfrom(m)][mto(m)] as i32
+            + self.sh.cont[prev[0]][ci].load(Ordering::Relaxed) as i32
+            + self.sh.cont[prev[1]][ci].load(Ordering::Relaxed) as i32
+            + self.sh.cont[prev[2]][ci].load(Ordering::Relaxed) as i32 / 2
+            + if on(P::UseCont6) { self.sh.cont[prev[3]][ci].load(Ordering::Relaxed) as i32 / 2 } else { 0 }
+    }
+
     #[inline]
     #[allow(clippy::too_many_arguments)]
     fn score_moves(
@@ -2179,7 +2200,6 @@ impl Searcher {
         prev6: usize,
         threats: u64,
     ) {
-        let us = pos.stm;
         for &m in moves {
             let score = if m == tt_move {
                 1 << 30
@@ -2206,13 +2226,7 @@ impl Searcher {
             } else if m == killers[1] {
                 (1 << 27) + 1
             } else {
-                let pc = pos.board[mfrom(m)] as usize;
-                let ci = pc * 64 + mto(m);
-                self.hist[us][th(threats, mfrom(m), mto(m))][mfrom(m)][mto(m)] as i32
-                    + self.sh.cont[prev1][ci].load(Ordering::Relaxed) as i32
-                    + self.sh.cont[prev2][ci].load(Ordering::Relaxed) as i32
-                    + self.sh.cont[prev4][ci].load(Ordering::Relaxed) as i32 / 2
-                    + if on(P::UseCont6) { self.sh.cont[prev6][ci].load(Ordering::Relaxed) as i32 / 2 } else { 0 }
+                self.quiet_history(pos, m, [prev1, prev2, prev4, prev6], threats)
             };
             scores.push(score);
         }
@@ -2373,6 +2387,26 @@ impl Searcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn futile_killer_does_not_hide_high_history_mate() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let mut s = Searcher::new(1, Arc::new(AtomicBool::new(false)));
+        let pos = Position::from_fen("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1").unwrap();
+        // The first killer establishes a legal, non-mating result. The
+        // second fails futility, but Rd8's history clears the same margin.
+        s.killers[1] = [pos.parse_move("h2h3").unwrap(), pos.parse_move("g2g3").unwrap()];
+        let mate = pos.parse_move("d1d8").unwrap();
+        let threats = pos.attacks_by(BLACK);
+        s.hist[WHITE][th(threats, mfrom(mate), mto(mate))][mfrom(mate)][mto(mate)] = 16000;
+        s.acc[1].refresh(&pos);
+        let raw = s.evaluate(&pos, 1);
+        let alpha = s.corrected(&pos, raw, 0, 0) + tp(P::FutBase) + tp(P::FutMul);
+        let score = s.negamax(&pos, alpha, INF, 1, 1, false);
+        assert_eq!(score, MATE - 2, "a futile killer must not discard Rd8#");
+        assert_eq!(s.pv[1][0], mate);
+    }
 
     /// MultiPV: the best move is unchanged by asking for more lines (here a
     /// mate in one among other good moves), more lines than legal moves is
