@@ -468,6 +468,41 @@ impl Position {
         a | king_attacks(self.king_sq(c))
     }
 
+    /// Squares of colour `us` pieces attacked by a lesser piece of the
+    /// other side: pawns attacking anything but pawns, minors attacking
+    /// rooks and queens, rooks attacking queens.
+    pub fn lesser_threats(&self, us: usize) -> u64 {
+        let them = us ^ 1;
+        let occ = self.occ();
+        let p = self.pcs(them, PAWN);
+        let pawn_att = if them == WHITE {
+            ((p & !FILE_A) << 7) | ((p & !FILE_H) << 9)
+        } else {
+            ((p & !FILE_A) >> 9) | ((p & !FILE_H) >> 7)
+        };
+        let mut minor_att = 0;
+        let mut b = self.pcs(them, KNIGHT);
+        while b != 0 {
+            minor_att |= knight_attacks(b.trailing_zeros() as usize);
+            b &= b - 1;
+        }
+        let mut b = self.pcs(them, BISHOP);
+        while b != 0 {
+            minor_att |= bishop_attacks(b.trailing_zeros() as usize, occ);
+            b &= b - 1;
+        }
+        let mut rook_att = 0;
+        let mut b = self.pcs(them, ROOK);
+        while b != 0 {
+            rook_att |= rook_attacks(b.trailing_zeros() as usize, occ);
+            b &= b - 1;
+        }
+        let ours = self.colors[us];
+        (pawn_att & (ours & !self.pcs(us, PAWN)))
+            | (minor_att & (self.pcs(us, ROOK) | self.pcs(us, QUEEN)))
+            | (rook_att & self.pcs(us, QUEEN))
+    }
+
     fn update_castle_touch(&mut self) {
         self.castle_touch = 0;
         for r in 0..4 {

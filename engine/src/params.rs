@@ -180,6 +180,10 @@ params! {
     // tune-spec; OpenBench builds advertise them, so a test can set e.g. UseProbcut=0.
     UseTtCut = "UseTtCut", 1, 0, 1, 0;
     UseRfp = "UseRfp", 1, 0, 1, 0;
+    // Reverse futility needs RfpThreatPen more while one of our pieces is
+    // attacked by a lesser piece (start: a pawn, 100).
+    UseRfpThreat = "UseRfpThreat", 1, 0, 1, 0;
+    RfpThreatPen = "RfpThreatPen", 100, 0, 400, 20;
     UseRazor = "UseRazor", 1, 0, 1, 0;
     UseNmp = "UseNmp", 1, 0, 1, 0;
     UseProbcut = "UseProbcut", 1, 0, 1, 0;

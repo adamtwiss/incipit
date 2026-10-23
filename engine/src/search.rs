@@ -1523,7 +1523,13 @@ impl Searcher {
                 && depth <= tp(P::RfpDepth)
                 && eval.abs() < MATE_BOUND
                 && beta.abs() < MATE_BOUND
-                && eval - tp(P::RfpMargin) * (depth - improving as i32) >= beta
+                // A piece of ours attacked by a lesser piece raises the bar
+                // by RfpThreatPen (a pawn, round, to be tuned): the eval
+                // overstates what we keep.
+                && eval
+                    - tp(P::RfpMargin) * (depth - improving as i32)
+                    - if on(P::UseRfpThreat) && pos.lesser_threats(pos.stm) != 0 { tp(P::RfpThreatPen) } else { 0 }
+                    >= beta
             {
                 self.stats.rfp += 1;
                 return (eval + beta) / 2;
