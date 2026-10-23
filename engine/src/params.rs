@@ -186,6 +186,9 @@ params! {
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
     UseFut = "UseFut", 1, 0, 1, 0;
+    // No futility pruning of quiets while one of our pieces is attacked
+    // by a lesser piece.
+    UseFutThreat = "UseFutThreat", 1, 0, 1, 0;
     UseFutHist = "UseFutHist", 1, 0, 1, 0;
     UseHistPrune = "UseHistPrune", 1, 0, 1, 0;
     UseSeeQuiet = "UseSeeQuiet", 1, 0, 1, 0;

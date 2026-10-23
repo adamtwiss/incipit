@@ -1657,6 +1657,9 @@ impl Searcher {
         let us = pos.stm;
         let threats = pos.attacks_by(pos.stm ^ 1);
         self.stack[ply].threats = threats;
+        // One of our pieces attacked by a lesser piece: the static eval is
+        // not to be trusted for skipping quiets on a margin.
+        let hanging = on(P::UseFutThreat) && pos.lesser_threats(pos.stm) != 0;
         let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
         // Moves come in stages: the TT move, the noisy moves, the quiets,
         // each generated and scored when the stage before is used up, so a
@@ -1806,6 +1809,7 @@ impl Searcher {
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
                     if on(P::UseFut)
                         && !in_check
+                        && !hanging
                         && lmr_d <= tp(P::FutDepth)
                         && static_eval
                             + tp(P::FutBase)
