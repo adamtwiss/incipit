@@ -2301,8 +2301,11 @@ impl Searcher {
             } else if is_noisy(m) {
                 let ct = pos.captured_type(m);
                 let pc = pos.board[mfrom(m)] as usize;
+                // Same history scale as main search's capture ordering.
+                // Keep the existing victim/attacker, promotion and TT terms.
                 (1 << 20) + see_vals()[ct.min(5)] * 16 * (ct < 6) as i32 - see_vals()[pc_type(pc as u8)]
                     + if is_promo(m) { 8000 } else { 0 }
+                    + self.capt[pc][mto(m)][ct] as i32 / 16
             } else {
                 self.hist[pos.stm][0][mfrom(m)][mto(m)] as i32
             };
