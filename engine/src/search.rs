@@ -2089,8 +2089,16 @@ impl Searcher {
             } else if ss <= -MATE_BOUND {
                 ss -= ply as i32;
             }
-            self.tt.store(pos.hash, best_move, ss, raw_eval, depth, bound, pv_node || tt_pv);
-            if !in_check
+            // A root searched over only some moves (searchmoves, MultiPV lines
+            // after the first) proves a lower bound at most: its exact or
+            // upper bound isn't the position's, so it is neither stored nor
+            // used to correct the eval.
+            let restricted = root && (!self.search_moves.is_empty() || !self.root_excluded.is_empty());
+            if !restricted || bound == BOUND_LOWER {
+                self.tt.store(pos.hash, best_move, ss, raw_eval, depth, bound, pv_node || tt_pv);
+            }
+            if !restricted
+                && !in_check
                 && (best_move == 0 || !is_noisy(best_move))
                 && !(bound == BOUND_LOWER && best_score <= static_eval)
                 && !(bound == BOUND_UPPER && best_score >= static_eval)
@@ -2270,6 +2278,13 @@ impl Searcher {
         if in_check {
             best = -INF;
         } else {
+            // Stalemate: with only king and pawns, a trapped king may leave no
+            // legal move, and standing pat would score a draw as the eval.
+            // (Stalemates with pieces are left to the main search: rare, and
+            // a full legal-move check per node would cost.)
+            if !pos.has_non_pawns(pos.stm) && pos.king_boxed_in() && !pos.has_legal_move() {
+                return 0;
+            }
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
             let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
             let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
@@ -2393,6 +2408,38 @@ mod tests {
             assert_eq!(sc, MATE - 1);
             assert!(s.root_excluded.is_empty());
         }
+    }
+
+    /// Quiescence in a stalemate (here a lone king, not in check, with no
+    /// legal move) is a draw, not the static eval.
+    #[test]
+    fn qsearch_stalemate_is_draw() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let mut s = Searcher::new(8, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        let pos = Position::from_fen("k7/8/1QK5/8/8/8/8/8 b - - 0 1").unwrap();
+        assert_eq!(s.qsearch(&pos, -INF, INF, 1), 0);
+    }
+
+    /// A root search restricted to some moves (searchmoves, MultiPV) must not
+    /// leave a root TT entry claiming the position's exact or upper bound:
+    /// here only d1d2 is searched, but Rd8 mates.
+    #[test]
+    fn restricted_root_not_stored_as_bound() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let mut s = Searcher::new(8, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        let pos = Position::from_fen("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1").unwrap();
+        s.search_moves = vec![pos.parse_move("d1d2").unwrap()];
+        s.search(&pos, &Limits { soft_ms: None, hard_ms: None, depth: 6, nodes: None });
+        if let Some(e) = s.tt.probe(pos.hash) {
+            assert!(e.bound == BOUND_LOWER || (e.score as i32) >= MATE_BOUND, "bound {} score {}", e.bound, e.score);
+        }
+        s.search_moves.clear();
+        let (m, sc) = s.search(&pos, &Limits { soft_ms: None, hard_ms: None, depth: 6, nodes: None });
+        assert_eq!((pos.move_uci(m).as_str(), sc), ("d1d8", MATE - 1));
     }
 
     /// Printed scores: 100 at the WDL model's 50%-win score, scaled in

@@ -29,6 +29,10 @@ pub static mut ZOB_PIECE: [[u64; 64]; 12] = [[0; 64]; 12];
 pub static mut ZOB_CASTLE: [u64; 16] = [0; 16];
 pub static mut ZOB_EP: [u64; 8] = [0; 8];
 pub static mut ZOB_STM: u64 = 0;
+/// Chess960: which rook a castling right belongs to, by right (white king /
+/// queen side, black king / queen side) and rook square. Zero for the
+/// classical squares, so standard-chess hashes are unchanged.
+pub static mut ZOB_CROOK: [[u64; 64]; 4] = [[0; 64]; 4];
 
 pub const FILE_A: u64 = 0x0101010101010101;
 pub const FILE_H: u64 = FILE_A << 7;
@@ -365,6 +369,14 @@ fn init_tables() {
             ZOB_EP[f] = rng.next();
         }
         ZOB_STM = rng.next();
+        for r in 0..4 {
+            for sq in 0..64 {
+                ZOB_CROOK[r][sq] = rng.next();
+            }
+        }
+        for (r, sq) in [(0, 7), (1, 0), (2, 63), (3, 56)] {
+            ZOB_CROOK[r][sq] = 0;
+        }
     }
 }
 
@@ -399,6 +411,10 @@ pub fn zob_piece(pc: usize, sq: usize) -> u64 {
 #[inline(always)]
 pub fn zob_castle(c: u8) -> u64 {
     unsafe { ZOB_CASTLE[c as usize] }
+}
+#[inline(always)]
+pub fn zob_crook(right: usize, sq: usize) -> u64 {
+    unsafe { ZOB_CROOK[right][sq] }
 }
 #[inline(always)]
 pub fn zob_ep(f: usize) -> u64 {
