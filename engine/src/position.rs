@@ -309,7 +309,8 @@ impl Position {
         }
         // En passant: kept only if it matches a double push just played (the
         // square and the one the pawn left are empty, the pushed pawn is
-        // there) and a pawn can capture; otherwise ignored.
+        // there) and a pawn can capture; otherwise ignored. It is hashed only
+        // when a capture is legal (see ep_key).
         if let &[f @ b'a'..=b'h', r @ b'1'..=b'8', ..] = parts[3].as_bytes() {
             let sq = (r - b'1') as usize * 8 + (f - b'a') as usize;
             let ep_rank = if p.stm == WHITE { 5 } else { 2 };
@@ -327,9 +328,7 @@ impl Position {
         p.halfmove = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
         p.fullmove = parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(1);
         p.hash ^= p.castle_key(p.castling);
-        if p.ep != NO_SQ {
-            p.hash ^= zob_ep(p.ep as usize % 8);
-        }
+        p.hash ^= p.ep_key();
         if p.stm == BLACK {
             p.hash ^= zob_stm();
         }
@@ -497,7 +496,7 @@ impl Position {
         let pc = self.board[from];
         let old_castling = self.castling;
         if self.ep != NO_SQ {
-            self.hash ^= zob_ep(self.ep as usize & 7);
+            self.hash ^= self.ep_key();
             self.ep = NO_SQ;
         }
         self.halfmove += 1;
@@ -528,7 +527,9 @@ impl Position {
                 let e = (from + to) / 2;
                 if pawn_attacks(us, e) & self.pcs(them, PAWN) != 0 {
                     self.ep = e as u8;
-                    self.hash ^= zob_ep(e & 7);
+                    if self.ep_capturable(them, e, to) {
+                        self.hash ^= zob_ep(e & 7);
+                    }
                 }
             }
         }
@@ -563,7 +564,7 @@ impl Position {
 
     pub fn make_null(&mut self) {
         if self.ep != NO_SQ {
-            self.hash ^= zob_ep(self.ep as usize & 7);
+            self.hash ^= self.ep_key();
             self.ep = NO_SQ;
         }
         self.stm ^= 1;
@@ -726,6 +727,42 @@ impl Position {
             m &= m - 1;
         }
         k
+    }
+
+    /// The hash of the en-passant square: only when the side to move can
+    /// legally capture there, so an unusable ep square (a pinned capturer)
+    /// doesn't make the position differ for repetitions and the TT. `ep`
+    /// itself stays set whenever a pawn attacks it (move generation checks
+    /// legality; packed training data records it the same way).
+    #[inline]
+    fn ep_key(&self) -> u64 {
+        if self.ep == NO_SQ {
+            return 0;
+        }
+        let e = self.ep as usize;
+        let pushed = if self.stm == WHITE { e - 8 } else { e + 8 };
+        if self.ep_capturable(self.stm, e, pushed) {
+            zob_ep(e & 7)
+        } else {
+            0
+        }
+    }
+
+    /// Whether side `cap` has a legal en-passant capture onto `e` of the
+    /// pawn that just double-pushed to `pushed` (the board as after the
+    /// push; `cap` need not be the side to move yet).
+    fn ep_capturable(&self, cap: usize, e: usize, pushed: usize) -> bool {
+        let mut caps = pawn_attacks(cap ^ 1, e) & self.pcs(cap, PAWN);
+        let ks = self.king_sq(cap);
+        while caps != 0 {
+            let c = caps.trailing_zeros() as usize;
+            caps &= caps - 1;
+            let occ = (self.occ() ^ (1u64 << c) ^ (1u64 << pushed)) | (1u64 << e);
+            if self.attackers_to(ks, occ) & self.colors[cap ^ 1] & !(1u64 << pushed) == 0 {
+                return true;
+            }
+        }
+        false
     }
 
     /// Whether the side to move has any legal move (slow; for rare cases).
@@ -984,6 +1021,21 @@ pub fn perft(pos: &Position, depth: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An en-passant square no legal move can use is not part of the
+    /// position: here e5xd6 would expose the king to the e8 rook.
+    #[test]
+    fn illegal_ep_not_hashed() {
+        crate::attacks::init();
+        let with = Position::from_fen("k3r3/8/8/3pP3/8/8/8/4K3 w - d6 0 1").unwrap();
+        let without = Position::from_fen("k3r3/8/8/3pP3/8/8/8/4K3 w - - 0 1").unwrap();
+        assert_eq!(with.hash, without.hash);
+        // The same through a double push: ...d7d5 with the e5 pawn pinned.
+        let mut p = Position::from_fen("k3r3/3p4/8/4P3/8/8/8/4K3 b - - 0 1").unwrap();
+        let m = p.parse_move("d7d5").unwrap();
+        p.make_move(m);
+        assert_eq!(p.hash, without.hash);
+    }
 
     /// Chess960: which rook a castling right belongs to is part of the
     /// position, so it must be part of the hash (with RR on a1/b1, right A
