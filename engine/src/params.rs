@@ -202,6 +202,14 @@ params! {
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
+    // Qsearch delta pruning: a capture is skipped when stand pat + the
+    // captured value + QsDelta cannot reach alpha. QsDeltaScale puts the
+    // SEE values (pawn = 100) on the eval's scale (a pawn reads ~200, a
+    // minor ~600 on the net; rooks and queens less than twice, which only
+    // prunes less). Round start for the margin: a pawn.
+    UseQsDelta = "UseQsDelta", 1, 0, 1, 0;
+    QsDeltaScale = "QsDeltaScale", 200, 100, 400, 20;
+    QsDelta = "QsDelta", 100, 0, 400, 15;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
     UseAsp = "UseAsp", 1, 0, 1, 0;

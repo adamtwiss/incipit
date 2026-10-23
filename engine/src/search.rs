@@ -2292,6 +2292,8 @@ impl Searcher {
                 alpha = best;
             }
         }
+        // The stand pat (TT-improved) for delta pruning.
+        let stand_pat = best;
         let mut list = MoveList::new();
         pos.gen_moves(&mut list, !in_check);
         let mut scores = Stack256::<i32>::new();
@@ -2315,6 +2317,15 @@ impl Searcher {
             pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
             let m = list[i];
             if !in_check {
+                // Delta pruning: even winning the captured piece outright,
+                // plus a margin, cannot reach alpha. The SEE values are on
+                // a pawn = 100 scale and the eval is not (QsDeltaScale).
+                if on(P::UseQsDelta) && !is_promo(m) {
+                    let ct = pos.captured_type(m);
+                    if ct < 6 && stand_pat + see_vals()[ct] * tp(P::QsDeltaScale) / 100 + tp(P::QsDelta) <= alpha {
+                        continue;
+                    }
+                }
                 if on(P::UseQsSee) && !pos.see_ge(m, 0, &see_vals()) {
                     continue;
                 }
