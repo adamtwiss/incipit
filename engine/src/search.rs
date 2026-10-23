@@ -1595,7 +1595,9 @@ impl Searcher {
             if on(P::UseProbcut)
                 && depth >= tp(P::ProbcutDepth)
                 && beta.abs() < MATE_BOUND
-                && !(tte.is_some() && tt_depth >= depth - 3 && tt_score < pc_beta)
+                // A deep enough entry that rules out reaching pc_beta skips it;
+                // a lower bound below pc_beta rules nothing out.
+                && !(tte.is_some() && tt_bound != BOUND_LOWER && tt_depth >= depth - 3 && tt_score < pc_beta)
             {
                 let mut list = MoveList::new();
                 pos.gen_moves(&mut list, true);
