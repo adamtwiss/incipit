@@ -289,6 +289,31 @@ impl PonderTm {
 
 /// SEE piece values by piece type: the pawn is the unit (100) and the others are
 /// SPSA parameters, starting from textbook values; constants outside tune builds.
+/// Quiescence fail-high rate table: 7 victim types (6 = none) x previous
+/// move a capture or not x 8 gap buckets.
+const QS_RATE_SIZE: usize = 7 * 2 * 8;
+
+/// Bucket of how far the stand pat is below alpha, on the eval scale.
+fn qs_gap_bucket(gap: i32) -> usize {
+    if gap <= 0 {
+        0
+    } else if gap <= 50 {
+        1
+    } else if gap <= 100 {
+        2
+    } else if gap <= 200 {
+        3
+    } else if gap <= 400 {
+        4
+    } else if gap <= 800 {
+        5
+    } else if gap <= 1600 {
+        6
+    } else {
+        7
+    }
+}
+
 #[inline(always)]
 fn see_vals() -> [i32; 7] {
     [100, tp(P::SeeKnight), tp(P::SeeBishop), tp(P::SeeRook), tp(P::SeeQueen), 20000, 0]
@@ -359,6 +384,10 @@ pub struct Searcher {
     pub iter_log: Option<Vec<IterRecord>>,
     /// UCI MultiPV: the number of root lines to search and report (1 = normal).
     pub multi_pv: usize,
+    /// Quiescence fail-high rate (in 1/1024) by side to move, the most
+    /// valuable piece we can capture, whether the previous move was a
+    /// capture, and how far the stand pat is below alpha (8 buckets).
+    qs_rate: Box<[[i16; QS_RATE_SIZE]; 2]>,
     /// Root moves skipped by the root search: the moves of the earlier MultiPV
     /// lines while a later line is searched (empty otherwise).
     root_excluded: Vec<Move>,
@@ -570,6 +599,7 @@ impl Searcher {
             root_best_score: 0,
             iter_log: None,
             multi_pv: 1,
+            qs_rate: Box::new([[0; QS_RATE_SIZE]; 2]),
             root_excluded: Vec::new(),
             line_scores: Vec::new(),
             no_nmp_ply: usize::MAX,
@@ -646,6 +676,7 @@ impl Searcher {
         Arc::get_mut(&mut self.tt).expect("TT cleared during a search").clear();
         self.eval_cache.fill(0);
         *self.hist = [[[[0; 64]; 64]; 4]; 2];
+        *self.qs_rate = [[0; QS_RATE_SIZE]; 2];
         Arc::get_mut(&mut self.sh).expect("histories cleared during a search").clear();
         *self.capt = [[[0; 7]; 64]; 12];
         self.killers = Align64([[0; 2]; MAX_PLY + 4]);
@@ -2294,6 +2325,29 @@ impl Searcher {
         }
         let mut list = MoveList::new();
         pos.gen_moves(&mut list, !in_check);
+        // Quiescence fail-high rate: keyed by the best piece we could take,
+        // whether the previous move was a capture and the gap below alpha,
+        // nodes of a kind that almost never fail high are not searched at
+        // all (the stand pat stands). One node in 16 is still searched so
+        // the rate keeps learning. QsRateMin starts at 3% (32/1024).
+        let mut rate_key = usize::MAX;
+        let mut skip = false;
+        if on(P::UseQsRate) && !in_check {
+            let mut maxt = 6;
+            let mut maxv = -1;
+            for &m in list.as_slice() {
+                let ct = if is_promo(m) { QUEEN } else { pos.captured_type(m) };
+                if ct < 6 && see_vals()[ct] > maxv {
+                    maxv = see_vals()[ct];
+                    maxt = ct;
+                }
+            }
+            let prevcap = (ply >= 1 && is_noisy(self.stack[ply - 1].mv)) as usize;
+            rate_key = (maxt + 7 * prevcap) * 8 + qs_gap_bucket(alpha - best);
+            if (self.qs_rate[pos.stm][rate_key] as i32) < tp(P::QsRateMin) && self.nodes & 15 != 0 {
+                skip = true;
+            }
+        }
         let mut scores = Stack256::<i32>::new();
         for &m in list.as_slice() {
             let score = if m == tt_move {
@@ -2310,7 +2364,7 @@ impl Searcher {
         }
         let mut best_move = 0;
         let mut legal = 0;
-        let n = list.len();
+        let n = if skip { 0 } else { list.len() };
         for i in 0..n {
             pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
             let m = list[i];
@@ -2332,6 +2386,7 @@ impl Searcher {
             self.push_acc(ply, pos, &child, m);
             // For the child's continuation correction.
             self.stack[ply].cont_idx = pos.board[mfrom(m)] as usize * 64 + mto(m);
+            self.stack[ply].mv = m;
             let score = -self.qsearch(&child, -beta, -alpha, ply + 1);
             if self.stopped {
                 return 0;
@@ -2346,6 +2401,11 @@ impl Searcher {
                     }
                 }
             }
+        }
+        if rate_key != usize::MAX && !skip {
+            // Move the rate an eighth of the way to this node's outcome.
+            let r = &mut self.qs_rate[pos.stm][rate_key];
+            *r += (((best >= beta) as i16) * 1024 - *r) >> tp(P::QsRateShift);
         }
         // In check, evasions are only skipped once three were legal, so no
         // legal move at all means checkmate.

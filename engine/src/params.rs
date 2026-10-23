@@ -202,6 +202,12 @@ params! {
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
+    // Quiescence nodes whose kind (best victim, previous capture, gap below
+    // alpha) fails high less than QsRateMin/1024 of the time are not
+    // searched; the rate moves 1/2^QsRateShift per searched node.
+    UseQsRate = "UseQsRate", 1, 0, 1, 0;
+    QsRateMin = "QsRateMin", 32, 0, 256, 8;
+    QsRateShift = "QsRateShift", 3, 1, 6, 1;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
     UseAsp = "UseAsp", 1, 0, 1, 0;
