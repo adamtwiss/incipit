@@ -1639,7 +1639,11 @@ impl Searcher {
                     }
                     if v >= pc_beta {
                         let ss = if v >= MATE_BOUND { v + ply as i32 } else { v };
-                        self.tt.store(pos.hash, m, ss, raw_eval, depth - 3, BOUND_LOWER, pv_node || tt_pv);
+                        // The cut was confirmed at child depth depth - ProbcutRed
+                        // (or by qsearch alone), so it holds for this node at one
+                        // more than that, not at a fixed depth - 3.
+                        let sd = (depth - tp(P::ProbcutRed) + 1).max(0);
+                        self.tt.store(pos.hash, m, ss, raw_eval, sd, BOUND_LOWER, pv_node || tt_pv);
                         self.stats.probcut_cuts += 1;
                         return v;
                     }
