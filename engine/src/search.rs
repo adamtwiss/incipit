@@ -2094,6 +2094,9 @@ impl Searcher {
                 && (best_move == 0 || !is_noisy(best_move))
                 && !(bound == BOUND_LOWER && best_score <= static_eval)
                 && !(bound == BOUND_UPPER && best_score >= static_eval)
+                // Mate and tablebase scores aren't eval errors: they would
+                // drive every touched entry to the clamp.
+                && best_score.abs() < MATE_BOUND
             {
                 self.update_corr(pos, depth, best_score - static_eval, prev1, prev2);
             }
@@ -2393,6 +2396,26 @@ mod tests {
             assert_eq!(sc, MATE - 1);
             assert!(s.root_excluded.is_empty());
         }
+    }
+
+    /// Mate scores don't train the correction history: a search that scores
+    /// most of its tree as mate (here a back-rank mate in one) left the
+    /// non-pawn tables saturated, and the next search, of a different
+    /// position on the same searcher (no ucinewgame), then missed a mate in
+    /// two (1.Ra6) even at depth 40.
+    #[test]
+    fn mate_scores_skip_correction() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let mut s = Searcher::new(16, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        let lim = Limits { soft_ms: None, hard_ms: None, depth: 64, nodes: Some(1_000_000) };
+        let first = Position::from_fen("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1").unwrap();
+        let (m, sc) = s.search(&first, &lim);
+        assert_eq!((first.move_uci(m).as_str(), sc), ("a1a8", MATE - 1));
+        let pos = Position::from_fen("kbK5/pp6/1P6/8/8/8/8/R7 w - - 0 1").unwrap();
+        let (m, sc) = s.search(&pos, &lim);
+        assert_eq!((pos.move_uci(m).as_str(), sc), ("a1a6", MATE - 3));
     }
 
     /// Printed scores: 100 at the WDL model's 50%-win score, scaled in
