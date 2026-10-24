@@ -1951,6 +1951,11 @@ impl Searcher {
                     if child.checkers != 0 {
                         r -= 1;
                     }
+                    // A check that loses no material is searched at full
+                    // depth: the reply is forced, so the reduced search
+                    // says little about the line, and the exchange test
+                    // runs only for the few checking moves.
+                    let safe_check = on(P::UseCheckLmr0) && child.checkers != 0 && pos.see_ge(m, 0, &see_vals());
                     // Killers (good captures have their own term above).
                     if quiet && mscore >= (1 << 27) {
                         r -= 1;
@@ -1968,7 +1973,7 @@ impl Searcher {
                         let ch = self.capt[pc][mto(m)][pos.captured_type(m)] as i32;
                         r -= ch / tp(P::CapLmrDiv);
                     }
-                    r = r.clamp(0, (new_depth - 1).max(0));
+                    r = if safe_check { 0 } else { r.clamp(0, (new_depth - 1).max(0)) };
                 }
                 if r > 0 {
                     self.stats.lmr_searches += 1;
