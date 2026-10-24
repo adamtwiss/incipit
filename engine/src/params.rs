@@ -190,6 +190,8 @@ params! {
     UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;
     UseSeNeg2 = "UseSeNeg2", 1, 0, 1, 0;
     UseLmr = "UseLmr", 1, 0, 1, 0;
+    // LMR may reduce a search to depth 0 (quiescence), not only to depth 1.
+    UseLmrFloor0 = "UseLmrFloor0", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
