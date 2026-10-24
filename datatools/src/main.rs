@@ -481,7 +481,8 @@ fn cmd_bishopstats(out: &str, inputs: &[String]) -> Result<(), String> {
 /// score band, result); a script compares the observed expected score of a
 /// feature value with what the score bands alone predict, so a gap is a
 /// residual the eval leaves for that feature. Filters as bishopstats: scored,
-/// not in check, ply >= 16, best move quiet. White's point of view.
+/// not in check, ply >= 16, best move quiet. Side to move's point of view
+/// (scores and results are flipped to it, like bishopstats).
 fn cmd_mobstats(out: &str, inputs: &[String]) -> Result<(), String> {
     use attacks::{bishop_attacks, knight_attacks, rook_attacks, Bits};
     use position::{BISHOP, KNIGHT, PAWN, QUEEN, ROOK, WHITE};
@@ -549,19 +550,19 @@ fn cmd_mobstats(out: &str, inputs: &[String]) -> Result<(), String> {
                 }
                 (w, n)
             };
-            let ((ww, wn), (bw, bn)) = (mob(0), mob(1));
+            let ((ww, wn), (bw, bn)) = (mob(pos.stm), mob(pos.stm ^ 1));
             let pair = |c: usize| {
                 let bb = pos.pcs(c, BISHOP);
                 (bb & DARK != 0 && bb & !DARK != 0) as i32
             };
-            let (wp, bp) = (pos.pcs(0, PAWN), pos.pcs(1, PAWN));
-            let (wpc, wpr) = passers(wp, bp, true);
-            let (bpc, bpr) = passers(bp, wp, false);
+            let (wp, bp) = (pos.pcs(pos.stm, PAWN), pos.pcs(pos.stm ^ 1, PAWN));
+            let (wpc, wpr) = passers(wp, bp, white);
+            let (bpc, bpr) = passers(bp, wp, !white);
             let feats: [(u8, i32); 6] = [
                 (0, ((ww - bw) as f64 / 8.0).round() as i32), // weighted mobility difference, steps of 8 units
                 (1, ((wn - bn) as f64 / 2.0).round() as i32), // squares difference, steps of 2
-                (2, pair(0) - pair(1)),                       // bishop pair: ours minus theirs
-                (3, wpr - bpr),                               // most advanced passer, white rank minus black rank
+                (2, pair(pos.stm) - pair(pos.stm ^ 1)),       // bishop pair: ours minus theirs
+                (3, wpr - bpr),                               // most advanced passer, ours minus theirs
                 (4, (wpc - bpc).clamp(-3, 3)),                // passer count difference
                 (5, 0),                                       // baseline: every counted position
             ];
