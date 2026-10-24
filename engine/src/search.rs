@@ -2214,6 +2214,33 @@ impl Searcher {
         prev6: usize,
         threats: u64,
     ) {
+        // Squares from which a piece of each type attacks a more valuable
+        // enemy piece (pawn: any piece; knight and bishop: rook or queen;
+        // rook: queen), with the current occupancy: a quiet move there that
+        // the opponent does not attack creates a threat. At most nine attack
+        // lookups per scoring call, one bit test per quiet.
+        let threat_sq: [u64; 6] = if on(P::UseThreatCreate) {
+            use crate::attacks::{bishop_attacks, knight_attacks, pawn_attacks, rook_attacks, Bits};
+            let them = pos.stm ^ 1;
+            let occ = pos.occ();
+            let rq = pos.pcs(them, ROOK) | pos.pcs(them, QUEEN);
+            let mut pawn = 0;
+            for sq in Bits(pos.colors[them] & !pos.pcs(them, PAWN) & !pos.pcs(them, KING)) {
+                pawn |= pawn_attacks(them, sq);
+            }
+            let (mut knight, mut bishop) = (0, 0);
+            for sq in Bits(rq) {
+                knight |= knight_attacks(sq);
+                bishop |= bishop_attacks(sq, occ);
+            }
+            let mut rook = 0;
+            for sq in Bits(pos.pcs(them, QUEEN)) {
+                rook |= rook_attacks(sq, occ);
+            }
+            [pawn & !threats, knight & !threats, bishop & !threats, rook & !threats, 0, 0]
+        } else {
+            [0; 6]
+        };
         for &m in moves {
             let score = if m == tt_move {
                 1 << 30
@@ -2241,6 +2268,11 @@ impl Searcher {
                 (1 << 27) + 1
             } else {
                 self.quiet_history(pos, m, [prev1, prev2, prev4, prev6], threats)
+                    + if threat_sq[pc_type(pos.board[mfrom(m)])] >> mto(m) & 1 != 0 {
+                        tp(P::ThreatCreateBonus)
+                    } else {
+                        0
+                    }
             };
             scores.push(score);
         }

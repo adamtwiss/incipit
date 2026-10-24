@@ -64,6 +64,10 @@ params! {
     HistMul = "HistMul", 372, 100, 500, 20;
     HistOff = "HistOff", 141, 0, 500, 25;
     HistMax = "HistMax", 2860, 1000, 4000, 150;
+    // Ordering bonus for a quiet move to a square the opponent does not
+    // attack, from which the piece attacks a more valuable enemy piece: a
+    // power of two, a quarter of one saturated history table (HistMax).
+    ThreatCreateBonus = "ThreatCreateBonus", 1024, 0, 8192, 128;
     // Bonus for the opponent's previous quiet move when this node fails low (it refuted
     // every reply): PriorBonusPct% of the cutoff bonus at this depth; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 55, 0, 150, 8;
@@ -224,6 +228,7 @@ params! {
     UseThreatHist = "UseThreatHist", 1, 0, 1, 0;
     // ... and by whether the square it goes to is attacked.
     UseThreatHist2 = "UseThreatHist2", 1, 0, 1, 0;
+    UseThreatCreate = "UseThreatCreate", 1, 0, 1, 0;
     // Continuation history keyed by our move three plies back (prev6), at
     // half weight in move scoring like the ply-4 table.
     UseCont6 = "UseCont6", 1, 0, 1, 0;
