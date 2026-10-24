@@ -424,6 +424,10 @@ pub struct SharedHist {
     corr_cont: [[AtomicI32; 768]; 2],
     /// The same keyed by our own move two plies back.
     corr_cont2: [[AtomicI32; 768]; 2],
+    /// Pawn-tension correction: by side to move and `Position::tension_key`
+    /// (which pieces stand on squares the other side's pawns attack); not
+    /// used when there is no tension.
+    corr_tension: [[AtomicI32; CORR_SIZE]; 2],
 }
 
 impl SharedHist {
@@ -442,6 +446,7 @@ impl SharedHist {
             .chain(self.corr_np.iter().flatten().flatten())
             .chain(self.corr_cont.iter().flatten())
             .chain(self.corr_cont2.iter().flatten())
+            .chain(self.corr_tension.iter().flatten())
             .map(|x| x.load(Ordering::Relaxed).abs())
             .max()
             .unwrap();
@@ -856,6 +861,13 @@ impl Searcher {
         if on(P::UseCorrCont2) {
             c += tp(P::CorrCont2Weight) * self.sh.corr_cont2[pos.stm][prev2].load(Ordering::Relaxed);
         }
+        if on(P::UseCorrTension) {
+            let k = pos.tension_key();
+            if k != 0 {
+                c += tp(P::CorrTensionWeight)
+                    * self.sh.corr_tension[pos.stm][(k >> 32) as usize & m].load(Ordering::Relaxed);
+            }
+        }
         Self::damp(pos, raw + c / (128 * CORR_GRAIN)).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
@@ -886,6 +898,12 @@ impl Searcher {
         }
         if on(P::UseCorrCont2) && prev2 != 0 {
             f(&self.sh.corr_cont2[pos.stm][prev2]);
+        }
+        if on(P::UseCorrTension) {
+            let k = pos.tension_key();
+            if k != 0 {
+                f(&self.sh.corr_tension[pos.stm][(k >> 32) as usize & m]);
+            }
         }
     }
 
