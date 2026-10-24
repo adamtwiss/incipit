@@ -61,6 +61,7 @@ usage:
                                               sigmoid(score / 400) is the label's calibrated
                                               probability; unscored positions unchanged
   datatools bishopstats <out.csv> <in.vf> ... one bishop a side: opposite- vs same-coloured, score and result
+  datatools mobstats <out.csv> <in.vf> ...    mobility, bishop pair and passed pawns by score band and result (calibration)
                                               by pawn lead (side to move), to check how nets score OCB endings
   datatools matstats <out.csv> <in.vf> ...    stored score and result by material lead, side to move,
                                               to check labels in decided positions (quiet moves only)
@@ -105,6 +106,7 @@ fn main() {
         Some("piecestats") if args.len() >= 3 => cmd_piecestats(&args[2..]),
         Some("matstats") if args.len() >= 4 => cmd_matstats(&args[2], &args[3..]),
         Some("bishopstats") if args.len() >= 4 => cmd_bishopstats(&args[2], &args[3..]),
+        Some("mobstats") if args.len() >= 4 => cmd_mobstats(&args[2], &args[3..]),
         Some("wdlfit") if args.len() >= 3 => cmd_wdlfit(&args[2]),
         Some("rescale") if args.len() >= 5 => cmd_rescale(&args[2], &args[3], &args[4..]),
         Some("calibrate") if args.len() >= 6 => cmd_calibrate(&args[2], &args[3], &args[4], &args[5..]),
@@ -466,6 +468,112 @@ fn cmd_bishopstats(out: &str, inputs: &[String]) -> Result<(), String> {
     let mut w = String::from("pure,ocb,pawn_lead,score,result,count\n");
     for ((p, o, l, b, r), n) in counts {
         w.push_str(&format!("{},{},{},{},{},{}\n", p, o, l, b, r, n));
+    }
+    std::fs::write(out, w).map_err(|e| format!("{}: {}", out, e))?;
+    println!("{} positions counted -> {}", used, out);
+    Ok(())
+}
+
+/// Calibration counts for quantities the net's inputs don't state directly:
+/// mobility (squares attacked by knights, bishops, rooks and queens that
+/// aren't occupied by their own side), the bishop pair, and passed pawns.
+/// Each position is counted once per feature under (feature, value, phase,
+/// score band, result); a script compares the observed expected score of a
+/// feature value with what the score bands alone predict, so a gap is a
+/// residual the eval leaves for that feature. Filters as bishopstats: scored,
+/// not in check, ply >= 16, best move quiet. White's point of view.
+fn cmd_mobstats(out: &str, inputs: &[String]) -> Result<(), String> {
+    use attacks::{bishop_attacks, knight_attacks, rook_attacks, Bits};
+    use position::{BISHOP, KNIGHT, PAWN, QUEEN, ROOK, WHITE};
+    use std::collections::BTreeMap;
+    const STEP: i32 = 25;
+    const SCORE_MAX: i32 = 2000;
+    const DARK: u64 = 0xAA55_AA55_AA55_AA55;
+    const FILE_A: u64 = 0x0101_0101_0101_0101;
+    // Bootstrap-eval mobility weights per square (eval.rs): N 4, B 4, R 2, Q 1.
+    const MOB_W: [i32; 6] = [0, 4, 4, 2, 1, 0];
+    // Passed pawns of `us` against `them`'s pawns: (count, most advanced
+    // relative rank 0..7, 0 for none).
+    fn passers(us: u64, them: u64, white: bool) -> (i32, i32) {
+        let (mut n, mut best) = (0, 0);
+        for sq in Bits(us) {
+            let (f, r) = (sq & 7, sq >> 3);
+            let files =
+                FILE_A << f | if f > 0 { FILE_A << (f - 1) } else { 0 } | if f < 7 { FILE_A << (f + 1) } else { 0 };
+            let ahead = if white { !((1u64 << ((r + 1) * 8)) - 1) } else { (1u64 << (r * 8)) - 1 };
+            if them & files & ahead == 0 {
+                n += 1;
+                best = best.max(if white { r } else { 7 - r } as i32);
+            }
+        }
+        (n, best)
+    }
+    let mut counts: BTreeMap<(u8, i32, u8, i32, u8), u64> = BTreeMap::new();
+    let mut used = 0u64;
+    for input in inputs {
+        let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
+        viri::for_each_position(&data, |pos, m, score, wdl| {
+            let ply = 2 * (pos.fullmove as i32 - 1) + (pos.stm != WHITE) as i32;
+            if score == viri::NO_SCORE || pos.checkers != 0 || ply < 16 || position::is_noisy(m) {
+                return;
+            }
+            let white = pos.stm == WHITE;
+            let s = if white { score as i32 } else { -(score as i32) };
+            let r = if white { wdl } else { 2 - wdl };
+            let b = (s.clamp(-SCORE_MAX, SCORE_MAX) as f64 / STEP as f64).round() as i32 * STEP;
+            let np = material(pos) as i32 - pos.pieces[PAWN].count_ones() as i32;
+            let phase = if np <= 14 {
+                0
+            } else if np <= 40 {
+                1
+            } else {
+                2
+            };
+            let occ = pos.occ();
+            // (weighted, squares) mobility of one side
+            let mob = |c: usize| {
+                let own = pos.colors[c];
+                let (mut w, mut n) = (0, 0);
+                for pt in KNIGHT..=QUEEN {
+                    for sq in Bits(pos.pcs(c, pt)) {
+                        let att = match pt {
+                            KNIGHT => knight_attacks(sq),
+                            BISHOP => bishop_attacks(sq, occ),
+                            ROOK => rook_attacks(sq, occ),
+                            _ => bishop_attacks(sq, occ) | rook_attacks(sq, occ),
+                        };
+                        let k = (att & !own).count_ones() as i32;
+                        w += MOB_W[pt] * k;
+                        n += k;
+                    }
+                }
+                (w, n)
+            };
+            let ((ww, wn), (bw, bn)) = (mob(0), mob(1));
+            let pair = |c: usize| {
+                let bb = pos.pcs(c, BISHOP);
+                (bb & DARK != 0 && bb & !DARK != 0) as i32
+            };
+            let (wp, bp) = (pos.pcs(0, PAWN), pos.pcs(1, PAWN));
+            let (wpc, wpr) = passers(wp, bp, true);
+            let (bpc, bpr) = passers(bp, wp, false);
+            let feats: [(u8, i32); 6] = [
+                (0, ((ww - bw) as f64 / 8.0).round() as i32), // weighted mobility difference, steps of 8 units
+                (1, ((wn - bn) as f64 / 2.0).round() as i32), // squares difference, steps of 2
+                (2, pair(0) - pair(1)),                       // bishop pair: ours minus theirs
+                (3, wpr - bpr),                               // most advanced passer, white rank minus black rank
+                (4, (wpc - bpc).clamp(-3, 3)),                // passer count difference
+                (5, 0),                                       // baseline: every counted position
+            ];
+            for (f, v) in feats {
+                *counts.entry((f, v.clamp(-15, 15), phase, b, r)).or_default() += 1;
+            }
+            used += 1;
+        })?;
+    }
+    let mut w = String::from("feature,value,phase,score,result,count\n");
+    for ((f, v, ph, b, r), n) in counts {
+        w.push_str(&format!("{},{},{},{},{},{}\n", f, v, ph, b, r, n));
     }
     std::fs::write(out, w).map_err(|e| format!("{}: {}", out, e))?;
     println!("{} positions counted -> {}", used, out);
