@@ -424,6 +424,11 @@ pub struct SharedHist {
     corr_cont: [[AtomicI32; 768]; 2],
     /// The same keyed by our own move two plies back.
     corr_cont2: [[AtomicI32; 768]; 2],
+    /// Material-configuration correction: by side to move and
+    /// `Position::mat_key`, so a material class the eval misjudges as a
+    /// whole (opposite-coloured bishops, the bishop pair) is corrected
+    /// across every placement of it.
+    corr_mat: [[AtomicI32; CORR_SIZE]; 2],
 }
 
 impl SharedHist {
@@ -442,6 +447,7 @@ impl SharedHist {
             .chain(self.corr_np.iter().flatten().flatten())
             .chain(self.corr_cont.iter().flatten())
             .chain(self.corr_cont2.iter().flatten())
+            .chain(self.corr_mat.iter().flatten())
             .map(|x| x.load(Ordering::Relaxed).abs())
             .max()
             .unwrap();
@@ -856,6 +862,10 @@ impl Searcher {
         if on(P::UseCorrCont2) {
             c += tp(P::CorrCont2Weight) * self.sh.corr_cont2[pos.stm][prev2].load(Ordering::Relaxed);
         }
+        if on(P::UseCorrMat) {
+            let k = (pos.mat_key >> 32) as usize & m;
+            c += tp(P::CorrMatWeight) * self.sh.corr_mat[pos.stm][k].load(Ordering::Relaxed);
+        }
         Self::damp(pos, raw + c / (128 * CORR_GRAIN)).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
     }
 
@@ -886,6 +896,9 @@ impl Searcher {
         }
         if on(P::UseCorrCont2) && prev2 != 0 {
             f(&self.sh.corr_cont2[pos.stm][prev2]);
+        }
+        if on(P::UseCorrMat) {
+            f(&self.sh.corr_mat[pos.stm][(pos.mat_key >> 32) as usize & m]);
         }
     }
 

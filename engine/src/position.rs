@@ -193,7 +193,51 @@ pub struct Position {
     pub hash: u64,
     pub pawn_key: u64,
     pub np_key: [u64; 2],
+    /// The material configuration alone: a sum of one constant per piece on
+    /// the board, by colour and type, with bishops split by square colour.
+    /// Every placement of the same material shares it, so a table keyed by
+    /// it learns what the eval gets wrong for a material class as a whole
+    /// (opposite-coloured bishops, a bishop pair, a rook ending a pawn up).
+    pub mat_key: u64,
     pub checkers: u64,
+}
+
+/// Material key constants, one per (piece, bishop square colour): random
+/// odd 64-bit values, added for a piece put and subtracted for one removed.
+const MAT_KEYS: [u64; 24] = [
+    0x2D28E51596B7E0B5,
+    0x13013F29B9DF3B83,
+    0xA62811774EE95C57,
+    0x3102BD2504CEB309,
+    0xDDCFC29A86AF85E7,
+    0x0FC18357C49BA2CF,
+    0xA7849635BE067553,
+    0x163F48DD8F03A32B,
+    0xE0A20BCD56A9C4F5,
+    0xDA23F7778323D659,
+    0xA6B9C96BEE0E0D7B,
+    0x9CFFBFD680CFB023,
+    0x58D0BC5EE98FECA5,
+    0x80B34CBC6600EDB9,
+    0xC1ED208028E810A9,
+    0x790B4D572C9ACFFD,
+    0xE5AC455D6F4C2147,
+    0x9544A67D7C99B371,
+    0xD496DB6FF1215607,
+    0x410B51224465E685,
+    0x55D733195E7E8F9D,
+    0x139F9FC94915C0D7,
+    0x0B132239D5264F45,
+    0x6B5ECBA9D7A67E7B,
+];
+
+/// The material key constant of piece `pc` on `sq` (the square matters for
+/// bishops only).
+#[inline(always)]
+fn mat_key_of(pc: u8, sq: usize) -> u64 {
+    const DARK: u64 = 0xAA55_AA55_AA55_AA55;
+    let dark = (pc_type(pc) == BISHOP && DARK >> sq & 1 != 0) as usize;
+    MAT_KEYS[pc as usize * 2 + dark]
 }
 
 pub const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -214,6 +258,7 @@ impl Position {
             hash: 0,
             pawn_key: 0,
             np_key: [0; 2],
+            mat_key: 0,
             checkers: 0,
         }
     }
@@ -409,6 +454,7 @@ impl Position {
         self.colors[pc_color(pc)] |= b;
         self.board[sq] = pc;
         self.hash ^= zob_piece(pc as usize, sq);
+        self.mat_key = self.mat_key.wrapping_add(mat_key_of(pc, sq));
         if pc_type(pc) == PAWN {
             self.pawn_key ^= zob_piece(pc as usize, sq);
         } else {
@@ -423,6 +469,7 @@ impl Position {
         self.colors[pc_color(pc)] ^= b;
         self.board[sq] = NONE_PC;
         self.hash ^= zob_piece(pc as usize, sq);
+        self.mat_key = self.mat_key.wrapping_sub(mat_key_of(pc, sq));
         if pc_type(pc) == PAWN {
             self.pawn_key ^= zob_piece(pc as usize, sq);
         } else {
@@ -1046,6 +1093,21 @@ mod tests {
     /// Chess960: which rook a castling right belongs to is part of the
     /// position, so it must be part of the hash (with RR on a1/b1, right A
     /// is blocked by the b1 rook, right B can castle).
+    #[test]
+    fn material_key_incremental_and_placement_free() {
+        crate::attacks::init();
+        for pos in random_positions(3, 40) {
+            let fresh = Position::from_fen(&pos.to_fen()).unwrap();
+            assert_eq!(pos.mat_key, fresh.mat_key, "{}", pos.to_fen());
+        }
+        // The same material on other squares: equal keys. A bishop on the
+        // other square colour: a different key.
+        let k = |f: &str| Position::from_fen(f).unwrap().mat_key;
+        assert_eq!(k("4k3/8/8/8/8/8/8/K1B5 w - - 0 1"), k("k7/8/8/8/8/8/5B2/4K3 w - - 0 1"));
+        assert_ne!(k("4k3/8/8/8/8/8/8/K1B5 w - - 0 1"), k("4k3/8/8/8/8/8/8/K2B4 w - - 0 1"));
+        assert_ne!(k("4k3/8/8/8/8/8/8/K1B5 w - - 0 1"), k("4k3/8/8/8/8/8/8/K1N5 w - - 0 1"));
+    }
+
     #[test]
     fn castling_rook_in_hash() {
         crate::attacks::init();
