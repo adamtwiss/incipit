@@ -1968,7 +1968,12 @@ impl Searcher {
                         let ch = self.capt[pc][mto(m)][pos.captured_type(m)] as i32;
                         r -= ch / tp(P::CapLmrDiv);
                     }
-                    r = r.clamp(0, (new_depth - 1).max(0));
+                    // The reduced search may land in quiescence (depth 0)
+                    // instead of stopping at depth 1: on bench 41% of depth-1
+                    // nodes were reductions held at the floor, beating alpha
+                    // 2.7% of the time.
+                    let floor = if on(P::UseLmrFloor0) { 0 } else { 1 };
+                    r = r.clamp(0, (new_depth - floor).max(0));
                 }
                 if r > 0 {
                     self.stats.lmr_searches += 1;
