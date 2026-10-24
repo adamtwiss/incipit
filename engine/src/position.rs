@@ -742,6 +742,10 @@ impl Position {
         (self.colors[c] & !(self.pieces[PAWN] | self.pieces[KING])) != 0
     }
 
+    pub fn non_pawn_count(&self, c: usize) -> u32 {
+        (self.colors[c] & !(self.pieces[PAWN] | self.pieces[KING])).count_ones()
+    }
+
     #[inline]
     pub fn captured_type(&self, m: Move) -> usize {
         if mflag(m) == F_EP {

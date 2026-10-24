@@ -1545,7 +1545,10 @@ impl Searcher {
                 && ply >= 1
                 && self.stack[ply - 1].mv != 0
                 && ply != self.no_nmp_ply
-                && pos.has_non_pawns(pos.stm)
+                // With a single piece besides pawns, zugzwang is common enough
+                // that passing is often the best "move" (kbK5/pp6/1P6/8/8/8/8/R7:
+                // after Ra6 every Black move loses, so a null move hid the mate).
+                && pos.non_pawn_count(pos.stm) >= 2
             {
                 self.stats.nmp_tries += 1;
                 let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(3);
