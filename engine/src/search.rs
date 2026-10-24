@@ -1567,11 +1567,17 @@ impl Searcher {
                     // At high depth, confirm with a reduced search of the real
                     // position, null move disabled at this ply (zugzwang guard).
                     // With a single piece besides pawns zugzwang is common enough
-                    // to verify at every depth.
-                    let v = if depth >= tp(P::NmpVerifyDepth) || pos.non_pawn_count(pos.stm) == 1 {
+                    // to verify at every depth, and at half the reduction: with
+                    // eval far above beta, depth - r is often <= 0, a qsearch
+                    // that can't see a quiet refutation (kbK5/pp6/1P6/8/8/8/8/R7 w:
+                    // after Ra6 every Black move loses, and the mate in 2 was
+                    // hidden until depth 24).
+                    let single = pos.non_pawn_count(pos.stm) == 1;
+                    let v = if depth >= tp(P::NmpVerifyDepth) || single {
                         let saved = self.no_nmp_ply;
                         self.no_nmp_ply = ply;
-                        let w = self.negamax(pos, beta - 1, beta, depth - r, ply, cut_node);
+                        let vd = if single { depth - r / 2 } else { depth - r };
+                        let w = self.negamax(pos, beta - 1, beta, vd, ply, cut_node);
                         self.no_nmp_ply = saved;
                         if self.stopped {
                             return 0;
