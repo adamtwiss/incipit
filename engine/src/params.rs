@@ -57,9 +57,9 @@ params! {
     // the bar.
     SeeHistDiv = "SeeHistDiv", 117, 32, 512, 12;
     SeeNoisy = "SeeNoisy", 122, 10, 200, 10;
-    LmrBaseX100 = "LmrBaseX100", 43, 30, 130, 5;
-    LmrDivX100 = "LmrDivX100", 295, 150, 350, 10;
-    LmrHistDiv = "LmrHistDiv", 9708, 3000, 16000, 650;
+    LmrBaseX100 = "LmrBaseX100", 42, 30, 130, 5;
+    LmrDivX100 = "LmrDivX100", 297, 150, 350, 10;
+    LmrHistDiv = "LmrHistDiv", 9634, 3000, 16000, 650;
     AspDelta = "AspDelta", 18, 3, 40, 2;
     HistMul = "HistMul", 372, 100, 500, 20;
     HistOff = "HistOff", 141, 0, 500, 25;
@@ -70,7 +70,7 @@ params! {
     SeDouble = "SeDouble", 15, 5, 50, 2;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth.
-    LmrDeeper = "LmrDeeper", 60, 10, 200, 10;
+    LmrDeeper = "LmrDeeper", 58, 10, 200, 10;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;
@@ -80,7 +80,7 @@ params! {
     NmpBase = "NmpBase", 5, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
     SeMul = "SeMul", 39, 8, 40, 2;
-    CapLmrDiv = "CapLmrDiv", 3281, 2000, 16000, 700;
+    CapLmrDiv = "CapLmrDiv", 3420, 2000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
