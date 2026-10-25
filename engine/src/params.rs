@@ -160,6 +160,10 @@ params! {
     CorrContWeight = "CorrContWeight", 58, 0, 256, 13;
     // Weight of the continuation correction keyed by our own move two plies back.
     CorrCont2Weight = "CorrCont2Weight", 63, 0, 256, 13;
+    // Weight of the king-zone correction (the enemy king's square and how
+    // many squares next to it we attack). The round midpoint of the other
+    // correction weights' range.
+    CorrKingZoneWeight = "CorrKingZoneWeight", 64, 0, 256, 13;
     // Network output multiplier in percent, applied to every search eval. Lets a
     // net trained on differently scaled labels be run at Incipit's eval scale
     // (which the pruning margins and other cp thresholds are tuned to) without
@@ -238,6 +242,7 @@ params! {
     // Continuation correction history (the previous move's piece-square).
     UseCorrCont = "UseCorrCont", 1, 0, 1, 0;
     UseCorrCont2 = "UseCorrCont2", 1, 0, 1, 0;
+    UseCorrKingZone = "UseCorrKingZone", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
