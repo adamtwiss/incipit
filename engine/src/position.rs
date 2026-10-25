@@ -849,6 +849,9 @@ impl Position {
         let straight = self.pieces[ROOK] | self.pieces[QUEEN];
         let mut occupied = self.occ() & !(1u64 << origin) & !(1u64 << target);
         let mut pool = self.attackers_to(target, occupied);
+        // Pinned attackers set aside this turn; they come back after every
+        // capture, since their pinner may have joined the exchange.
+        let mut pinned = 0u64;
         let mut last_capturer = us;
 
         loop {
@@ -866,6 +869,7 @@ impl Position {
             // the exchange, and so leaving `occupied`, frees it).
             if pins && pt != KING && self.pinned_off_line(bit, recapturer, occupied, target) {
                 pool ^= bit;
+                pinned |= bit;
                 continue;
             }
 
@@ -885,6 +889,8 @@ impl Position {
             victim = pt;
             last_capturer = recapturer;
             occupied ^= bit;
+            pool |= pinned;
+            pinned = 0;
             match pt {
                 PAWN | BISHOP => pool |= bishop_attacks(target, occupied) & diagonal,
                 ROOK => pool |= rook_attacks(target, occupied) & straight,
@@ -1045,6 +1051,13 @@ mod tests {
         let r2 = Position::from_fen("4k3/4q3/4p3/4R3/8/8/8/K7 w - - 0 1").unwrap();
         assert!(r.see_ge(r.parse_move("e5e6").unwrap(), 0, &val));
         assert!(!r2.see_ge(r2.parse_move("e5e6").unwrap(), 0, &val));
+        // A pin that ends mid-exchange: Qxd5 Nxd5 Rxd5, and now the e6 pawn
+        // (pinned by Re5 until it captured) takes back: -1030, or -850 by
+        // stopping after Nxd5, both below -700.
+        let u = Position::from_fen("4k3/8/4pn2/3pR3/2Q5/8/8/K7 w - - 0 1").unwrap();
+        let qd5 = u.parse_move("c4d5").unwrap();
+        assert!(!u.see_ge(qd5, -700, &val));
+        assert!(u.see_ge(qd5, -850, &val));
     }
 
     /// Chess960: which rook a castling right belongs to is part of the
