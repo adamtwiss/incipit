@@ -160,6 +160,10 @@ params! {
     CorrContWeight = "CorrContWeight", 58, 0, 256, 13;
     // Weight of the continuation correction keyed by our own move two plies back.
     CorrCont2Weight = "CorrCont2Weight", 63, 0, 256, 13;
+    // Cost probe (not a search parameter): which attack maps to compute at
+    // evaluated nodes. 0 none, 1 both (main search), 2 ours (main search),
+    // 3 ours (main and qsearch), 4 both (main and qsearch).
+    KzProbe = "KzProbe", 0, 0, 4, 1;
     // Network output multiplier in percent, applied to every search eval. Lets a
     // net trained on differently scaled labels be run at Incipit's eval scale
     // (which the pruning margins and other cp thresholds are tuned to) without
