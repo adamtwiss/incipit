@@ -2314,6 +2314,12 @@ impl Searcher {
         if in_check {
             best = -INF;
         } else {
+            // A lone king with no legal move is stalemate, which stand pat
+            // would score as the static eval. One popcount per node; the
+            // legality check runs only when the side to move has a bare king.
+            if pos.colors[pos.stm].count_ones() == 1 && !pos.has_legal_move() {
+                return 0;
+            }
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
             let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
             let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
@@ -2457,6 +2463,20 @@ mod tests {
             assert_eq!(sc, MATE - 1);
             assert!(s.root_excluded.is_empty());
         }
+    }
+
+    /// A move that stalemates a bare king scores a draw even when the
+    /// stalemate is first reached in qsearch (Qg6 here: +8 before).
+    #[test]
+    fn qsearch_bare_king_stalemate() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let mut s = Searcher::new(8, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        let pos = Position::from_fen("7k/5K2/8/6Q1/8/8/8/8 w - - 0 1").unwrap();
+        s.search_moves = vec![pos.parse_move("g5g6").unwrap()];
+        let (_, sc) = s.search(&pos, &Limits { soft_ms: None, hard_ms: None, depth: 1, nodes: None });
+        assert_eq!(sc, 0);
     }
 
     /// A root search restricted to some moves (searchmoves, MultiPV) must not
