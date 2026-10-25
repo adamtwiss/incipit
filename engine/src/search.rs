@@ -49,6 +49,8 @@ fn th(threats: u64, from: usize, to: usize) -> usize {
 struct Frame {
     static_eval: i32,
     threats: u64,    // squares the opponent attacks at this ply
+    att_us: u64,     // squares the side to move attacks (eval nodes only)
+    maps: bool,      // threats/att_us were computed at this node
     cont_idx: usize, // piece*64+to of the move made at this ply
     excluded: Move,
     mv: Move,
@@ -1479,6 +1481,7 @@ impl Searcher {
         let static_eval;
         let mut eval;
         let mut raw_eval = -INF;
+        self.stack[ply].maps = false;
         if in_check {
             static_eval = -INF;
             eval = -INF;
@@ -1486,6 +1489,9 @@ impl Searcher {
             static_eval = self.stack[ply].static_eval;
             eval = static_eval;
         } else {
+            self.stack[ply].att_us = pos.attacks_by(pos.stm);
+            self.stack[ply].threats = pos.attacks_by(pos.stm ^ 1);
+            self.stack[ply].maps = true;
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
             static_eval = self.corrected(pos, raw_eval, prev1, prev2);
             eval = static_eval;
@@ -1663,7 +1669,7 @@ impl Searcher {
         let mut list = MoveList::new();
         let mut scores = Stack256::<i32>::new();
         let us = pos.stm;
-        let threats = pos.attacks_by(pos.stm ^ 1);
+        let threats = if self.stack[ply].maps { self.stack[ply].threats } else { pos.attacks_by(pos.stm ^ 1) };
         self.stack[ply].threats = threats;
         let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
         // Moves come in stages: the TT move, the noisy moves, the quiets,
@@ -2314,6 +2320,8 @@ impl Searcher {
         if in_check {
             best = -INF;
         } else {
+            self.stack[ply].att_us = pos.attacks_by(pos.stm);
+            self.stack[ply].threats = pos.attacks_by(pos.stm ^ 1);
             raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
             let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
             let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
