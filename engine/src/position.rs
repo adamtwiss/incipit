@@ -742,6 +742,13 @@ impl Position {
         (self.colors[c] & !(self.pieces[PAWN] | self.pieces[KING])) != 0
     }
 
+    /// Whether side c has a pawn with an empty square in front of it.
+    pub fn has_pawn_push(&self, c: usize) -> bool {
+        let pawns = self.pcs(c, PAWN);
+        let ahead = if c == WHITE { pawns << 8 } else { pawns >> 8 };
+        ahead & !self.occ() != 0
+    }
+
     pub fn non_pawn_count(&self, c: usize) -> u32 {
         (self.colors[c] & !(self.pieces[PAWN] | self.pieces[KING])).count_ones()
     }
