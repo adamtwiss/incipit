@@ -312,6 +312,12 @@ pub struct Searcher {
     root_best: Move,
     /// Ply at which null move is disabled (a null-move verification search).
     no_nmp_ply: usize,
+    /// Null-move verification in progress: the verifying side and the ply
+    /// it started at. That side makes no null move from there down: a
+    /// zugzwang that refutes the null move at the root of the verification
+    /// usually persists two plies on, where a second null move would hide
+    /// it again. (2, _) = none.
+    no_nmp_side: (usize, usize),
     root_depth: i32,
     seldepth: usize,
     /// Raw static evals by position: hash bits 16..64 check the entry, bits
@@ -573,6 +579,7 @@ impl Searcher {
             root_excluded: Vec::new(),
             line_scores: Vec::new(),
             no_nmp_ply: usize::MAX,
+            no_nmp_side: (2, 0),
             search_moves: Vec::new(),
             lmr,
             silent: false,
@@ -1545,6 +1552,7 @@ impl Searcher {
                 && ply >= 1
                 && self.stack[ply - 1].mv != 0
                 && ply != self.no_nmp_ply
+                && !(pos.stm == self.no_nmp_side.0 && ply >= self.no_nmp_side.1)
                 && pos.has_non_pawns(pos.stm)
             {
                 self.stats.nmp_tries += 1;
@@ -1565,14 +1573,22 @@ impl Searcher {
                 }
                 if v >= beta {
                     // At high depth, confirm with a reduced search of the real
-                    // position, null move disabled at this ply (zugzwang guard).
-                    // With a single piece besides pawns zugzwang is common enough
-                    // to verify at every depth.
-                    let v = if depth >= tp(P::NmpVerifyDepth) || pos.non_pawn_count(pos.stm) == 1 {
+                    // position, null move disabled at this ply (zugzwang guard)
+                    // and, with UseNmpVerifySub, for this side below it. With
+                    // few pieces besides pawns zugzwang is common enough to
+                    // verify at every depth.
+                    let v = if depth >= tp(P::NmpVerifyDepth)
+                        || pos.non_pawn_count(pos.stm) <= tp(P::NmpVerifyPieces) as u32
+                    {
                         let saved = self.no_nmp_ply;
+                        let saved_side = self.no_nmp_side;
                         self.no_nmp_ply = ply;
+                        if on(P::UseNmpVerifySub) && saved_side.0 != pos.stm {
+                            self.no_nmp_side = (pos.stm, ply);
+                        }
                         let w = self.negamax(pos, beta - 1, beta, depth - r, ply, cut_node);
                         self.no_nmp_ply = saved;
+                        self.no_nmp_side = saved_side;
                         if self.stopped {
                             return 0;
                         }

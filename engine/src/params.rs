@@ -120,6 +120,9 @@ params! {
     // Verify a null-move cutoff with a reduced real search from this depth on
     // (null move stays off at that ply).
     NmpVerifyDepth = "NmpVerifyDepth", 12, 6, 30, 2;
+    // Null-move verification at every depth when the mover has at most this
+    // many pieces besides pawns (zugzwang guard).
+    NmpVerifyPieces = "NmpVerifyPieces", 1, 1, 3, 1;
     ProbcutDepth = "ProbcutDepth", 3, 3, 8, 1;
     ProbcutRed = "ProbcutRed", 6, 2, 6, 1;
     IirDepth = "IirDepth", 2, 2, 8, 1;
@@ -179,6 +182,9 @@ params! {
     UseRfp = "UseRfp", 1, 0, 1, 0;
     UseRazor = "UseRazor", 1, 0, 1, 0;
     UseNmp = "UseNmp", 1, 0, 1, 0;
+    // Null-move verification: no null move for the verifying side anywhere
+    // in the verification subtree (1), or only at its root ply (0).
+    UseNmpVerifySub = "UseNmpVerifySub", 1, 0, 1, 0;
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;
