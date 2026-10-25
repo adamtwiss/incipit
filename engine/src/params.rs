@@ -81,6 +81,11 @@ params! {
     NmpMarginBase = "NmpMarginBase", 118, 0, 400, 20;
     // Largest |TT score| still used for a cutoff at halfmove >= 90.
     HmGuard = "HmGuard", 39, 0, 300, 15;
+    // Fifty-move damping (UseHmLate): the eval is untouched until halfmove
+    // HmStart, then scaled linearly down to HmFloor percent at halfmove 100.
+    // Round values: half the count untouched, a tenth left at the draw.
+    HmStart = "HmStart", 50, 0, 90, 5;
+    HmFloor = "HmFloor", 10, 0, 100, 5;
     NmpBase = "NmpBase", 5, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
     SeMul = "SeMul", 39, 8, 40, 2;
@@ -204,6 +209,9 @@ params! {
     UsePinSee = "UsePinSee", 1, 0, 1, 0;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
+    // Fifty-move damping curve: late start (HmStart, HmFloor) or the linear
+    // v * (200 - halfmove) / 200 from move 0.
+    UseHmLate = "UseHmLate", 1, 0, 1, 0;
     UseAsp = "UseAsp", 1, 0, 1, 0;
     // Soft time limit scaled by best-move node share and stability (0: plain soft limit).
     UseTm = "UseTm", 1, 0, 1, 0;

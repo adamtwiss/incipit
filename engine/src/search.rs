@@ -830,10 +830,24 @@ impl Searcher {
         e
     }
 
-    /// Pulls an eval towards a draw as the fifty-move counter rises.
+    /// Pulls an eval towards a draw as the fifty-move counter rises: with
+    /// UseHmLate nothing until HmStart, then linearly to HmFloor percent at
+    /// the draw; otherwise v * (200 - halfmove) / 200 from move 0.
     #[inline(always)]
     fn damp(pos: &Position, v: i32) -> i32 {
-        v * (200 - pos.halfmove as i32) / 200
+        let hm = pos.halfmove as i32;
+        if on(P::UseHmLate) {
+            let start = tp(P::HmStart);
+            if hm <= start {
+                return v;
+            }
+            let span = (100 - start).max(1);
+            // Percent factor: 100 at start, HmFloor at 100 (clamped below).
+            let f = 100 - (100 - tp(P::HmFloor)) * (hm - start).min(span) / span;
+            v * f / 100
+        } else {
+            v * (200 - hm) / 200
+        }
     }
 
     #[inline(always)]
