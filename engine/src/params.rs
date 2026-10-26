@@ -57,9 +57,21 @@ params! {
     // the bar.
     SeeHistDiv = "SeeHistDiv", 114, 32, 512, 12;
     SeeNoisy = "SeeNoisy", 116, 10, 200, 10;
-    LmrBaseX100 = "LmrBaseX100", 42, 30, 130, 5;
-    LmrDivX100 = "LmrDivX100", 294, 150, 350, 10;
-    LmrHistDiv = "LmrHistDiv", 9959, 3000, 16000, 650;
+    LmrBaseX100 = "LmrBaseX100", 45, 30, 130, 5;
+    LmrDivX100 = "LmrDivX100", 301, 150, 350, 10;
+    LmrHistDiv = "LmrHistDiv", 10706, 3000, 16000, 650;
+    // UseLmrFp: each LMR adjustment in 1/1024 ply, summed with the table's
+    // fractional reduction and the history terms, then floored once. 1024
+    // is the whole ply for every term; values from SPSA #4594.
+    LmrGoodCapFp = "LmrGoodCapFp", 965, 0, 2048, 100;
+    LmrNonPvFp = "LmrNonPvFp", 1098, 0, 2048, 100;
+    LmrCutFp = "LmrCutFp", 1049, 0, 2048, 100;
+    LmrCutNoTtFp = "LmrCutNoTtFp", 1009, 0, 2048, 100;
+    LmrNotImpFp = "LmrNotImpFp", 1060, 0, 2048, 100;
+    LmrCheckFp = "LmrCheckFp", 973, 0, 2048, 100;
+    LmrKillerFp = "LmrKillerFp", 934, 0, 2048, 100;
+    LmrTtCaptFp = "LmrTtCaptFp", 985, 0, 2048, 100;
+    LmrTtPvFp = "LmrTtPvFp", 1059, 0, 2048, 100;
     AspDelta = "AspDelta", 17, 3, 40, 2;
     HistMul = "HistMul", 382, 100, 500, 20;
     HistOff = "HistOff", 129, 0, 500, 25;
@@ -74,7 +86,7 @@ params! {
     SeDouble = "SeDouble", 15, 5, 50, 2;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth.
-    LmrDeeper = "LmrDeeper", 68, 10, 200, 10;
+    LmrDeeper = "LmrDeeper", 64, 10, 200, 10;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 21, 0, 60, 3;
@@ -84,7 +96,7 @@ params! {
     NmpBase = "NmpBase", 5, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
     SeMul = "SeMul", 40, 8, 40, 2;
-    CapLmrDiv = "CapLmrDiv", 3052, 2000, 16000, 700;
+    CapLmrDiv = "CapLmrDiv", 3415, 2000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
@@ -195,6 +207,7 @@ params! {
     UseSeNeg2 = "UseSeNeg2", 1, 0, 1, 0;
     UseLmr = "UseLmr", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
+    UseLmrFp = "UseLmrFp", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
