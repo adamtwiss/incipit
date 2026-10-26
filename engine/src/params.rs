@@ -202,6 +202,9 @@ params! {
     // SEE leaves pieces pinned to their king out of the exchange while
     // the pinner stands (external movegen audit, review round 4).
     UsePinSee = "UsePinSee", 1, 0, 1, 0;
+    // qsearch tries an eligible TT move before generating the other moves,
+    // so a TT-move cutoff skips generation and scoring (same move order).
+    UseQsTtFirst = "UseQsTtFirst", 1, 0, 1, 0;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
     UseAsp = "UseAsp", 1, 0, 1, 0;

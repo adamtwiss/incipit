@@ -2370,28 +2370,55 @@ impl Searcher {
                 alpha = best;
             }
         }
+        // The TT move first, before generating, when it is one qsearch would
+        // generate: any evasion in check, else a capture, en passant or a
+        // queen or knight promotion (GEN_NOISY).
+        let tt_first = on(P::UseQsTtFirst)
+            && tt_move != 0
+            && (in_check || mflag(tt_move) & 4 != 0 || mflag(tt_move) == F_PROMO || mflag(tt_move) == F_PROMO + 3)
+            && pos.is_pseudo_legal(tt_move);
+        let mut tt_tried = !tt_first;
         let mut list = MoveList::new();
-        pos.gen_moves(&mut list, !in_check);
         let mut scores = Stack256::<i32>::new();
-        for &m in list.as_slice() {
-            let score = if m == tt_move {
-                1 << 30
-            } else if is_noisy(m) {
-                let ct = pos.captured_type(m);
-                let pc = pos.board[mfrom(m)] as usize;
-                (1 << 20) + see_vals()[ct.min(5)] * 16 * (ct < 6) as i32 - see_vals()[pc_type(pc as u8)]
-                    + if is_promo(m) { 8000 } else { 0 }
-            } else {
-                self.hist[pos.stm][0][mfrom(m)][mto(m)] as i32
-            };
-            scores.push(score);
-        }
+        let mut generated = false;
         let mut best_move = 0;
         let mut legal = 0;
-        let n = list.len();
-        for i in 0..n {
-            pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
-            let m = list[i];
+        let mut n = 0;
+        let mut i = 0;
+        loop {
+            let m;
+            if !tt_tried {
+                tt_tried = true;
+                m = tt_move;
+            } else {
+                if !generated {
+                    generated = true;
+                    pos.gen_moves(&mut list, !in_check);
+                    for &m in list.as_slice() {
+                        let score = if m == tt_move {
+                            1 << 30
+                        } else if is_noisy(m) {
+                            let ct = pos.captured_type(m);
+                            let pc = pos.board[mfrom(m)] as usize;
+                            (1 << 20) + see_vals()[ct.min(5)] * 16 * (ct < 6) as i32 - see_vals()[pc_type(pc as u8)]
+                                + if is_promo(m) { 8000 } else { 0 }
+                        } else {
+                            self.hist[pos.stm][0][mfrom(m)][mto(m)] as i32
+                        };
+                        scores.push(score);
+                    }
+                    n = list.len();
+                }
+                if i >= n {
+                    break;
+                }
+                pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
+                m = list[i];
+                i += 1;
+                if tt_first && m == tt_move {
+                    continue;
+                }
+            }
             if !in_check {
                 if on(P::UseQsSee) && !pos.see_ge(m, 0, &see_vals()) {
                     continue;
