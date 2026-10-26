@@ -240,11 +240,12 @@ impl TT {
                 slot = k;
             }
         }
-        // Same position: keep the deeper result unless this one is exact,
-        // nearly as deep, or the old one is from an earlier search.
-        if found
-            && !(bound == BOUND_EXACT || depth + 3 >= ((old >> 48) as u8 & 127) as i32 || age((old >> 56) as u8) != 0)
-        {
+        // Same position: keep the deeper result unless this one is exact
+        // (within TtExactWin plies with UseTtExactWin), nearly as deep, or
+        // the old one is from an earlier search.
+        let od = ((old >> 48) as u8 & 127) as i32;
+        let exact = bound == BOUND_EXACT && (!on(P::UseTtExactWin) || depth + tp(P::TtExactWin) >= od);
+        if found && !(exact || depth + 3 >= od || age((old >> 56) as u8) != 0) {
             return;
         }
         let mv = if mv == 0 && found { old as u16 as Move } else { mv };

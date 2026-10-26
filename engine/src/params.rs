@@ -144,6 +144,9 @@ params! {
     // TT replacement: a was-PV entry counts this many plies deeper when a
     // victim is chosen (one age step is 8).
     TtPvKeep = "TtPvKeep", 2, 0, 8, 1;
+    // An exact store replaces a same-position entry only within TtExactWin
+    // plies of its depth: twice the 3-ply window a bound gets.
+    TtExactWin = "TtExactWin", 6, 0, 20, 1;
     // Correction history. The eval correction is (CorrPawnWeight * pawn entry +
     // CorrNonPawnWeight * (white + black non-pawn entries) + the continuation
     // terms below) / 128.
@@ -198,6 +201,7 @@ params! {
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
+    UseTtExactWin = "UseTtExactWin", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
     // SEE leaves pieces pinned to their king out of the exchange while
     // the pinner stands (external movegen audit, review round 4).
