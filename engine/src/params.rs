@@ -198,6 +198,10 @@ params! {
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
+    // A same-position store from a later search follows the depth rule too:
+    // an older entry is still a valid result for that position, so its age
+    // doesn't let a much shallower one replace it.
+    UseTtAgeKeep = "UseTtAgeKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
     // SEE leaves pieces pinned to their king out of the exchange while
     // the pinner stands (external movegen audit, review round 4).

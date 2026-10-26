@@ -241,9 +241,12 @@ impl TT {
             }
         }
         // Same position: keep the deeper result unless this one is exact,
-        // nearly as deep, or the old one is from an earlier search.
+        // nearly as deep, or (without UseTtAgeKeep) the old one is from an
+        // earlier search.
         if found
-            && !(bound == BOUND_EXACT || depth + 3 >= ((old >> 48) as u8 & 127) as i32 || age((old >> 56) as u8) != 0)
+            && !(bound == BOUND_EXACT
+                || depth + 3 >= ((old >> 48) as u8 & 127) as i32
+                || (!on(P::UseTtAgeKeep) && age((old >> 56) as u8) != 0))
         {
             return;
         }
