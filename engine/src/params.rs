@@ -60,6 +60,18 @@ params! {
     LmrBaseX100 = "LmrBaseX100", 43, 30, 130, 5;
     LmrDivX100 = "LmrDivX100", 295, 150, 350, 10;
     LmrHistDiv = "LmrHistDiv", 9708, 3000, 16000, 650;
+    // UseLmrFp: each LMR adjustment in 1/1024 ply, summed with the table's
+    // fractional reduction and the history terms, then floored once. 1024
+    // is main's whole ply for every term.
+    LmrGoodCapFp = "LmrGoodCapFp", 1024, 0, 2048, 100;
+    LmrNonPvFp = "LmrNonPvFp", 1024, 0, 2048, 100;
+    LmrCutFp = "LmrCutFp", 1024, 0, 2048, 100;
+    LmrCutNoTtFp = "LmrCutNoTtFp", 1024, 0, 2048, 100;
+    LmrNotImpFp = "LmrNotImpFp", 1024, 0, 2048, 100;
+    LmrCheckFp = "LmrCheckFp", 1024, 0, 2048, 100;
+    LmrKillerFp = "LmrKillerFp", 1024, 0, 2048, 100;
+    LmrTtCaptFp = "LmrTtCaptFp", 1024, 0, 2048, 100;
+    LmrTtPvFp = "LmrTtPvFp", 1024, 0, 2048, 100;
     AspDelta = "AspDelta", 18, 3, 40, 2;
     HistMul = "HistMul", 372, 100, 500, 20;
     HistOff = "HistOff", 141, 0, 500, 25;
@@ -195,6 +207,7 @@ params! {
     UseSeNeg2 = "UseSeNeg2", 1, 0, 1, 0;
     UseLmr = "UseLmr", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
+    UseLmrFp = "UseLmrFp", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;
     UseTtPv = "UseTtPv", 1, 0, 1, 0;
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;

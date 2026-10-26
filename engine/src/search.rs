@@ -597,9 +597,10 @@ impl Searcher {
     pub fn init_lmr(&mut self) {
         for d in 1..64 {
             for m in 1..64 {
-                self.lmr[d][m] = (tp(P::LmrBaseX100) as f64 / 100.0
-                    + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDivX100) as f64 / 100.0))
-                    as i32;
+                let r = tp(P::LmrBaseX100) as f64 / 100.0
+                    + (d as f64).ln() * (m as f64).ln() / (tp(P::LmrDivX100) as f64 / 100.0);
+                // In 1/1024 ply with UseLmrFp (floored after the adjustments).
+                self.lmr[d][m] = if on(P::UseLmrFp) { (r * 1024.0) as i32 } else { r as i32 };
             }
         }
     }
@@ -1853,7 +1854,9 @@ impl Searcher {
                         skip_quiets = true;
                         continue;
                     }
-                    let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
+                    // The table is in 1/1024 ply with UseLmrFp: whole plies here.
+                    let base_r = self.lmr[depth.min(63) as usize][legal.min(63) as usize];
+                    let lmr_d = (depth - if on(P::UseLmrFp) { base_r >> 10 } else { base_r }).max(0);
                     if on(P::UseFut)
                         && !in_check
                         && lmr_d <= tp(P::FutDepth)
@@ -1964,7 +1967,44 @@ impl Searcher {
                 score = -self.negamax(&child, -beta, -alpha, new_depth, ply + 1, !pv_node && !cut_node);
             } else {
                 let mut r = 0;
-                if on(P::UseLmr) && depth >= 3 && legal > 1 + root as i32 {
+                if on(P::UseLmr) && on(P::UseLmrFp) && depth >= 3 && legal > 1 + root as i32 {
+                    // The same terms as below, each weighted in 1/1024 ply.
+                    let mut f = self.lmr[depth.min(63) as usize][legal.min(63) as usize];
+                    if !quiet && mscore >= 0 {
+                        f -= tp(P::LmrGoodCapFp);
+                    }
+                    if !pv_node {
+                        f += tp(P::LmrNonPvFp);
+                    }
+                    if cut_node {
+                        f += tp(P::LmrCutFp);
+                        if on(P::UseLmrCutNoTt) && tt_move == 0 {
+                            f += tp(P::LmrCutNoTtFp);
+                        }
+                    }
+                    if !improving {
+                        f += tp(P::LmrNotImpFp);
+                    }
+                    if child.checkers != 0 {
+                        f -= tp(P::LmrCheckFp);
+                    }
+                    if quiet && mscore >= (1 << 27) {
+                        f -= tp(P::LmrKillerFp);
+                    }
+                    if tt_capture {
+                        f += tp(P::LmrTtCaptFp);
+                    }
+                    if on(P::UseTtPv) && tt_pv && !pv_node {
+                        f -= tp(P::LmrTtPvFp);
+                    }
+                    if quiet {
+                        f -= (hist_score as i64 * 1024 / tp(P::LmrHistDiv) as i64) as i32;
+                    } else {
+                        let ch = self.capt[pc][mto(m)][pos.captured_type(m)] as i32;
+                        f -= (ch as i64 * 1024 / tp(P::CapLmrDiv) as i64) as i32;
+                    }
+                    r = (f >> 10).clamp(0, (new_depth - 1).max(0));
+                } else if on(P::UseLmr) && depth >= 3 && legal > 1 + root as i32 {
                     r = self.lmr[depth.min(63) as usize][legal.min(63) as usize];
                     // Good captures are reduced too, one ply less than quiets
                     // and losing captures; capture history then adjusts.
