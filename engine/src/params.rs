@@ -51,7 +51,7 @@ params! {
     // Razoring at any depth: eval + RazorBase + RazorMul * depth^2 <= alpha.
     RazorBase = "RazorBase", 364, 100, 800, 35;
     RazorMul = "RazorMul", 76, 20, 200, 9;
-    NmpEvalDiv = "NmpEvalDiv", 141, 100, 400, 15;
+    NmpEvalDiv = "NmpEvalDiv", 141, 60, 400, 15;
     ProbcutMargin = "ProbcutMargin", 247, 100, 350, 13;
     FutBase = "FutBase", 64, 30, 250, 11;
     FutMul = "FutMul", 51, 10, 200, 8;
@@ -119,7 +119,7 @@ params! {
     NmpEvalCap = "NmpEvalCap", 3, 0, 6, 1;
     NmpEvalMin = "NmpEvalMin", 0, 0, 100, 5;
     SeMul = "SeMul", 40, 8, 64, 2;
-    CapLmrDiv = "CapLmrDiv", 3052, 2000, 16000, 700;
+    CapLmrDiv = "CapLmrDiv", 3052, 1000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
@@ -151,7 +151,7 @@ params! {
     // (round value; lag-free matches measure ~0, so OB can't tune it).
     TmLagMoves = "TmLagMoves", 40, 0, 200, 10;
     // Depth gates.
-    NmpDepth = "NmpDepth", 2, 2, 6, 1;
+    NmpDepth = "NmpDepth", 2, 1, 6, 1;
     // Verify a null-move cutoff with a reduced real search from this depth on
     // (null move stays off at that ply).
     NmpVerifyDepth = "NmpVerifyDepth", 13, 6, 30, 2;
@@ -160,7 +160,7 @@ params! {
     // the ProbCut beta skips ProbCut.
     ProbcutTtDepth = "ProbcutTtDepth", 3, 0, 6, 1;
     ProbcutRed = "ProbcutRed", 6, 2, 8, 1;
-    IirDepth = "IirDepth", 2, 2, 8, 1;
+    IirDepth = "IirDepth", 2, 1, 8, 1;
     FutDepth = "FutDepth", 9, 4, 12, 1;
     HistPruneDepth = "HistPruneDepth", 5, 2, 8, 1;
     SeeNoisyDepth = "SeeNoisyDepth", 6, 3, 10, 1;
@@ -192,7 +192,7 @@ params! {
     // kept within +-CorrLimit cp.
     CorrUpdateCap = "CorrUpdateCap", 10, 4, 64, 3;
     CorrDiffClamp = "CorrDiffClamp", 354, 100, 1000, 45;
-    CorrLimit = "CorrLimit", 44, 16, 256, 12;
+    CorrLimit = "CorrLimit", 44, 8, 256, 12;
     // Weight of the continuation correction (keyed by the previous move's
     // piece and square).
     CorrContWeight = "CorrContWeight", 47, 0, 256, 13;
