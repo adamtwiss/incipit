@@ -83,7 +83,7 @@ params! {
     HmGuard = "HmGuard", 42, 0, 300, 15;
     NmpBase = "NmpBase", 5, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
-    SeMul = "SeMul", 40, 8, 40, 2;
+    SeMul = "SeMul", 48, 8, 64, 2;
     CapLmrDiv = "CapLmrDiv", 3052, 2000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
