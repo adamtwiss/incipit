@@ -40,13 +40,21 @@ macro_rules! params {
 // name = UCI name, default, min, max, SPSA step (c_end). Step = (max - min) / 20, at least 1.
 params! {
     RfpMargin = "RfpMargin", 64, 30, 150, 6;
+    // RFP margin taken off at an improving node (cp). Starts at one depth
+    // step (RfpMargin), the old (depth - improving) form; separate so SPSA
+    // can size it on its own: depth-1 improving nodes are over half of all
+    // RFP cuts (bench audit).
+    RfpImp = "RfpImp", 64, 0, 150, 6;
+    // An RFP cut returns this percentage of the way from beta to the eval
+    // (50: the midpoint).
+    RfpBlendPct = "RfpBlendPct", 50, 0, 100, 5;
     // Razoring at any depth: eval + RazorBase + RazorMul * depth^2 <= alpha.
     RazorBase = "RazorBase", 364, 100, 800, 35;
     RazorMul = "RazorMul", 76, 20, 200, 9;
     NmpEvalDiv = "NmpEvalDiv", 141, 100, 400, 15;
     ProbcutMargin = "ProbcutMargin", 247, 100, 350, 13;
     FutBase = "FutBase", 64, 30, 250, 11;
-    FutMul = "FutMul", 51, 40, 200, 8;
+    FutMul = "FutMul", 51, 10, 200, 8;
     // Futility margin by quiet history: a quiet's history sum (the ordering
     // score, four tables of +-16384) over this is added to the margin, so a
     // well-scored quiet survives a margin a badly scored one does not.
@@ -71,6 +79,23 @@ params! {
     // Bonus for the opponent's previous quiet move when this node fails low (it refuted
     // every reply): PriorBonusPct% of the cutoff bonus at this depth; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 64, 0, 150, 8;
+    // A cutoff beating beta by more than this (cp) earns the history bonus of
+    // one ply deeper.
+    HistBonusMargin = "HistBonusMargin", 80, 0, 300, 15;
+    // Quiet ordering: the continuation histories (previous move, ours two plies
+    // back, and four and six plies back) weigh in at ContW/8 against the main
+    // history's 8/8 (8, 8, 4, 4: the old 1, 1, 1/2, 1/2).
+    ContW1 = "ContW1", 8, 0, 16, 1;
+    ContW2 = "ContW2", 8, 0, 16, 1;
+    ContW4 = "ContW4", 4, 0, 16, 1;
+    ContW6 = "ContW6", 4, 0, 16, 1;
+    // Capture ordering: capture history / CapOrdDiv joins the victim value x 16.
+    CapOrdDiv = "CapOrdDiv", 16, 4, 64, 3;
+    // In-check qsearch tries quiet evasions only while fewer than this many
+    // moves have been legal.
+    QsEvasions = "QsEvasions", 3, 1, 6, 1;
+    // LMR applies from this depth (at depth 2 the reduction is clamped to 0).
+    LmrMinDepth = "LmrMinDepth", 3, 3, 6, 1;
     SeDouble = "SeDouble", 15, 5, 50, 2;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth.
@@ -83,7 +108,17 @@ params! {
     HmGuard = "HmGuard", 42, 0, 300, 15;
     NmpBase = "NmpBase", 5, 2, 7, 1;
     LmpBase = "LmpBase", 6, 1, 8, 1;
-    SeMul = "SeMul", 40, 8, 40, 2;
+    // Late-move pruning limit: (LmpBase + LmpQuadPct/100 * depth^2), times
+    // LmpNonImpPct/100 at a node that isn't improving (100 and 50: the old
+    // (LmpBase + depth^2) / (2 - improving)).
+    LmpQuadPct = "LmpQuadPct", 100, 40, 200, 8;
+    LmpNonImpPct = "LmpNonImpPct", 50, 25, 100, 4;
+    // Null move: the eval term of the reduction, (eval - beta) / NmpEvalDiv,
+    // is capped at NmpEvalCap plies; the eval must clear beta by NmpEvalMin
+    // (0: any eval at or above beta; the audit's misses gather within 80 cp).
+    NmpEvalCap = "NmpEvalCap", 3, 0, 6, 1;
+    NmpEvalMin = "NmpEvalMin", 0, 0, 100, 5;
+    SeMul = "SeMul", 40, 8, 64, 2;
     CapLmrDiv = "CapLmrDiv", 3052, 2000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
@@ -121,7 +156,10 @@ params! {
     // (null move stays off at that ply).
     NmpVerifyDepth = "NmpVerifyDepth", 13, 6, 30, 2;
     ProbcutDepth = "ProbcutDepth", 4, 3, 8, 1;
-    ProbcutRed = "ProbcutRed", 6, 2, 6, 1;
+    // A TT entry at least depth - ProbcutTtDepth deep whose score can't reach
+    // the ProbCut beta skips ProbCut.
+    ProbcutTtDepth = "ProbcutTtDepth", 3, 0, 6, 1;
+    ProbcutRed = "ProbcutRed", 6, 2, 8, 1;
     IirDepth = "IirDepth", 2, 2, 8, 1;
     FutDepth = "FutDepth", 9, 4, 12, 1;
     HistPruneDepth = "HistPruneDepth", 5, 2, 8, 1;
