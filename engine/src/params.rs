@@ -121,7 +121,7 @@ params! {
     // (null move stays off at that ply).
     NmpVerifyDepth = "NmpVerifyDepth", 13, 6, 30, 2;
     ProbcutDepth = "ProbcutDepth", 4, 3, 8, 1;
-    ProbcutRed = "ProbcutRed", 6, 2, 6, 1;
+    ProbcutRed = "ProbcutRed", 7, 2, 8, 1;
     IirDepth = "IirDepth", 2, 2, 8, 1;
     FutDepth = "FutDepth", 9, 4, 12, 1;
     HistPruneDepth = "HistPruneDepth", 5, 2, 8, 1;
