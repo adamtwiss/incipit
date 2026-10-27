@@ -46,7 +46,7 @@ params! {
     NmpEvalDiv = "NmpEvalDiv", 141, 100, 400, 15;
     ProbcutMargin = "ProbcutMargin", 247, 100, 350, 13;
     FutBase = "FutBase", 64, 30, 250, 11;
-    FutMul = "FutMul", 51, 40, 200, 8;
+    FutMul = "FutMul", 38, 10, 200, 8;
     // Futility margin by quiet history: a quiet's history sum (the ordering
     // score, four tables of +-16384) over this is added to the margin, so a
     // well-scored quiet survives a margin a badly scored one does not.
