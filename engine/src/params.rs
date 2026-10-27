@@ -131,6 +131,11 @@ params! {
     // the rest follow the quiets, and with staged generation the quiets are
     // generated as soon as only those remain.
     GoodCaptureSee = "GoodCaptureSee", -52, -150, 0, 8;
+    // With UseEqCapKiller, a good capture whose exchange gains less than this
+    // (an even trade, or one losing less than GoodCaptureSee allows) goes
+    // after the killers, still ahead of the other quiets. 1: any capture
+    // that doesn't win material.
+    EqCapSee = "EqCapSee", 1, -50, 300, 15;
     // SEE piece values (pawn = 100), used by SEE pruning,
     // ProbCut, qsearch SEE and capture ordering.
     SeeKnight = "SeeKnight", 273, 150, 650, 25;
@@ -229,6 +234,7 @@ params! {
     // ... and by whether the square it goes to is attacked.
     UseThreatHist2 = "UseThreatHist2", 1, 0, 1, 0;
     UseCheckOrder = "UseCheckOrder", 1, 0, 1, 0;
+    UseEqCapKiller = "UseEqCapKiller", 1, 0, 1, 0;
     // Continuation history keyed by our move three plies back (prev6), at
     // half weight in move scoring like the ply-4 table.
     UseCont6 = "UseCont6", 1, 0, 1, 0;

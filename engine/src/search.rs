@@ -1789,10 +1789,13 @@ impl Searcher {
             }
             let from = pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
             if stage == STAGE_NOISY {
-                if scores[i] < 0 {
-                    // Only losing captures and underpromotions are left: the
-                    // quiets come before them. The pick is undone first, so
-                    // equal scores keep their generation order.
+                // Good captures score at least 1 << 28; below that are the
+                // captures deferred behind the killers (1 << 26 up) and the
+                // losing captures and underpromotions (negative).
+                if scores[i] < (1 << 28) {
+                    // Only those are left: the killers and quiets come before
+                    // them. The pick is undone first, so equal scores keep
+                    // their generation order.
                     list.as_mut_slice().swap(i, from);
                     scores.as_mut_slice().swap(i, from);
                     stage = STAGE_QUIET;
@@ -1813,14 +1816,22 @@ impl Searcher {
                     }
                     continue;
                 }
-                if scores[i] >= (1 << 28) && !pos.see_ge(list[i], tp(P::GoodCaptureSee), &see_vals()) {
-                    // A losing capture after all: it goes behind the quiets
-                    // (score_moves). The pick is undone so the list keeps
-                    // its generation order, and the pick runs again.
-                    list.as_mut_slice().swap(i, from);
-                    scores.as_mut_slice().swap(i, from);
-                    scores[from] -= 1 << 29;
-                    continue;
+                if scores[i] >= (1 << 28)
+                    && !(on(P::UseEqCapKiller) && pos.see_ge(list[i], tp(P::EqCapSee), &see_vals()))
+                {
+                    let losing = !pos.see_ge(list[i], tp(P::GoodCaptureSee), &see_vals());
+                    if losing || on(P::UseEqCapKiller) {
+                        // A losing capture after all: it goes behind the quiets
+                        // (score_moves). One that doesn't win enough goes
+                        // behind the killers only: at nodes without a TT move
+                        // an even trade tried first cuts far less often than
+                        // a winning one. The pick is undone so the list keeps
+                        // its generation order, and the pick runs again.
+                        list.as_mut_slice().swap(i, from);
+                        scores.as_mut_slice().swap(i, from);
+                        scores[from] -= if losing { 1 << 29 } else { (1 << 28) - (1 << 26) };
+                        continue;
+                    }
                 }
             }
             let m = list[i];
