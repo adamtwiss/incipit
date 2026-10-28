@@ -39,7 +39,7 @@ macro_rules! params {
 
 // name = UCI name, default, min, max, SPSA step (c_end). Step = (max - min) / 20, at least 1.
 params! {
-    RfpMargin = "RfpMargin", 57, 30, 150, 6;
+    RfpMargin = "RfpMargin", 59, 30, 150, 6;
     // RFP margin taken off at an improving node (cp). Starts at one depth
     // step (RfpMargin), the old (depth - improving) form; separate so SPSA
     // can size it on its own: depth-1 improving nodes are over half of all
@@ -47,14 +47,14 @@ params! {
     RfpImp = "RfpImp", 57, 0, 150, 6;
     // An RFP cut returns this percentage of the way from beta to the eval
     // (50: the midpoint).
-    RfpBlendPct = "RfpBlendPct", 50, 0, 100, 5;
+    RfpBlendPct = "RfpBlendPct", 45, 0, 100, 5;
     // Razoring at any depth: eval + RazorBase + RazorMul * depth^2 <= alpha.
     RazorBase = "RazorBase", 341, 100, 800, 35;
     RazorMul = "RazorMul", 90, 20, 200, 9;
-    NmpEvalDiv = "NmpEvalDiv", 128, 60, 400, 15;
-    ProbcutMargin = "ProbcutMargin", 255, 100, 350, 13;
+    NmpEvalDiv = "NmpEvalDiv", 133, 60, 400, 15;
+    ProbcutMargin = "ProbcutMargin", 252, 100, 350, 13;
     FutBase = "FutBase", 62, 30, 250, 11;
-    FutMul = "FutMul", 45, 10, 200, 8;
+    FutMul = "FutMul", 44, 10, 200, 8;
     // Futility margin by quiet history: a quiet's history sum (the ordering
     // score, four tables of +-16384) over this is added to the margin, so a
     // well-scored quiet survives a margin a badly scored one does not.
@@ -81,19 +81,19 @@ params! {
     PriorBonusPct = "PriorBonusPct", 63, 0, 150, 8;
     // A cutoff beating beta by more than this (cp) earns the history bonus of
     // one ply deeper.
-    HistBonusMargin = "HistBonusMargin", 80, 0, 300, 15;
+    HistBonusMargin = "HistBonusMargin", 64, 0, 300, 15;
     // Quiet ordering: the continuation histories (previous move, ours two plies
     // back, and four and six plies back) weigh in at ContW/8 against the main
     // history's 8/8 (8, 8, 4, 4: the old 1, 1, 1/2, 1/2).
     ContW1 = "ContW1", 8, 0, 16, 1;
     ContW2 = "ContW2", 8, 0, 16, 1;
     ContW4 = "ContW4", 4, 0, 16, 1;
-    ContW6 = "ContW6", 4, 0, 16, 1;
+    ContW6 = "ContW6", 3, 0, 16, 1;
     // Capture ordering: capture history / CapOrdDiv joins the victim value x 16.
     CapOrdDiv = "CapOrdDiv", 16, 4, 64, 3;
     // In-check qsearch tries quiet evasions only while fewer than this many
     // moves have been legal.
-    QsEvasions = "QsEvasions", 3, 1, 6, 1;
+    QsEvasions = "QsEvasions", 4, 1, 6, 1;
     // LMR applies from this depth (at depth 2 the reduction is clamped to 0).
     LmrMinDepth = "LmrMinDepth", 3, 3, 6, 1;
     SeDouble = "SeDouble", 14, 5, 50, 2;
@@ -103,23 +103,23 @@ params! {
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;
-    NmpMarginBase = "NmpMarginBase", 135, 0, 400, 20;
+    NmpMarginBase = "NmpMarginBase", 146, 0, 400, 20;
     // Largest |TT score| still used for a cutoff at halfmove >= 90.
     HmGuard = "HmGuard", 43, 0, 300, 15;
     NmpBase = "NmpBase", 5, 2, 7, 1;
-    LmpBase = "LmpBase", 6, 1, 8, 1;
+    LmpBase = "LmpBase", 7, 1, 8, 1;
     // Late-move pruning limit: (LmpBase + LmpQuadPct/100 * depth^2), times
     // LmpNonImpPct/100 at a node that isn't improving (100 and 50: the old
     // (LmpBase + depth^2) / (2 - improving)).
-    LmpQuadPct = "LmpQuadPct", 100, 40, 200, 8;
-    LmpNonImpPct = "LmpNonImpPct", 50, 25, 100, 4;
+    LmpQuadPct = "LmpQuadPct", 98, 40, 200, 8;
+    LmpNonImpPct = "LmpNonImpPct", 53, 25, 100, 4;
     // Null move: the eval term of the reduction, (eval - beta) / NmpEvalDiv,
     // is capped at NmpEvalCap plies; the eval must clear beta by NmpEvalMin
     // (0: any eval at or above beta; the audit's misses gather within 80 cp).
     NmpEvalCap = "NmpEvalCap", 3, 0, 6, 1;
-    NmpEvalMin = "NmpEvalMin", 0, 0, 100, 5;
-    SeMul = "SeMul", 38, 8, 64, 2;
-    CapLmrDiv = "CapLmrDiv", 3254, 1000, 16000, 700;
+    NmpEvalMin = "NmpEvalMin", 3, 0, 100, 5;
+    SeMul = "SeMul", 39, 8, 64, 2;
+    CapLmrDiv = "CapLmrDiv", 3250, 1000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
@@ -192,7 +192,7 @@ params! {
     // kept within +-CorrLimit cp.
     CorrUpdateCap = "CorrUpdateCap", 12, 4, 64, 3;
     CorrDiffClamp = "CorrDiffClamp", 375, 100, 1000, 45;
-    CorrLimit = "CorrLimit", 42, 8, 256, 12;
+    CorrLimit = "CorrLimit", 41, 8, 256, 12;
     // Weight of the continuation correction (keyed by the previous move's
     // piece and square).
     CorrContWeight = "CorrContWeight", 62, 0, 256, 13;
