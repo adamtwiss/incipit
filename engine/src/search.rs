@@ -267,6 +267,9 @@ pub struct PonderTm {
     /// The GUI has pondered this game: only then does the budget feedback
     /// apply (instant ponder hits are what leave the budget unspent).
     pub ponder_seen: bool,
+    /// Game history length and root score of our last search (usize::MAX:
+    /// none this game), for the score trend between our moves.
+    pub last_root: (usize, i32),
 }
 
 impl PonderTm {
@@ -568,6 +571,7 @@ impl Searcher {
                 last_info: (0, 0, 0, String::new()),
                 spend_avg: 1.0,
                 ponder_seen: false,
+                last_root: (usize::MAX, 0),
             }),
             stopped: false,
             start: Instant::now(),
@@ -660,6 +664,7 @@ impl Searcher {
     pub fn clear(&mut self) {
         self.pt.spend_avg = 1.0;
         self.pt.ponder_seen = false;
+        self.pt.last_root = (usize::MAX, 0);
         // Helpers drop their handles when a search ends, so between searches
         // this is the only one.
         Arc::get_mut(&mut self.tt).expect("TT cleared during a search").clear();
@@ -1241,6 +1246,24 @@ impl Searcher {
                 };
                 let (node_scale, stab_scale) = if on(P::UseTm) { (node_scale, stab_scale) } else { (1.0, 1.0) };
                 let ext = if on(P::UseTmExtMax) { score_scale.max(fl_scale) } else { score_scale * fl_scale };
+                // Score trend since our previous move in this game (two plies
+                // back): a drop means the opponent's reply was better than we
+                // expected, so look harder; a rise, less hard. In black-box
+                // spend profiles (5+0.05, 1000 games each) the engines that
+                // gain most from their TM spend 1.6-2.7x their mean after a
+                // 20-50 cp drop and <= 1.1x after a rise; we spent 1.37x / 1.20x.
+                let (lr_len, lr_score) = self.pt.last_root;
+                let trend_scale = if on(P::UseTmTrend)
+                    && d >= 6
+                    && lr_len.wrapping_add(2) == self.hash_hist.len()
+                    && lr_score.abs() < tp(P::TmDecided)
+                {
+                    let t = (lr_score - score).clamp(-100, 100) as f64 / 100.0;
+                    1.0 + t * tp(if t > 0.0 { P::TmTrendDrop } else { P::TmTrendRise }) as f64 / 100.0
+                } else {
+                    1.0
+                };
+                let ext = ext * trend_scale;
                 // TmScalePow > 100 makes the allocation steeper: in an offline test
                 // (7948 positions, 500k vs 1.5M nodes) the value of more search
                 // varied ~25x across the scale's range while the scale varied ~5x.
@@ -1303,6 +1326,7 @@ impl Searcher {
                 tm_stop
             );
         }
+        self.pt.last_root = (self.hash_hist.len(), score);
         (best, score)
     }
 

@@ -147,6 +147,13 @@ params! {
     // Soft-target extensions stop at |score| >= TmDecided (internal cp; round
     // value at the start of the bucket where extension gained nothing).
     TmDecided = "TmDecided", 400, 200, 2000, 50;
+    // Soft-target scale per 100 cp of score drop (TmTrendDrop%) or rise
+    // (TmTrendRise%) since our previous move, capped at 100 cp. Round values
+    // putting a 50 cp drop at 1.5x and a 50 cp rise at 0.9x, between our
+    // current reaction and the black-box profiles of engines whose TM gains
+    // more; SPSA later.
+    TmTrendDrop = "TmTrendDrop", 100, 0, 300, 15;
+    TmTrendRise = "TmTrendRise", 20, 0, 60, 5;
     // Sudden death: keep this many moves' worth of the measured lag in reserve
     // (round value; lag-free matches measure ~0, so OB can't tune it).
     TmLagMoves = "TmLagMoves", 40, 0, 200, 10;
@@ -253,6 +260,9 @@ params! {
     UseTmFailLow = "UseTmFailLow", 1, 0, 1, 0;
     // Extend the soft target when the score drops between depths.
     UseTmScore = "UseTmScore", 0, 0, 1, 0;
+    // Scale the soft target by the score trend since our previous move
+    // (TmTrendDrop / TmTrendRise).
+    UseTmTrend = "UseTmTrend", 1, 0, 1, 0;
     // 1: the fail-low and score-drop extensions count once (the larger of the
     // two) instead of multiplying: they mostly fire on the same moves.
     UseTmExtMax = "UseTmExtMax", 0, 0, 1, 0;
