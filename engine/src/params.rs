@@ -154,7 +154,7 @@ params! {
     NmpDepth = "NmpDepth", 2, 1, 6, 1;
     // Verify a null-move cutoff with a reduced real search from this depth on
     // (null move stays off at that ply).
-    NmpVerifyDepth = "NmpVerifyDepth", 14, 6, 30, 2;
+    NmpVerifyDepth = "NmpVerifyDepth", 0, 0, 30, 2;
     ProbcutDepth = "ProbcutDepth", 5, 3, 8, 1;
     // A TT entry at least depth - ProbcutTtDepth deep whose score can't reach
     // the ProbCut beta skips ProbCut.
