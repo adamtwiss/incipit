@@ -76,6 +76,10 @@ params! {
     // below one saturated history table (HistMax), so a check comes ahead of
     // quiets with ordinary history and behind ones every table rates highly.
     CheckBonus = "CheckBonus", 2216, 0, 8192, 256;
+    // Quiet ordering: the move's learned eval gain (cp, see `gain_learn`)
+    // times this joins the history score. 32 makes a typical gain of
+    // +-100 cp worth about a fifth of one saturated history table.
+    GainOrdMul = "GainOrdMul", 32, 0, 128, 6;
     // Bonus for the opponent's previous quiet move when this node fails low (it refuted
     // every reply): PriorBonusPct% of the cutoff bonus at this depth; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 63, 0, 150, 8;
@@ -267,6 +271,7 @@ params! {
     // ... and by whether the square it goes to is attacked.
     UseThreatHist2 = "UseThreatHist2", 1, 0, 1, 0;
     UseCheckOrder = "UseCheckOrder", 1, 0, 1, 0;
+    UseGainHist = "UseGainHist", 1, 0, 1, 0;
     // Continuation history keyed by our move three plies back (prev6), at
     // half weight in move scoring like the ply-4 table.
     UseCont6 = "UseCont6", 1, 0, 1, 0;
