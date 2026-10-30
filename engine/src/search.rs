@@ -2046,6 +2046,10 @@ impl Searcher {
                     }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
+                        if on(P::UseGainLmr) && on(P::UseGainHist) {
+                            let g = self.gain[pc][mto(m)];
+                            r -= ((g - tp(P::GainLmrMid)) / tp(P::GainLmrDiv)).clamp(-1, 1);
+                        }
                     } else {
                         let ch = self.capt[pc][mto(m)][pos.captured_type(m)] as i32;
                         r -= ch / tp(P::CapLmrDiv);

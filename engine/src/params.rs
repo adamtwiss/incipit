@@ -80,6 +80,13 @@ params! {
     // times this joins the history score. 32 makes a typical gain of
     // +-100 cp worth about a fifth of one saturated history table.
     GainOrdMul = "GainOrdMul", 32, 0, 128, 6;
+    // LMR by a quiet's learned gain: one ply less when it is above
+    // GainLmrMid + GainLmrDiv, one more when below GainLmrMid - GainLmrDiv.
+    // From the bench audit of reduced quiets that failed low: the gain of
+    // the median one is about -100 cp, and the share a full-depth search
+    // would have raised alpha roughly doubles with every 50 cp of gain.
+    GainLmrMid = "GainLmrMid", -100, -250, 0, 10;
+    GainLmrDiv = "GainLmrDiv", 50, 20, 150, 7;
     // Bonus for the opponent's previous quiet move when this node fails low (it refuted
     // every reply): PriorBonusPct% of the cutoff bonus at this depth; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 63, 0, 150, 8;
@@ -272,6 +279,7 @@ params! {
     UseThreatHist2 = "UseThreatHist2", 1, 0, 1, 0;
     UseCheckOrder = "UseCheckOrder", 1, 0, 1, 0;
     UseGainHist = "UseGainHist", 1, 0, 1, 0;
+    UseGainLmr = "UseGainLmr", 1, 0, 1, 0;
     // Continuation history keyed by our move three plies back (prev6), at
     // half weight in move scoring like the ply-4 table.
     UseCont6 = "UseCont6", 1, 0, 1, 0;
