@@ -308,8 +308,8 @@ fn threats_of(pos: &Position, squares: u64, out: &mut [u32; MAX_ACTIVE]) -> usiz
     n
 }
 
-/// The threats that differ between `pos` and `child`, one move apart, by
-/// attacker square: `f(square, removed targets, added targets)`; the
+/// The threats that differ between `pos` and `child` (any two positions),
+/// by attacker square: `f(square, removed targets, added targets)`; the
 /// attacker and victims of a removed threat are `pos`'s, of an added one
 /// `child`'s.
 ///
@@ -317,12 +317,19 @@ fn threats_of(pos: &Position, squares: u64, out: &mut [u32; MAX_ACTIVE]) -> usiz
 /// its victim changes. With C the squares whose contents changed, that
 /// means the attacker stands on C (before or after) or attacks a square of
 /// C (before or after: sliders whose rays pass through C, and any piece
-/// whose victim is on C). For each such square s, with To and Tn its
-/// targets before and after: an attacker that changed (s in C) loses all of
-/// To and gains all of Tn; otherwise it loses To \ Tn, gains Tn \ To, and
-/// both for targets on C (the victim changed). As bitboards, without
-/// branches on the case: removed = To & (!Tn | C | moved), added = Tn & (!To
-/// | C | moved), moved all ones when s is in C.
+/// whose victim is on C). For a square of C, the attacker changed: it loses
+/// all of its old targets To and gains all of the new Tn. Elsewhere the
+/// piece is the same in both positions: it loses To \ Tn, gains Tn \ To,
+/// and both for targets on C (the victim changed). A pawn, knight or king
+/// off C keeps its attack set, so only its targets on C change.
+///
+/// The candidate attackers are found once for both positions: pieces off C
+/// are the same in both, so the union of the two piece sets serves, and
+/// sliders are looked up through the common occupancy (it differs from
+/// either position only on C, and a slider seen through a square of C
+/// attacks that square in one of the positions, so it is a candidate
+/// anyway). Extra candidates are harmless: their removed and added sets
+/// come out empty.
 #[inline(always)]
 pub fn delta_masks(pos: &Position, child: &Position, mut f: impl FnMut(usize, u64, u64)) {
     let mut c = (pos.colors[0] ^ child.colors[0]) | (pos.colors[1] ^ child.colors[1]);
@@ -331,6 +338,78 @@ pub fn delta_masks(pos: &Position, child: &Position, mut f: impl FnMut(usize, u6
     }
     let (occ_a, occ_b) = (pos.occ(), child.occ());
     // Targets: occupied squares other than kings (never victims).
+    let (vic_a, vic_b) = (occ_a & !pos.pieces[KING], occ_b & !child.pieces[KING]);
+    let occ_i = occ_a & occ_b;
+    let wp = pos.pcs(WHITE, PAWN) | child.pcs(WHITE, PAWN);
+    let bp = pos.pcs(BLACK, PAWN) | child.pcs(BLACK, PAWN);
+    let kn = pos.pieces[KNIGHT] | child.pieces[KNIGHT];
+    let kg = pos.pieces[KING] | child.pieces[KING];
+    let diag = pos.pieces[BISHOP] | pos.pieces[QUEEN] | child.pieces[BISHOP] | child.pieces[QUEEN];
+    let orth = pos.pieces[ROOK] | pos.pieces[QUEEN] | child.pieces[ROOK] | child.pieces[QUEEN];
+    let mut s = c;
+    let mut sq = c;
+    while sq != 0 {
+        let x = sq.trailing_zeros() as usize;
+        sq &= sq - 1;
+        s |= (pawn_attacks(WHITE, x) & bp)
+            | (pawn_attacks(BLACK, x) & wp)
+            | (knight_attacks(x) & kn)
+            | (king_attacks(x) & kg)
+            | (bishop_attacks(x, occ_i) & diag)
+            | (rook_attacks(x, occ_i) & orth);
+    }
+    // Gathered first and handed to `f` from one place, so `f` stays inline.
+    // At most one entry per occupied square (64), each written before it is read.
+    let mut buf = [std::mem::MaybeUninit::<(u8, u64, u64)>::uninit(); 64];
+    let mut n = 0;
+    // Changed squares: everything the old piece attacked goes, everything
+    // the new one attacks comes.
+    let mut sc = c & (occ_a | occ_b);
+    while sc != 0 {
+        let x = sc.trailing_zeros() as usize;
+        sc &= sc - 1;
+        let bit = 1u64 << x;
+        let to = if occ_a & bit != 0 { attacks(pos.board[x], x, occ_a) & vic_a } else { 0 };
+        let tn = if occ_b & bit != 0 { attacks(child.board[x], x, occ_b) & vic_b } else { 0 };
+        buf[n] = std::mem::MaybeUninit::new((x as u8, to, tn));
+        n += 1;
+    }
+    // Unchanged pieces. Sliders: their attack sets may differ.
+    let sliders = (diag | orth) & occ_i & !c;
+    let mut ss = s & sliders;
+    while ss != 0 {
+        let x = ss.trailing_zeros() as usize;
+        ss &= ss - 1;
+        let pc = pos.board[x];
+        let to = attacks(pc, x, occ_a) & vic_a;
+        let tn = attacks(pc, x, occ_b) & vic_b;
+        buf[n] = std::mem::MaybeUninit::new((x as u8, to & (!tn | c), tn & (!to | c)));
+        n += 1;
+    }
+    // Pawns, knights and kings keep their attack sets: only victims on C.
+    let mut sn = s & occ_i & !c & !sliders;
+    while sn != 0 {
+        let x = sn.trailing_zeros() as usize;
+        sn &= sn - 1;
+        let a = attacks(pos.board[x], x, 0) & c;
+        buf[n] = std::mem::MaybeUninit::new((x as u8, a & vic_a, a & vic_b));
+        n += 1;
+    }
+    for e in &buf[..n] {
+        // Safe: the first n entries were written above.
+        let (x, rem, add) = unsafe { e.assume_init() };
+        f(x as usize, rem, add);
+    }
+}
+
+/// The original form of `delta_masks`, kept as the reference for tests.
+#[cfg(test)]
+pub fn delta_masks_ref(pos: &Position, child: &Position, mut f: impl FnMut(usize, u64, u64)) {
+    let mut c = (pos.colors[0] ^ child.colors[0]) | (pos.colors[1] ^ child.colors[1]);
+    for pt in 0..6 {
+        c |= pos.pieces[pt] ^ child.pieces[pt];
+    }
+    let (occ_a, occ_b) = (pos.occ(), child.occ());
     let (vic_a, vic_b) = (occ_a & !pos.pieces[KING], occ_b & !child.pieces[KING]);
     let mut s = c;
     let mut sq = c;
@@ -564,6 +643,71 @@ mod tests {
             }
         }
         assert!(checked > 5000, "only {checked}");
+    }
+
+    /// `delta_masks` gives the same per-square removed and added targets as
+    /// the reference form, for positions one move apart and several moves
+    /// apart (captures, en passant, promotions, castling incl. Chess960).
+    #[test]
+    fn delta_masks_matches_reference() {
+        use crate::position::MoveList;
+        crate::attacks::init();
+        let starts = [
+            START_FEN,
+            "r3k2r/1pp2pp1/p2p3p/4p3/4P3/P2P3P/1PP2PP1/R3K2R w KQkq - 0 1",
+            "8/2P1P3/8/8/8/8/3p1p2/k6K w - - 0 1",
+            "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+            "bqnb1rkr/pp3ppp/3ppn2/2p5/5P2/P2P4/NPP1P1PP/BQ1BNRKR w HFhf - 2 9",
+            "r1b1k1nr/1pq2ppp/p1nbp3/8/3NP3/2N1B3/PPP1BPPP/R2QK2R w KQkq - 4 9",
+        ];
+        let collect = |a: &Position, b: &Position, reference: bool| {
+            let mut v = Vec::new();
+            let mut push = |x: usize, rem: u64, add: u64| {
+                if rem | add != 0 {
+                    v.push((x, rem, add));
+                }
+            };
+            if reference {
+                delta_masks_ref(a, b, &mut push);
+            } else {
+                delta_masks(a, b, &mut push);
+            }
+            v.sort_unstable();
+            v
+        };
+        let mut seed = 0x1F12_3BB5_9E37_79B9u64;
+        let mut checked = 0;
+        for g in 0..120 {
+            let mut hist = vec![Position::from_fen(starts[g % starts.len()]).unwrap()];
+            for _ in 0..120 {
+                let pos = *hist.last().unwrap();
+                let mut list = MoveList::new();
+                pos.gen_moves(&mut list, false);
+                let legal: Vec<_> = (0..list.len()).map(|i| list[i]).filter(|&m| pos.clone().make_move(m)).collect();
+                if legal.is_empty() {
+                    break;
+                }
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let mut child = pos;
+                child.make_move(legal[(seed % legal.len() as u64) as usize]);
+                hist.push(child);
+                // One move, and from up to four moves back.
+                for back in 1..=4.min(hist.len() - 1) {
+                    let a = hist[hist.len() - 1 - back];
+                    assert_eq!(
+                        collect(&a, &child, false),
+                        collect(&a, &child, true),
+                        "{} -> {}",
+                        a.to_fen(),
+                        child.to_fen()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 20000, "only {checked}");
     }
 
     /// The checked-in fixture matches (the trainer's tests check the same file).
