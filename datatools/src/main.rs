@@ -63,11 +63,14 @@ usage:
   datatools structstats <in.vf> ...           king safety and pawn-structure rates by game phase (ply bands),
                                               to compare our self-play with normal games
   datatools tbstats <tb_dir> <in.vf> ...      games reaching the Syzygy tables: game result vs tablebase result
-  datatools tbrelabel <tb_dir> <out_dir> [--fix-result] [--score CP] <in.vf> ...
+  datatools tbrelabel <tb_dir> <out_dir> [--fix-result] [--score CP | --score-dtz LO HI PER_PAWN | --score-keep CP] <in.vf> ...
                                               relabel with the Syzygy tables: --fix-result sets each game's
                                               result to the table result at its first table position with a
                                               fresh fifty-move clock (as tbstats); --score CP sets the score of
                                               every scored table position to +-CP (win/loss, side to move) or 0
+                                              (draw); --score-dtz grades wins from HI at DTZ 0 to LO at DTZ 100
+                                              plies, plus PER_PAWN per pawn of material lead; --score-keep CP
+                                              keeps the search score when it shows the win by >= CP, else +-CP
   datatools wdlstats <out.csv> <in.vf> ...    win/draw/loss counts by (material, eval), side to move,
                                               for fitting a WDL model (from ply 16, not in check, scored)
   datatools wdlfit <stats.csv>                 fit the WDL model to wdlstats output (maximum likelihood)
@@ -935,28 +938,74 @@ fn cmd_tbstats(tb_path: &str, inputs: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Score label of a won tablebase position (cp, for the winner; losses get its
+/// negation, draws 0).
+#[derive(Clone, Copy)]
+enum TbLabel {
+    /// The same score for every win.
+    Flat(i32),
+    /// Graded by progress: `hi` at DTZ 0 falling linearly to `lo` at DTZ 100
+    /// (plies), plus `per_pawn` per pawn of material lead (P 1, N 3, B 3,
+    /// R 5, Q 9) so that winning material never lowers the label although the
+    /// DTZ count restarts; never below `lo / 2`.
+    Dtz { lo: i32, hi: i32, per_pawn: i32 },
+    /// The search score when it already shows the win at least this clearly,
+    /// else this value.
+    Keep(i32),
+}
+
+impl TbLabel {
+    /// `sign`: +1 white wins, -1 black wins (0: draw, label 0). `search`:
+    /// the white-relative search score.
+    fn win_score(self, p: &position::Position, sign: i32, dtz: u32, search: i32) -> i32 {
+        if sign == 0 {
+            return 0;
+        }
+        match self {
+            TbLabel::Flat(cp) => cp,
+            TbLabel::Dtz { lo, hi, per_pawn } => {
+                let values = [1, 3, 3, 5, 9];
+                let lead: i32 = (0..5)
+                    .map(|pc| {
+                        let n = |c: usize| (p.pieces[pc] & p.colors[c]).count_ones() as i32;
+                        values[pc] * (n(position::WHITE) - n(position::BLACK))
+                    })
+                    .sum();
+                let base = hi - (hi - lo) * dtz.min(100) as i32 / 100;
+                (base + per_pawn * sign * lead).max(lo / 2)
+            }
+            TbLabel::Keep(cp) => (sign * search).max(cp),
+        }
+    }
+}
+
 fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), String> {
     let largest = tb::init(tb_path);
     if largest == 0 {
         return Err(format!("no tablebases found in {}", tb_path));
     }
-    let (mut fix_result, mut score_cp, mut inputs) = (false, None, Vec::new());
+    let (mut fix_result, mut label, mut inputs) = (false, None, Vec::new());
     let mut it = args.iter();
+    let cp = |it: &mut std::slice::Iter<String>, flag: &str| -> Result<i32, String> {
+        let v: i32 = it.next().and_then(|v| v.parse().ok()).ok_or(format!("{} needs cp values", flag))?;
+        if !(0..=19000).contains(&v) {
+            return Err(format!("{} value {} out of range 0..19000", flag, v));
+        }
+        Ok(v)
+    };
     while let Some(a) = it.next() {
         match a.as_str() {
             "--fix-result" => fix_result = true,
-            "--score" => {
-                let cp: i16 = it.next().and_then(|v| v.parse().ok()).ok_or("--score needs a cp value")?;
-                if !(1..=19000).contains(&cp) {
-                    return Err(format!("--score {} out of range 1..19000", cp));
-                }
-                score_cp = Some(cp);
+            "--score" => label = Some(TbLabel::Flat(cp(&mut it, a)?)),
+            "--score-dtz" => {
+                label = Some(TbLabel::Dtz { lo: cp(&mut it, a)?, hi: cp(&mut it, a)?, per_pawn: cp(&mut it, a)? })
             }
+            "--score-keep" => label = Some(TbLabel::Keep(cp(&mut it, a)?)),
             _ => inputs.push(a.clone()),
         }
     }
-    if !fix_result && score_cp.is_none() {
-        return Err("tbrelabel needs --fix-result and/or --score CP".into());
+    if !fix_result && label.is_none() {
+        return Err("tbrelabel needs --fix-result and/or a score mode".into());
     }
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {}", out_dir, e))?;
     let in_tb = |p: &position::Position| p.occ().count_ones() <= largest && p.castling == 0;
@@ -985,24 +1034,28 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
                     }
                 }
             }
-            if let Some(cp) = score_cp {
+            if let Some(label) = label {
                 for (k, (p, s)) in game.iter().enumerate() {
                     if *s == viri::NO_SCORE || !in_tb(p) {
                         continue;
                     }
-                    // The WDL tables answer for a fresh fifty-move count; with a
-                    // running clock this can call a cursed win a win (rare).
+                    // Probed with a fresh fifty-move count; with a running clock
+                    // this can call a cursed win a win (rare).
                     let mut q = *p;
                     q.halfmove = 0;
-                    let Some(r) = tb::probe_wdl(&q) else {
+                    let Some((r, dtz)) = (match label {
+                        TbLabel::Dtz { .. } => tb::probe_dtz(&q),
+                        _ => tb::probe_wdl(&q).map(|r| (r, 0)),
+                    }) else {
                         failed += 1;
                         continue;
                     };
-                    scores[k] = match white_wdl(r, p.stm == position::WHITE) {
-                        viri::WDL_WHITE_WIN => cp,
-                        viri::WDL_BLACK_WIN => -cp,
+                    let sign = match white_wdl(r, p.stm == position::WHITE) {
+                        viri::WDL_WHITE_WIN => 1,
+                        viri::WDL_BLACK_WIN => -1,
                         _ => 0,
                     };
+                    scores[k] = (sign * label.win_score(p, sign, dtz, *s as i32)) as i16;
                     relabelled += 1;
                 }
             }

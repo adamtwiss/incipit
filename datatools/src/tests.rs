@@ -4,6 +4,7 @@
 use crate::pgn;
 use crate::position::*;
 use crate::viri::{self, Game};
+use crate::TbLabel;
 
 struct Rng(u64);
 impl Rng {
@@ -443,4 +444,29 @@ fn rewrite_games_changes_only_result_and_scores() {
         .collect();
     assert_eq!(&got[..4], &want[..]);
     assert_eq!(&got[4..], &want[..]);
+}
+
+#[test]
+fn tb_label_scores() {
+    let p = |fen| Position::from_fen(fen).unwrap();
+    let krk = p("8/8/4k3/8/8/8/3RK3/8 w - - 0 1");
+    let dtz = TbLabel::Dtz { lo: 600, hi: 1400, per_pawn: 40 };
+    // Graded by DTZ (hi at 0, lo at 100 and beyond) plus 40 cp per pawn of lead.
+    assert_eq!(dtz.win_score(&krk, 1, 0, 0), 1400 + 200);
+    assert_eq!(dtz.win_score(&krk, 1, 50, 0), 1000 + 200);
+    assert_eq!(dtz.win_score(&krk, 1, 300, 0), 600 + 200);
+    // The lead counts for the winner; a win with much less material is
+    // floored at lo / 2.
+    let kpkr = p("8/8/4k3/8/8/4r3/3PK3/8 w - - 0 1");
+    assert_eq!(dtz.win_score(&kpkr, -1, 100, 0), 600 + 160);
+    let kpkq = p("8/8/4k3/8/8/4q3/3PK3/8 w - - 0 1");
+    assert_eq!(dtz.win_score(&kpkq, 1, 100, 0), 300);
+    assert_eq!(dtz.win_score(&krk, 0, 10, 0), 0);
+    assert_eq!(TbLabel::Flat(1000).win_score(&krk, -1, 7, 55), 1000);
+    // Keep: the search score (white-relative) when it shows the win clearly enough.
+    let keep = TbLabel::Keep(600);
+    assert_eq!(keep.win_score(&krk, 1, 0, 900), 900);
+    assert_eq!(keep.win_score(&krk, 1, 0, 300), 600);
+    assert_eq!(keep.win_score(&krk, -1, 0, -900), 900);
+    assert_eq!(keep.win_score(&krk, -1, 0, 200), 600);
 }

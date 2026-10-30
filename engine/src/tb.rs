@@ -113,9 +113,8 @@ pub fn probe_wdl(pos: &Position) -> Option<Wdl> {
     (v != RESULT_FAILED).then(|| wdl_of(v))
 }
 
-/// Root probe (DTZ): the WDL of the position and a move that keeps it,
-/// taking the fifty-move counter into account. Not thread-safe.
-pub fn probe_root(pos: &Position) -> Option<(Wdl, Move)> {
+/// Raw TB_RESULT of a root (DTZ) probe. Not thread-safe.
+fn root_result(pos: &Position) -> Option<u32> {
     if pos.occ().count_ones() > largest() || pos.castling != 0 {
         return None;
     }
@@ -136,10 +135,15 @@ pub fn probe_root(pos: &Position) -> Option<(Wdl, Move)> {
             std::ptr::null_mut(),
         )
     };
-    if v == RESULT_FAILED {
-        return None;
-    }
-    // TB_RESULT layout (tbprobe.h): wdl bits 0-3, to 4-9, from 10-15, promotes 16-18.
+    (v != RESULT_FAILED).then_some(v)
+}
+
+/// Root probe (DTZ): the WDL of the position and a move that keeps it,
+/// taking the fifty-move counter into account. Not thread-safe.
+pub fn probe_root(pos: &Position) -> Option<(Wdl, Move)> {
+    let v = root_result(pos)?;
+    // TB_RESULT layout (tbprobe.h): wdl bits 0-3, to 4-9, from 10-15, promotes 16-18,
+    // dtz 20-31.
     let (to, from, promo) = ((v >> 4) & 63, (v >> 10) & 63, (v >> 16) & 7);
     if from == to {
         return None; // checkmate or stalemate: no move
@@ -147,4 +151,13 @@ pub fn probe_root(pos: &Position) -> Option<(Wdl, Move)> {
     let uci = format!("{}{}{}", sq_str(from as usize), sq_str(to as usize), ["", "q", "r", "b", "n"][promo as usize]);
     let m = pos.parse_move(&uci)?;
     Some((wdl_of(v & 15), m))
+}
+
+/// WDL and DTZ (plies to the next capture or pawn move along the best line,
+/// 0 for a mate or stalemate) of the position, taking the fifty-move counter
+/// into account. Not thread-safe. Used by datatools (tbrelabel).
+#[allow(dead_code)]
+pub fn probe_dtz(pos: &Position) -> Option<(Wdl, u32)> {
+    let v = root_result(pos)?;
+    Some((wdl_of(v & 15), v >> 20))
 }
