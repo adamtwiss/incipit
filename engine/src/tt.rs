@@ -1,9 +1,9 @@
-// Transposition table: 16-byte entries in 4-entry buckets (one cache line),
-// full key verification, depth- and age-aware replacement. Lockless: safe
-// to probe and store from several threads at once (see `Slot`).
+// Transposition table: 12-byte entries in 5-entry buckets (one cache line),
+// a 32-bit key check, depth- and age-aware replacement. Lockless: safe to
+// probe and store from several threads at once (see `Bucket`).
 use crate::params::{on, tp, P};
 use crate::position::Move;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering::Relaxed};
 
 pub const BOUND_NONE: u8 = 0;
 pub const BOUND_UPPER: u8 = 1;
@@ -46,42 +46,53 @@ impl Entry {
     }
 }
 
-/// One entry as two 64-bit words: the packed data, and the key XOR-ed with
-/// the data. Threads read and write the words without locks, so a reader
-/// can see one word of one write and the other word of another (a torn
-/// entry); `key ^ data` then fails the key check (except with odds of about
-/// 2^-64, like any key collision), so a torn entry reads as a miss. No word
-/// orders any other memory, so Relaxed is enough throughout: plain loads and
-/// stores on x86 and ARM.
-#[derive(Default)]
-struct Slot {
-    check: AtomicU64,
-    data: AtomicU64,
-}
+/// Entries per bucket: five fill one 64-byte cache line.
+const WAYS: usize = 5;
 
-impl Slot {
-    /// The entry, if this slot holds `key` intact.
-    #[inline(always)]
-    fn read(&self) -> (u64, u64) {
-        let d = self.data.load(Relaxed);
-        (self.check.load(Relaxed) ^ d, d)
-    }
-    #[inline(always)]
-    fn write(&self, e: &Entry) {
-        let d = e.pack();
-        self.check.store(e.key ^ d, Relaxed);
-        self.data.store(d, Relaxed);
-    }
-}
-
-/// Entries per bucket: one 64-byte cache line.
-const WAYS: usize = 4;
-
+/// A bucket: each entry as its packed data word and a 32-bit check, the
+/// key's low 32 bits XOR-ed with a hash of the data (`fold`). The bucket
+/// index comes from the key's high bits, so index and check together test
+/// about 32 + log2(buckets) bits of the key: another position passes with
+/// odds of about 2^-32 per entry (its move is validated before it is
+/// played). Threads read and write the words without locks, so a reader can
+/// see the data of one write and the check of another (a torn entry); the
+/// check then fails, except with odds of about 2^-32, and a torn entry reads
+/// as a miss. No word orders any other memory, so Relaxed is enough
+/// throughout: plain loads and stores on x86 and ARM.
 #[derive(Default)]
 #[repr(C, align(64))]
-struct Bucket([Slot; WAYS]);
+struct Bucket {
+    data: [AtomicU64; WAYS],
+    check: [AtomicU32; WAYS],
+}
 
-/// Buckets of 4 entries. An entry's `bound` byte also holds the generation
+const _: () = assert!(std::mem::size_of::<Bucket>() == 64);
+
+/// The data's share of the check: the high half of a multiplicative hash,
+/// so any change to the data changes it (except with odds of about 2^-32),
+/// where a plain fold of the two halves would miss some structured changes.
+#[inline(always)]
+fn fold(d: u64) -> u32 {
+    (d.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as u32
+}
+
+impl Bucket {
+    /// Entry `i`: the low 32 bits of the key it was written for, if it is
+    /// intact, and its data.
+    #[inline(always)]
+    fn read(&self, i: usize) -> (u32, u64) {
+        let d = self.data[i].load(Relaxed);
+        (self.check[i].load(Relaxed) ^ fold(d), d)
+    }
+    #[inline(always)]
+    fn write(&self, i: usize, e: &Entry) {
+        let d = e.pack();
+        self.check[i].store(e.key as u32 ^ fold(d), Relaxed);
+        self.data[i].store(d, Relaxed);
+    }
+}
+
+/// Buckets of 5 entries. An entry's `bound` byte also holds the generation
 /// (search number) it was written in: bits 0-1 the bound, bits 2-7 the
 /// generation; the depth byte holds the depth (7 bits, depth < MAX_PLY)
 /// and the was-PV flag (bit 7). Replacement prefers, in a bucket: the same key; else an empty
@@ -97,7 +108,7 @@ pub struct TT {
 /// by clearing the memory, which touches every page; one at a plain
 /// alignment is a calloc, whose large allocations come from the OS as
 /// untouched zero pages, so a big table costs only the memory the search
-/// goes on to use. An all-zero bucket is four empty entries.
+/// goes on to use. An all-zero bucket is five empty entries.
 struct Table {
     base: *mut u8,
     layout: std::alloc::Layout,
@@ -165,8 +176,7 @@ impl TT {
         TT { table: Table::new(n.max(1)).expect("table allocation"), gen: AtomicU8::new(0) }
     }
     /// Empties the table. `&mut self` means no other thread is using it,
-    /// so it can be zeroed as plain memory (an all-zero `Slot` is two zero
-    /// atomics: an empty entry).
+    /// so it can be zeroed as plain memory (an all-zero entry is empty).
     pub fn clear(&mut self) {
         // SAFETY: all-zero buckets are valid (and empty).
         unsafe { std::ptr::write_bytes(self.table.as_mut_ptr(), 0, self.table.len()) };
@@ -197,10 +207,10 @@ impl TT {
     #[inline(always)]
     pub fn probe(&self, key: u64) -> Option<Entry> {
         let b = unsafe { self.table.get_unchecked(self.idx(key)) };
-        for s in b.0.iter() {
-            let (k, d) = s.read();
-            if k == key && (d >> 56) as u8 & 3 != BOUND_NONE {
-                let e = Entry::unpack(k, d);
+        for i in 0..WAYS {
+            let (k, d) = b.read(i);
+            if k == key as u32 && (d >> 56) as u8 & 3 != BOUND_NONE {
+                let e = Entry::unpack(key, d);
                 return Some(Entry { bound: e.bound & 3, ..e });
             }
         }
@@ -218,10 +228,10 @@ impl TT {
         let mut old = 0u64;
         let mut found = false;
         let mut worst = i32::MAX;
-        for (k, s) in b.0.iter().enumerate() {
-            let (ek, d) = s.read();
+        for k in 0..WAYS {
+            let (ek, d) = b.read(k);
             let bd = (d >> 56) as u8;
-            if ek == key && bd & 3 != BOUND_NONE {
+            if ek == key as u32 && bd & 3 != BOUND_NONE {
                 slot = k;
                 old = d;
                 found = true;
@@ -248,15 +258,18 @@ impl TT {
             return;
         }
         let mv = if mv == 0 && found { old as u16 as Move } else { mv };
-        b.0[slot].write(&Entry {
-            key,
-            mv,
-            score: score as i16,
-            eval: eval as i16,
-            depth: depth.clamp(0, 127) as u8,
-            bound: bound | (gen << 2),
-            pv,
-        });
+        b.write(
+            slot,
+            &Entry {
+                key,
+                mv,
+                score: score as i16,
+                eval: eval as i16,
+                depth: depth.clamp(0, 127) as u8,
+                bound: bound | (gen << 2),
+                pv,
+            },
+        );
     }
     /// Permille of entries in use from the current search (first 1000).
     pub fn hashfull(&self) -> usize {
@@ -264,8 +277,8 @@ impl TT {
         self.table
             .iter()
             .take(1000 / WAYS)
-            .flat_map(|b| b.0.iter())
-            .map(|s| (s.read().1 >> 56) as u8)
+            .flat_map(|b| b.data.iter())
+            .map(|d| (d.load(Relaxed) >> 56) as u8)
             .filter(|&bd| bd & 3 != BOUND_NONE && bd >> 2 == gen)
             .count()
     }
