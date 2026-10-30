@@ -2000,8 +2000,9 @@ impl Searcher {
                     }
                     if cut_node {
                         r += 1;
-                        // Expected to fail high and no TT move to do it: one more.
-                        if on(P::UseLmrCutNoTt) && tt_move == 0 {
+                        // Expected to fail high and no TT move to do it: one more,
+                        // once the first few moves have failed.
+                        if on(P::UseLmrCutNoTt) && tt_move == 0 && legal >= tp(P::LmrCutNoTtFrom) {
                             r += 1;
                         }
                     }

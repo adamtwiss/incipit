@@ -100,6 +100,10 @@ params! {
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth.
     LmrDeeper = "LmrDeeper", 75, 10, 200, 10;
+    // The extra LMR ply at a cut node without a TT move applies from this
+    // move on. On bench, reduced fail-lows of moves 2-4 there were wrong 3.4-5.1%
+    // of the time at full depth, from move 5 on 1.1% (LMR fail-low audit).
+    LmrCutNoTtFrom = "LmrCutNoTtFrom", 5, 2, 10, 1;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;
