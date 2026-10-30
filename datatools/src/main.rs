@@ -63,6 +63,10 @@ usage:
   datatools structstats <in.vf> ...           king safety and pawn-structure rates by game phase (ply bands),
                                               to compare our self-play with normal games
   datatools tbstats <tb_dir> <in.vf> ...      games reaching the Syzygy tables: game result vs tablebase result
+  datatools tbstarts <tb_dir> <min_dtz> <per_class> <in.vf> ...
+                                              won table positions (side to move wins, DTZ >= min_dtz plies)
+                                              for conversion tests: up to per_class each of KRvK, KQvK, KBNvK,
+                                              KQvKR, as EPD on stdout
   datatools tbrelabel <tb_dir> <out_dir> [--fix-result] [--score CP | --score-dtz LO HI PER_PAWN | --score-keep CP] <in.vf> ...
                                               relabel with the Syzygy tables: --fix-result sets each game's
                                               result to the table result at its first table position with a
@@ -128,6 +132,7 @@ fn main() {
         Some("plystats") if args.len() >= 3 => cmd_plystats(&args[2..]),
         Some("structstats") if args.len() >= 3 => cmd_structstats(&args[2..]),
         Some("tbstats") if args.len() >= 4 => cmd_tbstats(&args[2], &args[3..]),
+        Some("tbstarts") if args.len() >= 6 => cmd_tbstarts(&args[2], &args[3], &args[4], &args[5..]),
         Some("tbrelabel") if args.len() >= 5 => cmd_tbrelabel(&args[2], &args[3], &args[4..]),
         Some("wdlstats") if args.len() >= 4 => cmd_wdlstats(&args[2], &args[3..]),
         Some("piecestats") if args.len() >= 3 => cmd_piecestats(&args[2..]),
@@ -977,6 +982,63 @@ impl TbLabel {
             TbLabel::Keep(cp) => (sign * search).max(cp),
         }
     }
+}
+
+fn cmd_tbstarts(tb_path: &str, min_dtz: &str, per_class: &str, inputs: &[String]) -> Result<(), String> {
+    if tb::init(tb_path) == 0 {
+        return Err(format!("no tablebases found in {}", tb_path));
+    }
+    let min_dtz: u32 = min_dtz.parse().map_err(|_| "bad min_dtz")?;
+    let per_class: usize = per_class.parse().map_err(|_| "bad per_class")?;
+    let classes = ["KRvK", "KQvK", "KBNvK", "KQvKR"];
+    // Material of one side as "K" then Q, R, B, N, P letters.
+    let side = |p: &position::Position, c: usize| {
+        let mut m = String::from("K");
+        for (pc, ch) in [
+            (position::QUEEN, 'Q'),
+            (position::ROOK, 'R'),
+            (position::BISHOP, 'B'),
+            (position::KNIGHT, 'N'),
+            (position::PAWN, 'P'),
+        ] {
+            for _ in 0..(p.pieces[pc] & p.colors[c]).count_ones() {
+                m.push(ch);
+            }
+        }
+        m
+    };
+    let mut found: Vec<std::collections::HashMap<String, u32>> = vec![Default::default(); classes.len()];
+    for input in inputs {
+        let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
+        viri::for_each_position(&data, |p, _, _, _| {
+            if p.occ().count_ones() > 5 || p.castling != 0 || p.checkers != 0 {
+                return;
+            }
+            let us = p.stm;
+            let class = format!("{}v{}", side(p, us), side(p, 1 - us));
+            let Some(k) = classes.iter().position(|&c| c == class) else { return };
+            let mut q = *p;
+            q.halfmove = 0;
+            q.fullmove = 1;
+            if let Some((tb::Wdl::Win, dtz)) = tb::probe_dtz(&q) {
+                if dtz >= min_dtz {
+                    found[k].insert(q.to_fen(), dtz);
+                }
+            }
+        })
+        .map_err(|e| format!("{}: {}", input, e))?;
+    }
+    // A fixed pseudo-random choice: order by a hash of the FEN.
+    let hash = |s: &str| s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+    for (k, f) in found.iter().enumerate() {
+        let mut v: Vec<_> = f.iter().collect();
+        v.sort_by_key(|(fen, _)| hash(fen));
+        eprintln!("{}: {} candidates", classes[k], v.len());
+        for (fen, dtz) in v.into_iter().take(per_class) {
+            println!("{} ; {} dtz {}", fen, classes[k], dtz);
+        }
+    }
+    Ok(())
 }
 
 fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), String> {
