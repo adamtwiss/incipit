@@ -118,6 +118,14 @@ params! {
     // (0: any eval at or above beta; the audit's misses gather within 80 cp).
     NmpEvalCap = "NmpEvalCap", 2, 0, 6, 1;
     NmpEvalMin = "NmpEvalMin", 1, 0, 100, 5;
+    // Null move in a context whose search scores stray from the corrected
+    // eval more than usual (sigma history above typical) needs the eval this
+    // much higher per typical spread of excess (capped at twice typical).
+    // From a bench audit: within the same eval - beta, null-move cutoffs in
+    // the noisiest third were wrong 2-2.7x as often as in the calmest; 100 cp
+    // at twice the typical spread roughly offsets that against how fast the
+    // wrong rate falls with eval - beta.
+    NmpSigMul = "NmpSigMul", 100, 0, 400, 15;
     SeMul = "SeMul", 41, 8, 64, 2;
     CapLmrDiv = "CapLmrDiv", 3191, 1000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
@@ -217,6 +225,7 @@ params! {
     UseRfp = "UseRfp", 1, 0, 1, 0;
     UseRazor = "UseRazor", 1, 0, 1, 0;
     UseNmp = "UseNmp", 1, 0, 1, 0;
+    UseNmpSigma = "UseNmpSigma", 1, 0, 1, 0;
     UseProbcut = "UseProbcut", 1, 0, 1, 0;
     UseIir = "UseIir", 1, 0, 1, 0;
     UseLmp = "UseLmp", 1, 0, 1, 0;

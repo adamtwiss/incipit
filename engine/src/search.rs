@@ -442,6 +442,14 @@ pub struct SharedHist {
     corr_cont: [[AtomicI32; 768]; 2],
     /// The same keyed by our own move two plies back.
     corr_cont2: [[AtomicI32; 768]; 2],
+    /// Sigma history: how far search scores stray from the corrected eval,
+    /// by side to move and pawn / non-pawn key, relative to the typical
+    /// stray at the same depth (256 = typical), stored minus 256.
+    sig: [[AtomicI32; CORR_SIZE]; 2],
+    sig_np: [[[AtomicI32; CORR_SIZE]; 2]; 2],
+    /// The typical |search score - corrected eval| by depth, cp x 16,
+    /// stored minus 640 (40 cp).
+    sig_depth: [AtomicI32; 64],
 }
 
 impl SharedHist {
@@ -905,6 +913,40 @@ impl Searcher {
             c += tp(P::CorrCont2Weight) * self.sh.corr_cont2[pos.stm][prev2].load(Ordering::Relaxed);
         }
         Self::damp(pos, raw + c / (128 * CORR_GRAIN)).clamp(-MATE_BOUND + 1, MATE_BOUND - 1)
+    }
+
+    /// Learns the size of a residual (search score minus corrected eval)
+    /// for the sigma history: an average over about the last 8 residuals of
+    /// each key, as a share of the last 64 or so at this depth.
+    fn update_sigma(&self, pos: &Position, depth: i32, diff: i32) {
+        let gd = &self.sh.sig_depth[depth.clamp(0, 63) as usize];
+        let g = gd.load(Ordering::Relaxed) + 640;
+        let a = diff.abs().min(1000) * 16;
+        let g = g + (a - g) / 64;
+        gd.store(g - 640, Ordering::Relaxed);
+        let rel = (a * 256 / g.max(16)).min(2048) - 256;
+        let f = |e: &AtomicI32| {
+            let v = e.load(Ordering::Relaxed);
+            e.store(v + (rel - v) / 8, Ordering::Relaxed)
+        };
+        let m = CORR_SIZE - 1;
+        f(&self.sh.sig[pos.stm][(pos.pawn_key as usize) & m]);
+        f(&self.sh.sig_np[pos.stm][0][(pos.np_key[0] as usize) & m]);
+        f(&self.sh.sig_np[pos.stm][1][(pos.np_key[1] as usize) & m]);
+    }
+
+    /// The null move's extra eval margin from the sigma history: none in a
+    /// context of typical spread or less.
+    #[inline]
+    fn nmp_sigma_margin(&self, pos: &Position) -> i32 {
+        if !on(P::UseNmpSigma) {
+            return 0;
+        }
+        let m = CORR_SIZE - 1;
+        let sum = self.sh.sig[pos.stm][(pos.pawn_key as usize) & m].load(Ordering::Relaxed)
+            + self.sh.sig_np[pos.stm][0][(pos.np_key[0] as usize) & m].load(Ordering::Relaxed)
+            + self.sh.sig_np[pos.stm][1][(pos.np_key[1] as usize) & m].load(Ordering::Relaxed);
+        (sum / 3).clamp(0, 256) * tp(P::NmpSigMul) / 256
     }
 
     fn update_corr(&mut self, pos: &Position, depth: i32, diff: i32, prev1: usize, prev2: usize) {
@@ -1593,7 +1635,7 @@ impl Searcher {
             // null move pruning
             if on(P::UseNmp)
                 && depth >= tp(P::NmpDepth)
-                && eval >= beta + tp(P::NmpEvalMin)
+                && eval >= beta + tp(P::NmpEvalMin) + self.nmp_sigma_margin(pos)
                 && static_eval >= beta - tp(P::NmpDepthMul) * depth + tp(P::NmpMarginBase)
                 && ply >= 1
                 && self.stack[ply - 1].mv != 0
@@ -2179,6 +2221,9 @@ impl Searcher {
                 && !(bound == BOUND_LOWER && best_score <= static_eval)
                 && !(bound == BOUND_UPPER && best_score >= static_eval)
             {
+                if on(P::UseNmpSigma) {
+                    self.update_sigma(pos, depth, best_score - static_eval);
+                }
                 self.update_corr(pos, depth, best_score - static_eval, prev1, prev2);
             }
         }
