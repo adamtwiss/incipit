@@ -231,6 +231,10 @@ params! {
     UseMulticut = "UseMulticut", 1, 0, 1, 0;
     UseSeNegExt = "UseSeNegExt", 1, 0, 1, 0;
     UseSeNeg2 = "UseSeNeg2", 1, 0, 1, 0;
+    // A cutoff in the singular exclusion search updates no history, capture
+    // history or killers: that search ran without the TT move, so its cutoff
+    // move is a runner-up, not a refutation of this position.
+    UseSeHistGuard = "UseSeHistGuard", 1, 0, 1, 0;
     UseLmr = "UseLmr", 1, 0, 1, 0;
     UseLmrCutNoTt = "UseLmrCutNoTt", 1, 0, 1, 0;
     UseLmrDeeper = "UseLmrDeeper", 1, 0, 1, 0;

@@ -2101,7 +2101,7 @@ impl Searcher {
             };
         }
 
-        if best_score >= beta {
+        if best_score >= beta && (excluded == 0 || !on(P::UseSeHistGuard)) {
             let bdepth = depth + (best_score > beta + tp(P::HistBonusMargin)) as i32;
             // Never negative, whatever the tuned values: a cutoff must not
             // lower its move's history (nor raise the failed ones').
