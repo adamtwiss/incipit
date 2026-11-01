@@ -2278,7 +2278,7 @@ impl Searcher {
     /// Learns the gain of the quiet move that led to this ply from the
     /// node's static eval (both corrected, mover's view): an average over
     /// about the last 16 such nodes, the change clamped to +-600 cp.
-    #[inline]
+    #[inline(always)]
     fn gain_learn(&mut self, ply: usize, eval: i32) {
         if let Some((pc, to, pe)) = self.gain_par[ply].take() {
             if eval.abs() < MATE_BOUND && pe.abs() < MATE_BOUND {
