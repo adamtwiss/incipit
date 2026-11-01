@@ -79,7 +79,7 @@ params! {
     // Quiet ordering: the move's learned eval gain (cp, see `gain_learn`)
     // times this joins the history score. 32 makes a typical gain of
     // +-100 cp worth about a fifth of one saturated history table.
-    GainOrdMul = "GainOrdMul", 32, 0, 128, 6;
+    GainOrdMul = "GainOrdMul", 32, 0, 256, 8;
     // Bonus for the opponent's previous quiet move when this node fails low (it refuted
     // every reply): PriorBonusPct% of the cutoff bonus at this depth; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 59, 0, 150, 8;
