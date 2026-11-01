@@ -331,6 +331,18 @@ fn init_net() {
 /// host this matters more than any kernel. The FT block starts at the
 /// header size, the threat rows end the file.
 fn share_weights(net: &mut Network) {
+    // First choice: one hugepage copy per host for every binary with these
+    // weights (see netshm).
+    let ft = unsafe { std::slice::from_raw_parts(net.ftw.as_ptr() as *const u8, 2 * net.ftw.len()) };
+    let thr = unsafe { std::slice::from_raw_parts(net.thrw8.as_ptr() as *const u8, net.thrw8.len()) };
+    if let Some(p) = crate::netshm::share(&[ft, thr]) {
+        // Safe: the shared copy is mapped for the life of the process.
+        unsafe {
+            net.ftw = Aligned::view(std::slice::from_raw_parts(p[0] as *const i16, net.ftw.len()));
+            net.thrw8 = AlignedI8::view(std::slice::from_raw_parts(p[1], net.thrw8.len()));
+        }
+        return;
+    }
     let header = u32::from_le_bytes(NET_BYTES[12..16].try_into().unwrap()) as usize;
     let ft = &NET_BYTES[header..header + 2 * net.ftw.len()];
     // Safe: the header size is a multiple of 64 (converter) or at least even
