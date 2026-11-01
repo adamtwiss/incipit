@@ -269,11 +269,15 @@ pub fn genfens(toks: &[&str]) {
                 }
             };
             // EPD: first four fields are the position; any operations after them are ignored.
+            // A line that is a full six-field FEN keeps its move counters, so games from
+            // book lines record their true ply (the trainer's ply filter reads it).
             let book: Vec<Position> = text
                 .lines()
                 .filter_map(|l| {
-                    let f: Vec<&str> = l.split_whitespace().take(4).collect();
-                    if f.len() == 4 {
+                    let all: Vec<&str> = l.split_whitespace().collect();
+                    let counters = all.len() >= 6 && all[4..6].iter().all(|x| x.parse::<u32>().is_ok());
+                    let f = &all[..all.len().min(if counters { 6 } else { 4 })];
+                    if f.len() >= 4 {
                         Position::from_fen(&f.join(" "))
                     } else {
                         None
