@@ -1893,9 +1893,17 @@ impl Searcher {
             if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
                 if quiet {
                     if on(P::UseLmp) && legal >= lmp_limit && !in_check {
-                        self.stats.lmp += 1;
-                        skip_quiets = true;
-                        continue;
+                        if !(on(P::UseGainLmp) && on(P::UseGainHist)) {
+                            self.stats.lmp += 1;
+                            skip_quiets = true;
+                            continue;
+                        }
+                        // A later quiet may have a higher gain: prune this
+                        // one and keep looking.
+                        if self.gain[pos.board[mfrom(m)] as usize][mto(m)] < tp(P::GainLmpMin) {
+                            self.stats.lmp += 1;
+                            continue;
+                        }
                     }
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
                     if on(P::UseFut)
