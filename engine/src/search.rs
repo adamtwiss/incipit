@@ -376,6 +376,8 @@ pub struct Searcher {
     gain_par: Vec<Option<(u8, u8, i32)>>,
     /// Each MultiPV line's score at the last completed depth (aspiration centres).
     line_scores: Vec<i32>,
+    /// MultiPV lines of the last completed depth, best first: (score, first move).
+    pub lines: Vec<(i32, Move)>,
 }
 
 /// One completed iteration: depth, best move, score, nodes and time so far.
@@ -600,6 +602,7 @@ impl Searcher {
             gain: vec![[0; 64]; 12],
             gain_par: vec![None; MAX_PLY + 16],
             line_scores: Vec::new(),
+            lines: Vec::new(),
             no_nmp_ply: usize::MAX,
             search_moves: Vec::new(),
             lmr,
@@ -1025,6 +1028,7 @@ impl Searcher {
         }
         self.root_excluded.clear();
         self.line_scores.clear();
+        self.lines.clear();
         if fallback == 0 {
             if !self.silent {
                 println!("info depth 0 score {} nodes 0 time 0", if root.checkers != 0 { "mate 0" } else { "cp 0" });
@@ -1215,6 +1219,7 @@ impl Searcher {
                     (best, score) = (top[0], lines[0].0);
                 }
                 self.line_scores = lines.iter().map(|l| l.0).collect();
+                self.lines = lines.iter().map(|l| (l.0, l.1[0])).collect();
             }
             if !self.silent {
                 if lines.is_empty() {

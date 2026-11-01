@@ -215,9 +215,13 @@ pub fn run(threads: usize, prefix: &str, nodes: u64, seconds: u64, seed: u64) {
 
 /// OpenBench datagen openings:
 ///   genfens <N> seed <S> book <None|path.epd> [moves <K>] [nodes <K>] [maxeval <cp>]
+///           [sample <K>] [multipv <M>] [margin <cp>] [snodes <K>]
 /// Prints N lines `info string genfens <FEN>`, a deterministic function of the arguments.
 /// Each opening is a book line (or the start position) plus `moves` or `moves + 1` random
-/// plies (default 8 without a book, 2 with one). Positions in check, with no legal moves,
+/// plies (default 8 without a book, 2 with one; 0 when sampling). With `sample K`, it then
+/// plays K or K + 1 sampled plies: a `multipv`-line search (default 8) of `snodes` nodes
+/// (default 20000), and a uniform pick among the lines within `margin` cp (default 40)
+/// of the best. Positions in check, with no legal moves,
 /// repeated within the run, or scoring beyond `maxeval` in a `nodes`-limited search are
 /// rejected. Unrecognised arguments are ignored.
 pub fn genfens(toks: &[&str]) {
@@ -227,6 +231,10 @@ pub fn genfens(toks: &[&str]) {
     let mut moves: Option<usize> = None;
     let mut nodes = 5000u64;
     let mut maxeval = 500i32;
+    let mut sample = 0usize;
+    let mut spv = 8usize;
+    let mut margin = 40i32;
+    let mut snodes = 20000u64;
     // dfrc: start each opening from a random double-Fischer-random position
     // (each side gets its own Chess960 back rank) instead of the book or the
     // start position. OB plays Chess960 when the book's name says FRC/960, so
@@ -244,6 +252,10 @@ pub fn genfens(toks: &[&str]) {
             "moves" => v.parse().map(|x| moves = Some(x)).is_ok(),
             "nodes" => v.parse().map(|x: u64| nodes = x.max(1)).is_ok(),
             "maxeval" => v.parse().map(|x| maxeval = x).is_ok(),
+            "sample" => v.parse().map(|x| sample = x).is_ok(),
+            "multipv" => v.parse().map(|x: usize| spv = x.max(1)).is_ok(),
+            "margin" => v.parse().map(|x| margin = x).is_ok(),
+            "snodes" => v.parse().map(|x: u64| snodes = x.max(1)).is_ok(),
             "dfrc" => {
                 dfrc = true;
                 i += 1;
@@ -291,7 +303,13 @@ pub fn genfens(toks: &[&str]) {
             book
         }
     };
-    let base = moves.unwrap_or(if book_path.is_some() && !dfrc { 2 } else { 8 });
+    let base = moves.unwrap_or(if sample > 0 {
+        0
+    } else if book_path.is_some() && !dfrc {
+        2
+    } else {
+        8
+    });
 
     // splitmix64 so that nearby seeds (1, 2, 3...) give unrelated streams, and never zero.
     let mut z = seed.wrapping_add(0x9E3779B97F4A7C15);
@@ -302,6 +320,7 @@ pub fn genfens(toks: &[&str]) {
     let mut s = Searcher::new(8, Arc::new(AtomicBool::new(false)));
     s.silent = true;
     let lim = Limits { soft_ms: None, hard_ms: None, depth: 64, nodes: Some(nodes) };
+    let slim = Limits { soft_ms: None, hard_ms: None, depth: 64, nodes: Some(snodes) };
     let mut seen = std::collections::HashSet::new();
     let stdout = std::io::stdout();
     let mut done = 0;
@@ -321,7 +340,7 @@ pub fn genfens(toks: &[&str]) {
         }
         fails += 1;
         let mut pos = if dfrc { dfrc_start(&mut rng) } else { book[(rng.next() % book.len() as u64) as usize] };
-        let nrand = base + (rng.next() % 2) as usize;
+        let nrand = if base > 0 { base + (rng.next() % 2) as usize } else { 0 };
         let mut ok = true;
         for _ in 0..nrand {
             let mv = legal_moves(&pos);
@@ -331,6 +350,24 @@ pub fn genfens(toks: &[&str]) {
             }
             pos.make_move(mv[(rng.next() % mv.len() as u64) as usize]);
         }
+        let nsample = if sample > 0 && ok { sample + (rng.next() % 2) as usize } else { 0 };
+        s.multi_pv = spv;
+        for _ in 0..nsample {
+            if legal_moves(&pos).is_empty() {
+                ok = false;
+                break;
+            }
+            s.clear();
+            s.hash_hist.clear();
+            let (best, sc) = s.search(&pos, &slim);
+            let near: Vec<Move> = if s.lines.is_empty() {
+                vec![best]
+            } else {
+                s.lines.iter().filter(|l| l.0 >= sc - margin).map(|l| l.1).collect()
+            };
+            pos.make_move(near[(rng.next() % near.len() as u64) as usize]);
+        }
+        s.multi_pv = 1;
         if !ok || pos.checkers != 0 || legal_moves(&pos).is_empty() || (!seen.insert(pos.hash) && !repeats) {
             continue;
         }
