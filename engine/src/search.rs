@@ -1921,7 +1921,13 @@ impl Searcher {
                     if on(P::UseHistPrune)
                         && !in_check
                         && lmr_d <= tp(P::HistPruneDepth)
-                        && hist_score < -tp(P::HistPrune) * depth
+                        && hist_score
+                            + if on(P::UseGainHistPrune) && on(P::UseGainHist) {
+                                (self.gain[pos.board[mfrom(m)] as usize][mto(m)] - tp(P::GainHpMid)) * tp(P::GainHpMul)
+                            } else {
+                                0
+                            }
+                            < -tp(P::HistPrune) * depth
                     {
                         self.stats.hist_prunes += 1;
                         continue;

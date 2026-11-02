@@ -80,6 +80,13 @@ params! {
     // times this joins the history score. 32 makes a typical gain of
     // +-100 cp worth about a fifth of one saturated history table; 64 from #4829.
     GainOrdMul = "GainOrdMul", 64, 0, 256, 8;
+    // History pruning counts a quiet's learned gain relative to GainHpMid
+    // (cp), times GainHpMul. GainHpMid is about the median quiet gain (gain
+    // screen 4: 55% of reduced quiets were below -150), so the number of
+    // pruned moves stays about the same and gain only shifts which ones.
+    // GainHpMul is the ordering weight this was tested at (32, #4845).
+    GainHpMid = "GainHpMid", -150, -300, 100, 15;
+    GainHpMul = "GainHpMul", 32, 0, 256, 8;
     // Bonus for the opponent's previous quiet move when this node fails low (it refuted
     // every reply): PriorBonusPct% of the cutoff bonus at this depth; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 59, 0, 150, 8;
@@ -272,6 +279,7 @@ params! {
     UseThreatHist2 = "UseThreatHist2", 1, 0, 1, 0;
     UseCheckOrder = "UseCheckOrder", 1, 0, 1, 0;
     UseGainHist = "UseGainHist", 1, 0, 1, 0;
+    UseGainHistPrune = "UseGainHistPrune", 1, 0, 1, 0;
     // Continuation history keyed by our move three plies back (prev6), at
     // half weight in move scoring like the ply-4 table.
     UseCont6 = "UseCont6", 1, 0, 1, 0;
