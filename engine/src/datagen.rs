@@ -357,15 +357,7 @@ pub fn genfens(toks: &[&str]) {
                 ok = false;
                 break;
             }
-            s.clear();
-            s.hash_hist.clear();
-            let (best, sc) = s.search(&pos, &slim);
-            let near: Vec<Move> = if s.lines.is_empty() {
-                vec![best]
-            } else {
-                s.lines.iter().filter(|l| l.0 >= sc - margin).map(|l| l.1).collect()
-            };
-            pos.make_move(near[(rng.next() % near.len() as u64) as usize]);
+            pos.make_move(sample_move(&mut s, &pos, &slim, margin, &mut rng));
         }
         s.multi_pv = 1;
         if !ok || pos.checkers != 0 || legal_moves(&pos).is_empty() || (!seen.insert(pos.hash) && !repeats) {
@@ -383,6 +375,21 @@ pub fn genfens(toks: &[&str]) {
         done += 1;
         fails = 0;
     }
+}
+
+/// One sampled ply for genfens: a uniform pick among the searcher's MultiPV lines within
+/// `margin` cp of the best line (the best move alone if no lines were kept).
+fn sample_move(s: &mut Searcher, pos: &Position, lim: &Limits, margin: i32, rng: &mut Rng) -> Move {
+    s.clear();
+    s.hash_hist.clear();
+    let (best, _) = s.search(pos, lim);
+    // Margin from the best stored line, not the returned score: a node limit can stop a
+    // later iteration whose score is above every stored line, leaving none to pick.
+    let near: Vec<Move> = match s.lines.first() {
+        None => vec![best],
+        Some(&(top, _)) => s.lines.iter().filter(|l| l.0 >= top - margin).map(|l| l.1).collect(),
+    };
+    near[(rng.next() % near.len() as u64) as usize]
 }
 
 /// A random Chess960 back rank: bishops on opposite-coloured squares and the
@@ -417,4 +424,34 @@ fn dfrc_start(rng: &mut Rng) -> Position {
         rooks(&b)
     );
     Position::from_fen(&fen).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sampled plies under tiny node limits (where searches stop mid-iteration most often)
+    /// always return a legal move: an empty candidate list used to panic.
+    #[test]
+    fn sample_move_always_legal() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let mut s = Searcher::new(8, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        s.multi_pv = 8;
+        let mut rng = Rng(0x9E3779B97F4A7C15);
+        for nodes in [50u64, 200, 1000, 3000] {
+            let lim = Limits { soft_ms: None, hard_ms: None, depth: 64, nodes: Some(nodes) };
+            let mut pos = Position::from_fen(START_FEN).unwrap();
+            for _ in 0..40 {
+                let legal = legal_moves(&pos);
+                if legal.is_empty() {
+                    break;
+                }
+                let m = sample_move(&mut s, &pos, &lim, 40, &mut rng);
+                assert!(legal.contains(&m), "illegal sampled move at {}", pos.to_fen());
+                pos.make_move(m);
+            }
+        }
+    }
 }
