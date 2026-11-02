@@ -2,6 +2,7 @@ mod attacks;
 mod datagen;
 mod epd;
 mod eval;
+mod netshm;
 mod nnue;
 mod params;
 mod pawnpairs;
