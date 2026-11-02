@@ -1803,6 +1803,7 @@ impl Searcher {
                         threats,
                     );
                 } else if !skip_quiets {
+                    let n0 = list.len();
                     n = self.gen_stage(
                         pos,
                         &mut list,
@@ -1816,6 +1817,15 @@ impl Searcher {
                         prev6,
                         threats,
                     );
+                    if on(P::UseEvalOrder) && depth >= tp(P::EvalOrdDepth) && static_eval != -INF {
+                        self.eval_order(
+                            pos,
+                            &list.as_slice()[n0..n],
+                            &mut scores.as_mut_slice()[n0..n],
+                            static_eval,
+                            ply,
+                        );
+                    }
                 }
                 compacted = false;
                 continue;
@@ -2286,6 +2296,28 @@ impl Searcher {
                 let a = &mut self.gain[pc as usize][to as usize];
                 *a += (g - *a) / 16;
             }
+        }
+    }
+
+    /// Adds each quiet's own eval change to its ordering score (killers keep
+    /// their slots; checks keep the check bonus and are skipped, their child
+    /// has no static eval).
+    fn eval_order(&mut self, pos: &Position, moves: &[Move], scores: &mut [i32], static_eval: i32, ply: usize) {
+        for (j, &m) in moves.iter().enumerate() {
+            if scores[j] >= (1 << 27) {
+                continue;
+            }
+            let mut child = *pos;
+            if !child.make_move(m) || child.checkers != 0 {
+                continue;
+            }
+            let ce = if let Some(e) = self.tt.probe(child.hash) {
+                e.eval as i32
+            } else {
+                self.push_acc(ply, pos, &child, m);
+                self.evaluate(&child, ply + 1)
+            };
+            scores[j] += (-ce - static_eval).clamp(-1000, 1000) * tp(P::EvalOrdMul);
         }
     }
 
