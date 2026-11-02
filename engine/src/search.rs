@@ -1588,6 +1588,9 @@ impl Searcher {
         // No static pruning at the root of a null-move verification search:
         // there it must search the position, or a reverse-futility or
         // razoring cut "confirms" the null move without testing zugzwang.
+        // The square of our piece that the opponent's best reply to a failed
+        // null move captures (64: none).
+        let mut null_threat_sq = 64;
         if !pv_node && !in_check && excluded == 0 && ply != self.no_nmp_ply {
             // reverse futility pruning
             if on(P::UseRfp)
@@ -1637,6 +1640,13 @@ impl Searcher {
                 self.hash_hist.pop();
                 if self.stopped {
                     return 0;
+                }
+                if v < beta && on(P::UseNullThreat) {
+                    if let Some(e) = self.tt.probe(child.hash) {
+                        if e.mv != 0 && pos.board[mto(e.mv)] != NONE_PC && pc_color(pos.board[mto(e.mv)]) == pos.stm {
+                            null_threat_sq = mto(e.mv);
+                        }
+                    }
                 }
                 if v >= beta {
                     // At high depth, confirm with a reduced search of the real
@@ -1803,6 +1813,7 @@ impl Searcher {
                         threats,
                     );
                 } else if !skip_quiets {
+                    let n0 = list.len();
                     n = self.gen_stage(
                         pos,
                         &mut list,
@@ -1816,6 +1827,13 @@ impl Searcher {
                         prev6,
                         threats,
                     );
+                    if null_threat_sq < 64 {
+                        for j in n0..n {
+                            if mfrom(list[j]) == null_threat_sq && scores[j] < (1 << 27) {
+                                scores[j] += tp(P::NullThreatBonus);
+                            }
+                        }
+                    }
                 }
                 compacted = false;
                 continue;
