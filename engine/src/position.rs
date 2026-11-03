@@ -742,6 +742,13 @@ impl Position {
         (self.colors[c] & !(self.pieces[PAWN] | self.pieces[KING])) != 0
     }
 
+    /// Game phase by non-pawn material, both sides: minor 1, rook 2, queen 4 (24 at the start).
+    pub fn phase(&self) -> u32 {
+        (self.pieces[KNIGHT] | self.pieces[BISHOP]).count_ones()
+            + 2 * self.pieces[ROOK].count_ones()
+            + 4 * self.pieces[QUEEN].count_ones()
+    }
+
     pub fn non_pawn_count(&self, c: usize) -> u32 {
         (self.colors[c] & !(self.pieces[PAWN] | self.pieces[KING])).count_ones()
     }

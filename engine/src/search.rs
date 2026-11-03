@@ -26,6 +26,9 @@ pub const EVAL_CACHE_KB: usize = 256;
 /// MATE_BOUND) and below every mate (MATE - ply >= MATE - MAX_PLY), so code
 /// that treats |score| >= MATE_BOUND as decisive handles them like mates.
 pub const TB_WIN: i32 = MATE - 2 * MAX_PLY as i32;
+/// Endgame cutoff for NmpBaseEg (phase as Position::phase, 24 at the start). An SPSA run on an endgame book
+/// whose start positions all have phase <= 8 moved NmpBase from 5 to 3.7.
+const NMP_EG_PHASE: u32 = 8;
 const CORR_SIZE: usize = 16384;
 pub const CORR_GRAIN: i32 = 256;
 
@@ -1623,7 +1626,8 @@ impl Searcher {
                 && pos.has_non_pawns(pos.stm)
             {
                 self.stats.nmp_tries += 1;
-                let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(tp(P::NmpEvalCap));
+                let base = if pos.phase() <= NMP_EG_PHASE { tp(P::NmpBaseEg) } else { tp(P::NmpBase) };
+                let r = base + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(tp(P::NmpEvalCap));
                 let mut child = *pos;
                 child.make_null();
                 self.tt.prefetch(child.hash);

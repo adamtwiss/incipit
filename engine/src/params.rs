@@ -118,6 +118,8 @@ params! {
     // Largest |TT score| still used for a cutoff at halfmove >= 90.
     HmGuard = "HmGuard", 44, 0, 300, 15;
     NmpBase = "NmpBase", 5, 2, 7, 1;
+    // NmpBase in endgames (phase <= NMP_EG_PHASE, search.rs): zugzwang makes a null move less safe there.
+    NmpBaseEg = "NmpBaseEg", 4, 2, 7, 1;
     LmpBase = "LmpBase", 8, 1, 8, 1;
     // Late-move pruning limit: (LmpBase + LmpQuadPct/100 * depth^2), times
     // LmpNonImpPct/100 at a node that isn't improving (100 and 50: the old
