@@ -742,6 +742,28 @@ impl Position {
         (self.colors[c] & !(self.pieces[PAWN] | self.pieces[KING])) != 0
     }
 
+    /// Whether m moves a passed pawn (no enemy pawn ahead on its own or an adjacent file) to at least
+    /// relative rank `min_rank` (1-8).
+    pub fn is_passer_push(&self, m: Move, min_rank: usize) -> bool {
+        let (from, to) = (mfrom(m), mto(m));
+        if self.pieces[PAWN] & (1u64 << from) == 0 {
+            return false;
+        }
+        let us = self.stm;
+        let (file, rank) = (to % 8, to / 8);
+        if (if us == WHITE { rank + 1 } else { 8 - rank }) < min_rank {
+            return false;
+        }
+        let f = FILE_A << file;
+        let files = f | ((f & !FILE_H) << 1) | ((f & !FILE_A) >> 1);
+        let ahead = if us == WHITE {
+            (!0u64).checked_shl(8 * (rank as u32 + 1)).unwrap_or(0)
+        } else {
+            (1u64 << (8 * rank)) - 1
+        };
+        self.pieces[PAWN] & self.colors[us ^ 1] & files & ahead == 0
+    }
+
     pub fn non_pawn_count(&self, c: usize) -> u32 {
         (self.colors[c] & !(self.pieces[PAWN] | self.pieces[KING])).count_ones()
     }
@@ -1246,5 +1268,27 @@ mod tests {
         }
         assert!(castles >= 50, "only {castles} castles reached");
         println!("{castles} castles, {king_stays} with the king staying put");
+    }
+
+    #[test]
+    fn passer_push() {
+        let push = |fen: &str, mv: &str| {
+            let p = Position::from_fen(fen).unwrap();
+            p.is_passer_push(p.parse_move(mv).unwrap(), 5)
+        };
+        // White d4-d5: passed with no black pawn on c-e ahead; not passed with one on e6.
+        assert!(push("4k3/8/8/8/3P4/8/8/4K3 w - - 0 1", "d4d5"));
+        assert!(!push("4k3/8/4p3/8/3P4/8/8/4K3 w - - 0 1", "d4d5"));
+        // A black pawn behind (on c3) doesn't stop it; rank 4 is below the threshold.
+        assert!(push("4k3/8/8/8/3P4/2p5/8/4K3 w - - 0 1", "d4d5"));
+        assert!(!push("4k3/8/8/8/8/3P4/8/4K3 w - - 0 1", "d3d4"));
+        // Black mirrors: d5-d4 reaches relative rank 5; a white pawn on c3 blocks, one on e5 doesn't.
+        assert!(push("4k3/8/8/3p4/8/8/8/4K3 b - - 0 1", "d5d4"));
+        assert!(!push("4k3/8/8/3p4/8/2P5/8/4K3 b - - 0 1", "d5d4"));
+        assert!(push("4k3/8/8/3pP3/8/8/8/4K3 b - - 0 1", "d5d4"));
+        // Edge files and non-pawn moves.
+        assert!(push("4k3/8/8/7P/8/8/8/4K3 w - - 0 1", "h5h6"));
+        assert!(!push("4k3/6p1/8/7P/8/8/8/4K3 w - - 0 1", "h5h6"));
+        assert!(!push("4k3/8/8/8/3N4/8/8/4K3 w - - 0 1", "d4e6"));
     }
 }

@@ -26,6 +26,10 @@ pub const EVAL_CACHE_KB: usize = 256;
 /// MATE_BOUND) and below every mate (MATE - ply >= MATE - MAX_PLY), so code
 /// that treats |score| >= MATE_BOUND as decisive handles them like mates.
 pub const TB_WIN: i32 = MATE - 2 * MAX_PLY as i32;
+/// Passed-pawn pushes to this relative rank or further are exempt from futility pruning. In middlegame
+/// probes, futility pruned rank 5-7 passer pushes twice as often as other quiets, and the pruned ones would
+/// have beaten alpha 5x as often.
+const PASSER_FUT_RANK: usize = 5;
 const CORR_SIZE: usize = 16384;
 pub const CORR_GRAIN: i32 = 256;
 
@@ -1769,6 +1773,9 @@ impl Searcher {
         let mut capts: [Move; 32] = [0; 32];
         let mut nc = 0;
         let mut skip_quiets = false;
+        // Set when futility (not move count) started skipping quiets: advanced passed-pawn pushes are still
+        // searched, since futility misjudges them (a static eval can't count pawn races).
+        let mut keep_passers = false;
         let orig_alpha = alpha;
         let tt_capture = tt_move != 0 && is_noisy(tt_move);
         let lmp_limit = if tp(P::LmpQuadPct) == 100 && tp(P::LmpNonImpPct) == 50 {
@@ -1802,7 +1809,7 @@ impl Searcher {
                         prev6,
                         threats,
                     );
-                } else if !skip_quiets {
+                } else if !skip_quiets || keep_passers {
                     n = self.gen_stage(
                         pos,
                         &mut list,
@@ -1824,7 +1831,7 @@ impl Searcher {
                 compacted = true;
                 let mut k = i;
                 for j in i..n {
-                    if is_noisy(list[j]) {
+                    if is_noisy(list[j]) || (keep_passers && pos.is_passer_push(list[j], PASSER_FUT_RANK)) {
                         list[k] = list[j];
                         scores[k] = scores[j];
                         k += 1;
@@ -1844,7 +1851,7 @@ impl Searcher {
                     list.as_mut_slice().swap(i, from);
                     scores.as_mut_slice().swap(i, from);
                     stage = STAGE_QUIET;
-                    if !skip_quiets {
+                    if !skip_quiets || keep_passers {
                         n = self.gen_stage(
                             pos,
                             &mut list,
@@ -1882,7 +1889,7 @@ impl Searcher {
                 continue;
             }
             let quiet = !is_noisy(m);
-            if quiet && skip_quiets {
+            if quiet && skip_quiets && !(keep_passers && pos.is_passer_push(m, PASSER_FUT_RANK)) {
                 continue;
             }
             // TT/killer priority is an ordering bonus, not a history value.
@@ -1900,12 +1907,14 @@ impl Searcher {
                     if on(P::UseLmp) && legal >= lmp_limit && !in_check {
                         self.stats.lmp += 1;
                         skip_quiets = true;
+                        keep_passers = false;
                         continue;
                     }
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
                     if on(P::UseFut)
                         && !in_check
                         && lmr_d <= tp(P::FutDepth)
+                        && !pos.is_passer_push(m, PASSER_FUT_RANK)
                         && static_eval
                             + tp(P::FutBase)
                             + tp(P::FutMul) * lmr_d
@@ -1916,6 +1925,7 @@ impl Searcher {
                         // A boosted move can precede quiets with higher
                         // history. Its failure cannot prune those moves too.
                         skip_quiets = !on(P::UseFutHist) || mscore < (1 << 27);
+                        keep_passers = skip_quiets;
                         continue;
                     }
                     if on(P::UseHistPrune)
