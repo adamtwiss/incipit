@@ -1590,11 +1590,13 @@ impl Searcher {
         // razoring cut "confirms" the null move without testing zugzwang.
         if !pv_node && !in_check && excluded == 0 && ply != self.no_nmp_ply {
             // reverse futility pruning
+            let (rfp_margin, rfp_imp) =
+                if cut_node { (tp(P::RfpMargin), tp(P::RfpImp)) } else { (tp(P::RfpMarginAll), tp(P::RfpImpAll)) };
             if on(P::UseRfp)
                 && depth <= tp(P::RfpDepth)
                 && eval.abs() < MATE_BOUND
                 && beta.abs() < MATE_BOUND
-                && eval - tp(P::RfpMargin) * depth + tp(P::RfpImp) * improving as i32 >= beta
+                && eval - rfp_margin * depth + rfp_imp * improving as i32 >= beta
             {
                 self.stats.rfp += 1;
                 return if tp(P::RfpBlendPct) == 50 {

@@ -45,6 +45,12 @@ params! {
     // can size it on its own: depth-1 improving nodes are over half of all
     // RFP cuts (bench audit).
     RfpImp = "RfpImp", 58, 0, 150, 6;
+    // RFP margin and improving bonus at expected all-nodes (non-PV, not a cut
+    // node). RfpMargin/RfpImp then apply at cut nodes only. Start equal; a
+    // census found RFP cuts at all-nodes wrong 7-15% of the time against 1-2%
+    // at cut nodes (incipit-research docs/stage-pruning.md).
+    RfpMarginAll = "RfpMarginAll", 56, 30, 150, 6;
+    RfpImpAll = "RfpImpAll", 58, 0, 150, 6;
     // An RFP cut returns this percentage of the way from beta to the eval
     // (50: the midpoint).
     RfpBlendPct = "RfpBlendPct", 46, 0, 100, 5;
