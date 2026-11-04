@@ -39,57 +39,57 @@ macro_rules! params {
 
 // name = UCI name, default, min, max, SPSA step (c_end). Step = (max - min) / 20, at least 1.
 params! {
-    RfpMargin = "RfpMargin", 56, 30, 150, 6;
+    RfpMargin = "RfpMargin", 55, 30, 150, 6;
     // RFP margin taken off at an improving node (cp). Starts at one depth
     // step (RfpMargin), the old (depth - improving) form; separate so SPSA
     // can size it on its own: depth-1 improving nodes are over half of all
     // RFP cuts (bench audit).
-    RfpImp = "RfpImp", 58, 0, 150, 6;
+    RfpImp = "RfpImp", 55, 0, 150, 6;
     // An RFP cut returns this percentage of the way from beta to the eval
     // (50: the midpoint).
-    RfpBlendPct = "RfpBlendPct", 46, 0, 100, 5;
+    RfpBlendPct = "RfpBlendPct", 42, 0, 100, 5;
     // Razoring at any depth: eval + RazorBase + RazorMul * depth^2 <= alpha.
-    RazorBase = "RazorBase", 332, 100, 800, 35;
-    RazorMul = "RazorMul", 87, 20, 200, 9;
-    NmpEvalDiv = "NmpEvalDiv", 124, 60, 400, 15;
-    ProbcutMargin = "ProbcutMargin", 254, 100, 350, 13;
-    FutBase = "FutBase", 59, 30, 250, 11;
-    FutMul = "FutMul", 56, 10, 200, 8;
+    RazorBase = "RazorBase", 323, 100, 800, 35;
+    RazorMul = "RazorMul", 88, 20, 200, 9;
+    NmpEvalDiv = "NmpEvalDiv", 128, 60, 400, 15;
+    ProbcutMargin = "ProbcutMargin", 260, 100, 350, 13;
+    FutBase = "FutBase", 61, 30, 250, 11;
+    FutMul = "FutMul", 58, 10, 200, 8;
     // Futility margin by quiet history: a quiet's history sum (the ordering
     // score, four tables of +-16384) over this is added to the margin, so a
     // well-scored quiet survives a margin a badly scored one does not.
-    FutHistDiv = "FutHistDiv", 63, 32, 512, 12;
-    HistPrune = "HistPrune", 3963, 500, 5000, 225;
-    SeeQuiet = "SeeQuiet", 10, 0, 80, 4;
+    FutHistDiv = "FutHistDiv", 59, 32, 512, 12;
+    HistPrune = "HistPrune", 3898, 500, 5000, 225;
+    SeeQuiet = "SeeQuiet", 8, 0, 80, 4;
     // Quiet SEE bar by history: the history sum over this is subtracted from
     // the bar.
-    SeeHistDiv = "SeeHistDiv", 96, 32, 512, 12;
-    SeeNoisy = "SeeNoisy", 107, 10, 200, 10;
-    LmrBaseX100 = "LmrBaseX100", 46, 30, 130, 5;
-    LmrDivX100 = "LmrDivX100", 289, 150, 350, 10;
-    LmrHistDiv = "LmrHistDiv", 11036, 3000, 16000, 650;
-    AspDelta = "AspDelta", 16, 3, 40, 2;
-    HistMul = "HistMul", 414, 100, 500, 20;
-    HistOff = "HistOff", 73, 0, 500, 25;
-    HistMax = "HistMax", 2847, 1000, 4000, 150;
+    SeeHistDiv = "SeeHistDiv", 89, 32, 512, 12;
+    SeeNoisy = "SeeNoisy", 113, 10, 200, 10;
+    LmrBaseX100 = "LmrBaseX100", 44, 30, 130, 5;
+    LmrDivX100 = "LmrDivX100", 290, 150, 350, 10;
+    LmrHistDiv = "LmrHistDiv", 11169, 3000, 16000, 650;
+    AspDelta = "AspDelta", 15, 3, 40, 2;
+    HistMul = "HistMul", 424, 100, 500, 20;
+    HistOff = "HistOff", 72, 0, 500, 25;
+    HistMax = "HistMax", 2798, 1000, 4000, 150;
     // Ordering bonus for a quiet move giving direct check: a power of two
     // below one saturated history table (HistMax), so a check comes ahead of
     // quiets with ordinary history and behind ones every table rates highly.
-    CheckBonus = "CheckBonus", 2303, 0, 8192, 256;
+    CheckBonus = "CheckBonus", 2291, 0, 8192, 256;
     // Quiet ordering: the move's learned eval gain (cp, see `gain_learn`)
     // times this joins the history score. 32 makes a typical gain of
     // +-100 cp worth about a fifth of one saturated history table; 64 from #4829.
-    GainOrdMul = "GainOrdMul", 64, 0, 256, 8;
+    GainOrdMul = "GainOrdMul", 62, 0, 256, 8;
     // History pruning counts a quiet's learned gain relative to GainHpMid
     // (cp), times GainHpMul. GainHpMid is about the median quiet gain (gain
     // screen 4: 55% of reduced quiets were below -150), so the number of
     // pruned moves stays about the same and gain only shifts which ones.
     // GainHpMul is the ordering weight this was tested at (32, #4845).
-    GainHpMid = "GainHpMid", -150, -300, 100, 15;
+    GainHpMid = "GainHpMid", -156, -300, 100, 15;
     GainHpMul = "GainHpMul", 32, 0, 256, 8;
     // Bonus for the opponent's previous quiet move when this node fails low (it refuted
     // every reply): PriorBonusPct% of the cutoff bonus at this depth; 0 disables it.
-    PriorBonusPct = "PriorBonusPct", 59, 0, 150, 8;
+    PriorBonusPct = "PriorBonusPct", 62, 0, 150, 8;
     // A cutoff beating beta by more than this (cp) earns the history bonus of
     // one ply deeper.
     HistBonusMargin = "HistBonusMargin", 64, 0, 300, 15;
@@ -97,8 +97,8 @@ params! {
     // back, and four and six plies back) weigh in at ContW/8 against the main
     // history's 8/8 (8, 8, 4, 4: the old 1, 1, 1/2, 1/2).
     ContW1 = "ContW1", 8, 0, 16, 1;
-    ContW2 = "ContW2", 8, 0, 16, 1;
-    ContW4 = "ContW4", 4, 0, 16, 1;
+    ContW2 = "ContW2", 7, 0, 16, 1;
+    ContW4 = "ContW4", 3, 0, 16, 1;
     ContW6 = "ContW6", 4, 0, 16, 1;
     // Capture ordering: capture history / CapOrdDiv joins the victim value x 16.
     CapOrdDiv = "CapOrdDiv", 17, 4, 64, 3;
@@ -107,30 +107,30 @@ params! {
     QsEvasions = "QsEvasions", 4, 1, 6, 1;
     // LMR applies from this depth (at depth 2 the reduction is clamped to 0).
     LmrMinDepth = "LmrMinDepth", 3, 3, 6, 1;
-    SeDouble = "SeDouble", 15, 5, 50, 2;
+    SeDouble = "SeDouble", 16, 5, 50, 2;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth.
-    LmrDeeper = "LmrDeeper", 68, 10, 200, 10;
+    LmrDeeper = "LmrDeeper", 73, 10, 200, 10;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
-    NmpMarginBase = "NmpMarginBase", 104, 0, 400, 20;
+    NmpMarginBase = "NmpMarginBase", 123, 0, 400, 20;
     // Largest |TT score| still used for a cutoff at halfmove >= 90.
-    HmGuard = "HmGuard", 44, 0, 300, 15;
+    HmGuard = "HmGuard", 58, 0, 300, 15;
     NmpBase = "NmpBase", 5, 2, 7, 1;
     LmpBase = "LmpBase", 8, 1, 8, 1;
     // Late-move pruning limit: (LmpBase + LmpQuadPct/100 * depth^2), times
     // LmpNonImpPct/100 at a node that isn't improving (100 and 50: the old
     // (LmpBase + depth^2) / (2 - improving)).
-    LmpQuadPct = "LmpQuadPct", 94, 40, 200, 8;
-    LmpNonImpPct = "LmpNonImpPct", 50, 25, 100, 4;
+    LmpQuadPct = "LmpQuadPct", 101, 40, 200, 8;
+    LmpNonImpPct = "LmpNonImpPct", 49, 25, 100, 4;
     // Null move: the eval term of the reduction, (eval - beta) / NmpEvalDiv,
     // is capped at NmpEvalCap plies; the eval must clear beta by NmpEvalMin
     // (0: any eval at or above beta; the audit's misses gather within 80 cp).
-    NmpEvalCap = "NmpEvalCap", 2, 0, 6, 1;
-    NmpEvalMin = "NmpEvalMin", 1, 0, 100, 5;
-    SeMul = "SeMul", 41, 8, 64, 2;
-    CapLmrDiv = "CapLmrDiv", 3191, 1000, 16000, 700;
+    NmpEvalCap = "NmpEvalCap", 3, 0, 6, 1;
+    NmpEvalMin = "NmpEvalMin", 2, 0, 100, 5;
+    SeMul = "SeMul", 40, 8, 64, 2;
+    CapLmrDiv = "CapLmrDiv", 3939, 1000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
@@ -172,21 +172,21 @@ params! {
     ProbcutTtDepth = "ProbcutTtDepth", 2, 0, 6, 1;
     ProbcutRed = "ProbcutRed", 6, 2, 8, 1;
     IirDepth = "IirDepth", 2, 1, 8, 1;
-    FutDepth = "FutDepth", 9, 4, 12, 1;
+    FutDepth = "FutDepth", 10, 4, 12, 1;
     HistPruneDepth = "HistPruneDepth", 5, 2, 8, 1;
     SeeNoisyDepth = "SeeNoisyDepth", 8, 3, 10, 1;
     // A capture whose static exchange gain is at least this (cp) is ordered
     // as a good capture, before the killers and quiets;
     // the rest follow the quiets, and with staged generation the quiets are
     // generated as soon as only those remain.
-    GoodCaptureSee = "GoodCaptureSee", -49, -150, 0, 8;
+    GoodCaptureSee = "GoodCaptureSee", -47, -150, 0, 8;
     // SEE piece values (pawn = 100), used by SEE pruning,
     // ProbCut, qsearch SEE and capture ordering.
-    SeeKnight = "SeeKnight", 304, 150, 650, 25;
-    SeeBishop = "SeeBishop", 318, 150, 650, 25;
-    SeeRook = "SeeRook", 519, 250, 1000, 37;
-    SeeQueen = "SeeQueen", 1007, 500, 2000, 75;
-    SeDepth = "SeDepth", 5, 4, 10, 1;
+    SeeKnight = "SeeKnight", 306, 150, 650, 25;
+    SeeBishop = "SeeBishop", 331, 150, 650, 25;
+    SeeRook = "SeeRook", 505, 250, 1000, 37;
+    SeeQueen = "SeeQueen", 1053, 500, 2000, 75;
+    SeDepth = "SeDepth", 4, 4, 10, 1;
     // A TT entry qualifies its move for the singular test when its depth is
     // at least the node's depth minus this.
     SeTtDepth = "SeTtDepth", 5, 0, 6, 1;
@@ -196,19 +196,19 @@ params! {
     // Correction history. The eval correction is (CorrPawnWeight * pawn entry +
     // CorrNonPawnWeight * (white + black non-pawn entries) + the continuation
     // terms below) / 128.
-    CorrPawnWeight = "CorrPawnWeight", 98, 0, 256, 13;
-    CorrNonPawnWeight = "CorrNonPawnWeight", 138, 0, 256, 13;
+    CorrPawnWeight = "CorrPawnWeight", 103, 0, 256, 13;
+    CorrNonPawnWeight = "CorrNonPawnWeight", 144, 0, 256, 13;
     // Update: an entry moves toward the search's eval error (clamped to
     // +-CorrDiffClamp cp) by min(depth + 1, CorrUpdateCap) / 256; entries are
     // kept within +-CorrLimit cp.
-    CorrUpdateCap = "CorrUpdateCap", 13, 4, 64, 3;
-    CorrDiffClamp = "CorrDiffClamp", 364, 100, 1000, 45;
-    CorrLimit = "CorrLimit", 37, 8, 256, 12;
+    CorrUpdateCap = "CorrUpdateCap", 15, 4, 64, 3;
+    CorrDiffClamp = "CorrDiffClamp", 370, 100, 1000, 45;
+    CorrLimit = "CorrLimit", 41, 8, 256, 12;
     // Weight of the continuation correction (keyed by the previous move's
     // piece and square).
-    CorrContWeight = "CorrContWeight", 61, 0, 256, 13;
+    CorrContWeight = "CorrContWeight", 62, 0, 256, 13;
     // Weight of the continuation correction keyed by our own move two plies back.
-    CorrCont2Weight = "CorrCont2Weight", 60, 0, 256, 13;
+    CorrCont2Weight = "CorrCont2Weight", 69, 0, 256, 13;
     // Network output multiplier in percent, applied to every search eval. Lets a
     // net trained on differently scaled labels be run at Incipit's eval scale
     // (which the pruning margins and other cp thresholds are tuned to) without
