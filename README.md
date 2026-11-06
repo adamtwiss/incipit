@@ -14,7 +14,7 @@ Language models doing the work were almost certainly trained on much of that sam
 
 **The name:** The Coda name was an acronym, but in music, a *coda* is also the closing passage of a piece, and an *incipit* is its opening. The name reflects that Incipit starts afresh, from nothing.
 
-**Status:** Incipit is an experiment that is still developing quickly. Version 0.5.0 is its first public release, for testers and rating lists. Expect regular releases as its search improves and its networks grow with more self-play data.
+**Status:** Incipit is an experiment that is still developing quickly. Version 0.6.0 is its second public release, for testers and rating lists (0.5.0 was the first). Expect regular releases as its search improves and its networks grow with more self-play data.
 
 **License:** Incipit is open-source and licensed under GPLv3 (or later).
 
@@ -31,12 +31,13 @@ Prebuilt binaries are attached to each [release](https://github.com/adamtwiss/in
 | `incipit-vX.Y.Z-macos-arm64` | macOS, Apple Silicon |
 | `incipit-vX.Y.Z-macos-x86-64` | macOS, Intel |
 | `incipit-vX.Y.Z-linux-aarch64` | Linux, 64-bit ARM |
+| `incipit-vX.Y.Z-linux-aarch64-musl` | Linux, 64-bit ARM, statically linked (e.g. Android/Termux) |
 
 The x86-64 builds need AVX2 and BMI2 (Intel Haswell or AMD Zen 1 and later). Faster code paths (AVX-512, VNNI, PEXT) are chosen at start-up when the CPU has them; `incipit bench` prints what was chosen.
 
 ## Features
 
-* **Evaluation:** an NNUE network trained only on Incipit's own self-play games (about 15 billion positions so far, published as the [incipit-data](https://huggingface.co/datasets/adamtwiss/incipit-data) dataset). Its shape: 32 king buckets (mirrored), a 1024-wide feature transformer with pairwise activation, hidden layers of 16 and 16, and 8 output buckets by material.
+* **Evaluation:** an NNUE network trained only on Incipit's own self-play games (about 33 billion positions so far, published as the [incipit-data](https://huggingface.co/datasets/adamtwiss/incipit-data) dataset). Its inputs are piece-square features in 16 king buckets (mirrored), plus pawn-pair and threat features (which pieces attack which); then a 1024-wide feature transformer with pairwise activation, hidden layers of 16 and 16, and 6 output buckets by material.
 * **Search:** alpha-beta (principal variation search) with the usual selectivity (null-move pruning, late-move reductions, singular extensions and more), a transposition table, and Lazy SMP for multiple threads.
 * **Endgame tablebases:** Syzygy, via Fathom.
 * **Chess960** (and double Fischer random).

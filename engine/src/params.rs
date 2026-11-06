@@ -40,10 +40,8 @@ macro_rules! params {
 // name = UCI name, default, min, max, SPSA step (c_end). Step = (max - min) / 20, at least 1.
 params! {
     RfpMargin = "RfpMargin", 55, 30, 150, 6;
-    // RFP margin taken off at an improving node (cp). Starts at one depth
-    // step (RfpMargin), the old (depth - improving) form; separate so SPSA
-    // can size it on its own: depth-1 improving nodes are over half of all
-    // RFP cuts (bench audit).
+    // RFP margin taken off at an improving node (cp), sized separately from
+    // the per-depth margin RfpMargin.
     RfpImp = "RfpImp", 55, 0, 150, 6;
     // An RFP cut returns this percentage of the way from beta to the eval
     // (50: the midpoint).
@@ -72,19 +70,16 @@ params! {
     HistMul = "HistMul", 424, 100, 500, 20;
     HistOff = "HistOff", 72, 0, 500, 25;
     HistMax = "HistMax", 2798, 1000, 4000, 150;
-    // Ordering bonus for a quiet move giving direct check: a power of two
-    // below one saturated history table (HistMax), so a check comes ahead of
-    // quiets with ordinary history and behind ones every table rates highly.
+    // Ordering bonus for a quiet move giving direct check, on the history
+    // scale (HistMax is one saturated table): a check comes ahead of quiets
+    // with ordinary history and behind ones every table rates highly.
     CheckBonus = "CheckBonus", 2291, 0, 8192, 256;
     // Quiet ordering: the move's learned eval gain (cp, see `gain_learn`)
-    // times this joins the history score. 32 makes a typical gain of
-    // +-100 cp worth about a fifth of one saturated history table; 64 from #4829.
+    // times this joins the history score.
     GainOrdMul = "GainOrdMul", 62, 0, 256, 8;
     // History pruning counts a quiet's learned gain relative to GainHpMid
-    // (cp), times GainHpMul. GainHpMid is about the median quiet gain (gain
-    // screen 4: 55% of reduced quiets were below -150), so the number of
+    // (cp, about the median quiet gain), times GainHpMul: the number of
     // pruned moves stays about the same and gain only shifts which ones.
-    // GainHpMul is the ordering weight this was tested at (32, #4845).
     GainHpMid = "GainHpMid", -156, -300, 100, 15;
     GainHpMul = "GainHpMul", 32, 0, 256, 8;
     // Bonus for the opponent's previous quiet move when this node fails low (it refuted
@@ -126,7 +121,7 @@ params! {
     LmpNonImpPct = "LmpNonImpPct", 49, 25, 100, 4;
     // Null move: the eval term of the reduction, (eval - beta) / NmpEvalDiv,
     // is capped at NmpEvalCap plies; the eval must clear beta by NmpEvalMin
-    // (0: any eval at or above beta; the audit's misses gather within 80 cp).
+    // (0: any eval at or above beta).
     NmpEvalCap = "NmpEvalCap", 3, 0, 6, 1;
     NmpEvalMin = "NmpEvalMin", 2, 0, 100, 5;
     SeMul = "SeMul", 40, 8, 64, 2;
@@ -249,7 +244,7 @@ params! {
     UseTtPvKeep = "UseTtPvKeep", 1, 0, 1, 0;
     UseQsSee = "UseQsSee", 1, 0, 1, 0;
     // SEE leaves pieces pinned to their king out of the exchange while
-    // the pinner stands (external movegen audit, review round 4).
+    // the pinner stands.
     UsePinSee = "UsePinSee", 1, 0, 1, 0;
     UseQsEvasionLimit = "UseQsEvasionLimit", 1, 0, 1, 0;
     UseCorrHist = "UseCorrHist", 1, 0, 1, 0;
