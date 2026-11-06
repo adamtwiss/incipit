@@ -470,3 +470,64 @@ fn tb_label_scores() {
     assert_eq!(keep.win_score(&krk, -1, 0, -900), 900);
     assert_eq!(keep.win_score(&krk, -1, 0, 200), 600);
 }
+
+#[test]
+fn output_paths_refuse_collisions_and_overwrites() {
+    use crate::{output_paths, output_paths_named};
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let vf = |f: &std::ffi::OsStr| {
+        let mut n = std::path::Path::new(f).file_stem().unwrap_or_default().to_os_string();
+        n.push(".vf");
+        n
+    };
+    // bin: <stem>.vf collides for the same stem in two directories, or two extensions.
+    assert!(output_paths_named("out", &s(&["run1/t0.bin", "run2/t0.bin"]), vf).is_err());
+    assert!(output_paths_named("out", &s(&["t0.bin", "t0.dat"]), vf).is_err());
+    let ok = output_paths_named("out", &s(&["run1/t0.bin", "run1/t1.bin"]), vf).unwrap();
+    assert_eq!(ok, vec![std::path::Path::new("out/t0.vf"), std::path::Path::new("out/t1.vf")]);
+    // tbrelabel, rescale, calibrate keep the file name: same name in two directories collides.
+    assert!(output_paths("out", &s(&["a/x.vf", "b/x.vf"])).is_err());
+    // An output that is its own input.
+    let dir = std::env::temp_dir().join(format!("incipit-outpaths-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("x.vf");
+    std::fs::write(&input, b"").unwrap();
+    let d = dir.to_string_lossy().to_string();
+    assert!(output_paths(&d, &[input.to_string_lossy().to_string()]).is_err());
+    assert!(output_paths_named(&d, &[input.to_string_lossy().to_string()], vf).is_err());
+    // cmd_bin refuses colliding inputs before creating its output directory.
+    let out = dir.join("binout");
+    assert!(crate::cmd_bin(&out.to_string_lossy(), &s(&["run1/t0.bin", "run2/t0.bin"])).is_err());
+    assert!(!out.exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn oldbin_skips_corrupt_records() {
+    use crate::oldbin;
+    // A plausible record: kings on e1/e8, white to move, a draw.
+    let mut good = [0u8; 32];
+    good[0..8].copy_from_slice(&((1u64 << 4) | (1u64 << 60)).to_le_bytes());
+    good[8] = 10 | (11 << 4); // white king (5*2+0), black king (5*2+1)
+    good[26] = 1;
+    good[27] = 0;
+    assert!(!oldbin::decode(&good).bad);
+    let mut bad_piece = good;
+    bad_piece[8] = 15 | (11 << 4); // piece code 15 used to panic
+    let mut bad_empty = good;
+    bad_empty[8] = 12 | (11 << 4); // "empty" on an occupied square
+    let mut bad_stm = good;
+    bad_stm[27] = 2;
+    let mut bad_result = good;
+    bad_result[26] = 3;
+    for r in [bad_piece, bad_empty, bad_stm, bad_result] {
+        assert!(oldbin::decode(&r).bad);
+    }
+    let mut data = Vec::new();
+    for r in [good, bad_piece, good, bad_stm] {
+        data.extend_from_slice(&r);
+    }
+    let mut stats = oldbin::Stats::default();
+    oldbin::rebuild(&data, &mut stats, |_| {});
+    assert_eq!((stats.records, stats.corrupt, stats.first_corrupt), (4, 2, Some(1)));
+}

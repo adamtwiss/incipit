@@ -28,28 +28,29 @@ pub struct Record {
     pub score: i16,
     pub result: u8,
     pub pieces: u32,
+    /// A corrupt record: more than 32 pieces, a piece code that isn't a piece
+    /// (12-15) on an occupied square, side to move not 0/1, or result not 0-2.
+    pub bad: bool,
 }
 
 pub fn decode(r: &[u8]) -> Record {
     let occ = u64::from_le_bytes(r[0..8].try_into().unwrap());
     let mut board = [NONE_PC; 64];
-    // More than 32 pieces would read past the packed board: a corrupt record.
-    // Left empty (no kings), so it never becomes a position.
-    let mut bits = if occ.count_ones() <= 32 { occ } else { 0 };
+    // More than 32 pieces would read past the packed board.
+    let mut bad = occ.count_ones() > 32;
+    let mut bits = if bad { 0 } else { occ };
     let mut i = 0;
     while bits != 0 {
         let sq = bits.trailing_zeros() as usize;
         bits &= bits - 1;
-        board[sq] = (r[8 + i / 2] >> ((i & 1) * 4)) & 15;
+        let pc = (r[8 + i / 2] >> ((i & 1) * 4)) & 15;
+        bad |= pc >= NONE_PC;
+        board[sq] = pc.min(NONE_PC);
         i += 1;
     }
-    Record {
-        board,
-        stm: r[27] as usize,
-        score: i16::from_le_bytes([r[24], r[25]]),
-        result: r[26],
-        pieces: occ.count_ones(),
-    }
+    let (stm, result) = (r[27] as usize, r[26]);
+    bad |= stm > 1 || result > 2;
+    Record { board, stm, score: i16::from_le_bytes([r[24], r[25]]), result, pieces: occ.count_ones(), bad }
 }
 
 /// Builds a Position for a record, inferring castling rights from home squares.
@@ -153,6 +154,9 @@ pub struct Stats {
     pub dropped: u64,
     pub gaps: [u64; MAX_GAP + 1],
     pub restarts: u64,
+    /// Corrupt records skipped (see `Record::bad`), and the first one's index.
+    pub corrupt: u64,
+    pub first_corrupt: Option<u64>,
 }
 
 /// A game being rebuilt: `cur` is the last recorded position, whose score
@@ -190,6 +194,16 @@ pub fn rebuild(data: &[u8], stats: &mut Stats, mut emit: impl FnMut(&Game)) {
     };
     for k in 0..n {
         let rec = decode(&data[k * 32..k * 32 + 32]);
+        if rec.bad {
+            // Skipped; the game it would have continued ends here.
+            stats.corrupt += 1;
+            stats.first_corrupt.get_or_insert(k as u64);
+            if let Some(c) = chain.take() {
+                finish(c, stats);
+            }
+            fullmove = GAME_START_FULLMOVE;
+            continue;
+        }
         if let Some(c) = chain.as_mut() {
             if rec.result == c.result && rec.pieces <= c.pieces {
                 if let Some(path) = find_path(&c.cur, &rec) {

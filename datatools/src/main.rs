@@ -205,6 +205,13 @@ fn cmd_pgn(out: &str, args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_bin(out_dir: &str, inputs: &[String]) -> Result<(), String> {
+    // <stem>.vf per input: inputs with the same stem (run1/t0.bin, run2/t0.bin,
+    // or t0.bin and t0.dat) would write one file from two threads.
+    let dests = output_paths_named(out_dir, inputs, |f| {
+        let mut n = Path::new(f).file_stem().unwrap_or_default().to_os_string();
+        n.push(".vf");
+        n
+    })?;
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {}", out_dir, e))?;
     let next = AtomicUsize::new(0);
     let total = Mutex::new(oldbin::Stats::default());
@@ -215,11 +222,10 @@ fn cmd_bin(out_dir: &str, inputs: &[String]) -> Result<(), String> {
             s.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(input) = inputs.get(i) else { break };
-                let stem = Path::new(input).file_stem().unwrap_or_default().to_string_lossy();
-                let out = Path::new(out_dir).join(format!("{}.vf", stem));
+                let out = &dests[i];
                 let run = || -> std::io::Result<oldbin::Stats> {
                     let data = std::fs::read(input)?;
-                    let mut w = BufWriter::new(File::create(&out)?);
+                    let mut w = BufWriter::new(File::create(out)?);
                     let mut stats = oldbin::Stats::default();
                     let mut err = Ok(());
                     oldbin::rebuild(&data, &mut stats, |g| {
@@ -233,16 +239,22 @@ fn cmd_bin(out_dir: &str, inputs: &[String]) -> Result<(), String> {
                 };
                 match run() {
                     Ok(st) => {
+                        let corrupt = match st.first_corrupt {
+                            Some(k) => format!(", {} corrupt records skipped (first at record {})", st.corrupt, k),
+                            None => String::new(),
+                        };
                         println!(
-                            "{} -> {}: {} records, {} games, {} positions",
+                            "{} -> {}: {} records, {} games, {} positions{}",
                             input,
                             out.display(),
                             st.records,
                             st.games,
-                            st.moves
+                            st.moves,
+                            corrupt
                         );
                         let mut t = total.lock().unwrap();
                         t.records += st.records;
+                        t.corrupt += st.corrupt;
                         t.games += st.games;
                         t.moves += st.moves;
                         t.unscored += st.unscored;
@@ -271,6 +283,9 @@ fn cmd_bin(out_dir: &str, inputs: &[String]) -> Result<(), String> {
     let bridges: Vec<String> = (1..=oldbin::MAX_GAP).map(|d| format!("{}: {}", d, t.gaps[d])).collect();
     println!("bridge lengths (plies): {}", bridges.join(", "));
     println!("chain restarts within a game: {}; records without a move: {}", t.restarts, t.dropped);
+    if t.corrupt > 0 {
+        println!("corrupt records skipped: {}", t.corrupt);
+    }
     let errors = errors.into_inner().unwrap();
     if errors.is_empty() {
         Ok(())
@@ -283,14 +298,26 @@ fn cmd_bin(out_dir: &str, inputs: &[String]) -> Result<(), String> {
 /// file name (one would silently overwrite the other) and an output that is
 /// its own input.
 fn output_paths(out_dir: &str, inputs: &[String]) -> Result<Vec<std::path::PathBuf>, String> {
+    output_paths_named(out_dir, inputs, |name| name.to_os_string())
+}
+
+/// <out_dir>/<name(input's file name)> for each input, with the same checks as
+/// `output_paths`: no two outputs with the same name, no output that is its
+/// own input. Commands check before creating any output.
+fn output_paths_named(
+    out_dir: &str,
+    inputs: &[String],
+    name: impl Fn(&std::ffi::OsStr) -> std::ffi::OsString,
+) -> Result<Vec<std::path::PathBuf>, String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::with_capacity(inputs.len());
     for input in inputs {
-        let name = Path::new(input).file_name().ok_or_else(|| format!("{}: no file name", input))?;
-        if !seen.insert(name.to_os_string()) {
-            return Err(format!("two inputs are named {}: their outputs would collide", name.to_string_lossy()));
+        let file = Path::new(input).file_name().ok_or_else(|| format!("{}: no file name", input))?;
+        let name = name(file);
+        if !seen.insert(name.clone()) {
+            return Err(format!("two inputs map to {}: their outputs would collide", name.to_string_lossy()));
         }
-        let dest = Path::new(out_dir).join(name);
+        let dest = Path::new(out_dir).join(&name);
         if let (Ok(a), Ok(b)) = (std::fs::canonicalize(input), std::fs::canonicalize(&dest)) {
             if a == b {
                 return Err(format!("{}: the output would overwrite the input", input));
@@ -1069,6 +1096,7 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
     if !fix_result && label.is_none() {
         return Err("tbrelabel needs --fix-result and/or a score mode".into());
     }
+    let dests = output_paths(out_dir, &inputs)?;
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {}", out_dir, e))?;
     let in_tb = |p: &position::Position| p.occ().count_ones() <= largest && p.castling == 0;
     // White-relative viri WDL code of a table result for the side to move.
@@ -1078,7 +1106,7 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
         _ => viri::WDL_BLACK_WIN,
     };
     let (mut games, mut changed, mut relabelled, mut failed) = (0u64, 0u64, 0u64, 0u64);
-    for input in &inputs {
+    for (input, path) in inputs.iter().zip(&dests) {
         let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
         let out = viri::rewrite_games(&data, |game, wdl, scores| {
             games += 1;
@@ -1123,9 +1151,7 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
             }
         })
         .map_err(|e| format!("{}: {}", input, e))?;
-        let name = std::path::Path::new(input).file_name().ok_or("bad input name")?;
-        let path = std::path::Path::new(out_dir).join(name);
-        std::fs::write(&path, out).map_err(|e| format!("{}: {}", path.display(), e))?;
+        std::fs::write(path, out).map_err(|e| format!("{}: {}", path.display(), e))?;
     }
     println!(
         "{}-man tables; {} games, results changed {}, scores relabelled {}, probe failures {}",
