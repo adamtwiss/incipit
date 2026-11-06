@@ -495,13 +495,14 @@ pub static TM_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 /// untouched. Datagen turns it off, since its labels are the printed scores.
 pub static NORMALIZE_SCORE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-/// Incipit's WDL model (datatools wdlfit on c39: 4M games, 8000 nodes a move,
-/// played by 5671B3D5, fitted 2026-10-17): P(win) = 1/(1+exp((a-x)/b)),
+/// Incipit's WDL model (datatools wdlfit on c69: 4M games, 8000 nodes a move,
+/// played by 65EBB451, whose eval scale matches ECF55D53's; fitted
+/// 2026-11-06): P(win) = 1/(1+exp((a-x)/b)),
 /// P(loss) = 1/(1+exp((a+x)/b)), a and b cubic in m = clamp(material, 17, 78)
 /// / 58 (1/3/3/5/9 over both sides), x the score in the net's cp units.
 /// Refit when a promoted net's eval scale moves (calib.py fits every set).
-const WDL_A: [f64; 4] = [-71.305398, 241.467715, -349.815456, 379.913116];
-const WDL_B: [f64; 4] = [93.558964, -250.230715, 286.547794, 23.697445];
+const WDL_A: [f64; 4] = [-167.336102, 487.154377, -533.86719, 431.701926];
+const WDL_B: [f64; 4] = [45.082779, -122.241771, 159.464892, 56.24718];
 
 /// The WDL model's a and b at the position's material.
 fn wdl_ab(pos: &Position) -> (f64, f64) {
