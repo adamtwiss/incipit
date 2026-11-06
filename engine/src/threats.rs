@@ -265,6 +265,8 @@ pub fn active_into(var: usize, pos: &Position, persp: usize, xor: usize, out: &m
 /// A threat in board terms (attacker piece, its square, target square,
 /// victim piece), packed into one integer so lists sort and compare cheaply.
 #[inline(always)]
+// Only the tests use this.
+#[cfg_attr(not(test), allow(dead_code))]
 fn pack(pc: u8, s: usize, t: usize, vc: u8) -> u32 {
     (pc as u32) << 20 | (s as u32) << 14 | (t as u32) << 8 | vc as u32
 }
@@ -273,6 +275,8 @@ fn pack(pc: u8, s: usize, t: usize, vc: u8) -> u32 {
 /// or None when that threat has no feature in this frame (excluded, or the
 /// merged half of a mutual pair).
 #[inline(always)]
+// Only the tests use this.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn index_of(var: usize, k: u32, persp: usize, xor: usize) -> Option<u32> {
     let flip = if persp == WHITE { 0 } else { 56 };
     let (pc, s, t, vc) = ((k >> 20) as u8, (k >> 14 & 63) as usize, (k >> 8 & 63) as usize, (k & 255) as u8);
@@ -288,6 +292,8 @@ pub fn index_of(var: usize, k: u32, persp: usize, xor: usize) -> Option<u32> {
 /// The packed threats of the pieces on `squares` in `pos`, into `out`,
 /// sorted; returns the count. King victims are skipped (never features).
 #[inline]
+// Only the tests use this.
+#[cfg_attr(not(test), allow(dead_code))]
 fn threats_of(pos: &Position, squares: u64, out: &mut [u32; MAX_ACTIVE]) -> usize {
     let occ = pos.occ();
     let mut n = 0;
@@ -353,6 +359,8 @@ pub fn delta_masks(pos: &Position, child: &Position, mut f: impl FnMut(usize, u6
 
 /// `delta_masks` as packed threats: `f(packed threat, add)`.
 #[inline]
+// Only the tests use this.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn delta(pos: &Position, child: &Position, mut f: impl FnMut(u32, bool)) {
     delta_masks(pos, child, |x, mut rem, mut add| {
         while rem != 0 {

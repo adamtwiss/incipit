@@ -631,7 +631,7 @@ fn cmd_heldout(every: &str, inputs: &[String]) -> Result<(), String> {
                 return;
             }
             n += 1;
-            if n % every != 0 {
+            if !n.is_multiple_of(every) {
                 return;
             }
             // viri WDL codes are white-relative: 0 black win, 1 draw, 2 white win.

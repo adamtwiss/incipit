@@ -11,7 +11,6 @@ mod san;
 mod search;
 mod smp;
 mod tb;
-#[allow(dead_code)]
 mod threats;
 mod tt;
 mod uci;
@@ -578,7 +577,8 @@ fn main() {
                 for a in &args[2..] {
                     if let Some((k, v)) = a.split_once('=') {
                         if k.eq_ignore_ascii_case("EvalCacheKB") {
-                            eval_cache_kb = v.parse().unwrap_or(eval_cache_kb);
+                            // Same range as the UCI option.
+                            eval_cache_kb = v.parse::<usize>().unwrap_or(eval_cache_kb).clamp(16, 1 << 20);
                             continue;
                         }
                         if !cfg!(feature = "tune") {

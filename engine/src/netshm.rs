@@ -46,6 +46,8 @@ mod imp {
 
     fn map(fd: i32, len: usize, write: bool) -> Option<*mut u8> {
         let prot = if write { PROT_READ | PROT_WRITE } else { PROT_READ };
+        // SAFETY: a fresh mapping of `len` bytes of an open fd at a kernel-chosen
+        // address; MAP_FAILED is checked below and nothing is unmapped later.
         let p = unsafe { mmap(std::ptr::null_mut(), len, prot, MAP_SHARED, fd, 0) };
         (p != MAP_FAILED).then_some(p)
     }
@@ -100,10 +102,12 @@ mod imp {
             None => {
                 let cname = format!("{}\0", name);
                 let make = |flags| {
+                    // SAFETY: `cname` is NUL-terminated; a negative fd is checked below.
                     let fd = unsafe { memfd_create(cname.as_ptr(), flags) };
                     if fd < 0 {
                         return None;
                     }
+                    // SAFETY: `fd` is a new, valid descriptor that nothing else owns.
                     let f = unsafe { File::from_raw_fd(fd) };
                     f.set_len(len as u64).ok()?;
                     // A hugetlb mapping reserves its pages here, or fails.
@@ -112,6 +116,10 @@ mod imp {
                 };
                 let (f, p) = (if mode == "4k" { None } else { make(MFD_HUGETLB) }).or_else(|| make(0))?;
                 for (part, &o) in parts.iter().zip(&offs) {
+                    // SAFETY: `p` maps `len` writable bytes and each part starts at
+                    // its offset `o` with `o + part.len() <= len` (offsets round
+                    // each part up to 2 MB; `len` covers the last); the source is
+                    // a separate buffer, and the registry lock is held.
                     unsafe { std::ptr::copy_nonoverlapping(part.as_ptr(), p.add(o), part.len()) };
                 }
                 (f, p as *const u8)
@@ -131,7 +139,9 @@ mod imp {
         reg.set_len(0).ok()?;
         reg.seek(SeekFrom::Start(0)).ok()?;
         reg.write_all(list.as_bytes()).ok()?;
-        Some(offs.iter().map(|&o| unsafe { base.add(o) as *const u8 }).collect())
+        // SAFETY: every offset is inside the `len`-byte mapping, which stays
+        // mapped (and its fd open) for the life of the process.
+        Some(offs.iter().map(|&o| unsafe { base.add(o) }).collect())
     }
 }
 

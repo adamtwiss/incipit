@@ -2220,6 +2220,7 @@ impl Searcher {
     }
 
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn update_quiet(
         &mut self,
         pos: &Position,

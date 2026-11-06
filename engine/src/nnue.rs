@@ -243,6 +243,9 @@ impl std::ops::Deref for AlignedI8 {
 
 impl std::ops::DerefMut for AlignedI8 {
     fn deref_mut(&mut self) -> &mut [i8] {
+        // A view is read-only memory (embedded bytes, or a shared mapping):
+        // writing through it would fault or corrupt every process's copy.
+        assert!(self.owned, "write through a view of shared read-only weights");
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 }
@@ -987,7 +990,7 @@ fn add_row8(v: &mut [i16], r: &[i8], add: bool) {
 fn add_sub_rows8(dst: &mut [i16], src: &[i16], adds: &[&[i16]], subs: &[&[i16]], adds8: &[&[i8]], subs8: &[&[i8]]) {
     const C: usize = 32;
     let h = dst.len();
-    assert!(src.len() >= h && h % C == 0);
+    assert!(src.len() >= h && h.is_multiple_of(C));
     for r in adds.iter().chain(subs) {
         assert!(r.len() >= h);
     }
@@ -1754,6 +1757,7 @@ fn update_pieces<const H: usize>(
 /// rows plus only the pairs of the pawns that left or arrived, in one pass.
 /// (A pawn move is never a castle: one row added, one or two removed.)
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn update_pawns<const H: usize>(
     acc: &mut Acc,
     n: &Network,
