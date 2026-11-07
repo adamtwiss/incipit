@@ -2504,7 +2504,11 @@ impl Searcher {
             pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
             let m = list[i];
             if !in_check {
-                if on(P::UseQsSee) && !pos.see_ge(m, 0, &see_vals()) {
+                if on(P::UseQsSee)
+                    && !pos.see_ge(m, 0, &see_vals())
+                    && !(on(P::UseTtRescueQs)
+                        && self.tt_rescue(pos, m, alpha, if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 }))
+                {
                     continue;
                 }
             } else if on(P::UseQsEvasionLimit)
