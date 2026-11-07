@@ -108,6 +108,7 @@ params! {
     LmrDeeper = "LmrDeeper", 73, 10, 200, 10;
     CevLmrMargin = "CevLmrMargin", 0, -100, 200, 10;
     CevLmrMore = "CevLmrMore", 100, 20, 400, 15;
+    TtRescueMargin = "TtRescueMargin", 20, -100, 300, 15;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
@@ -290,6 +291,9 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    // History pruning and futility spare a quiet whose child has a TT entry
+    // with a corrected eval (mover's view) of at least alpha - TtRescueMargin.
+    UseTtRescue = "UseTtRescue", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
