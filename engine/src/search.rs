@@ -2534,7 +2534,7 @@ impl Searcher {
             pick(list.as_mut_slice(), scores.as_mut_slice(), i, n);
             let m = list[i];
             if !in_check {
-                if on(P::UseQsSee) && !pos.see_ge(m, 0, &see_vals()) {
+                if on(P::UseQsSee) && !pos.see_ge(m, -tp(P::QsSeeMargin), &see_vals()) {
                     continue;
                 }
             } else if on(P::UseQsEvasionLimit)
