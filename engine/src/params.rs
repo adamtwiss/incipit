@@ -106,6 +106,9 @@ params! {
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth.
     LmrDeeper = "LmrDeeper", 73, 10, 200, 10;
+    // Qsearch skips a capture only if SEE says it loses more than this (cp),
+    // so near-equal trades (a bishop for a knight at the SEE values) are tried.
+    QsSeeMargin = "QsSeeMargin", 50, 0, 200, 10;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
