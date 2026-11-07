@@ -106,6 +106,7 @@ params! {
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth.
     LmrDeeper = "LmrDeeper", 73, 10, 200, 10;
+    TtRescueMargin = "TtRescueMargin", 20, -100, 300, 15;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
@@ -284,6 +285,9 @@ params! {
     // Continuation correction history (the previous move's piece-square).
     UseCorrCont = "UseCorrCont", 1, 0, 1, 0;
     UseCorrCont2 = "UseCorrCont2", 1, 0, 1, 0;
+    // History pruning and futility spare a quiet whose child has a TT entry
+    // with a corrected eval (mover's view) of at least alpha - TtRescueMargin.
+    UseTtRescue = "UseTtRescue", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.

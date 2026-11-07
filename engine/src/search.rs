@@ -826,6 +826,23 @@ impl Searcher {
         }
     }
 
+    /// Whether the child after quiet `m` has a TT entry whose corrected eval,
+    /// from the mover's view, reaches alpha - TtRescueMargin: the static eval
+    /// that history pruning and futility ignore says the move may beat alpha.
+    fn tt_rescue(&self, pos: &Position, m: Move, alpha: i32, prev1: usize) -> bool {
+        let mut child = *pos;
+        if !child.make_move(m) || child.checkers != 0 {
+            return false;
+        }
+        match self.tt.probe(child.hash) {
+            Some(e) if (e.eval as i32).abs() < MATE_BOUND => {
+                let ci = pos.board[mfrom(m)] as usize * 64 + mto(m);
+                -self.corrected(&child, e.eval as i32, ci, prev1) >= alpha - tp(P::TtRescueMargin)
+            }
+            _ => false,
+        }
+    }
+
     #[inline(always)]
     fn push_acc(&mut self, ply: usize, pos: &Position, child: &Position, m: Move) {
         if cfg!(feature = "hce") {
@@ -1912,6 +1929,7 @@ impl Searcher {
                             + tp(P::FutMul) * lmr_d
                             + if on(P::UseFutHist) { hist_score / tp(P::FutHistDiv) } else { 0 }
                             <= alpha
+                        && !(on(P::UseTtRescue) && self.tt_rescue(pos, m, alpha, prev1))
                     {
                         self.stats.futility += 1;
                         // A boosted move can precede quiets with higher
@@ -1929,6 +1947,7 @@ impl Searcher {
                                 0
                             }
                             < -tp(P::HistPrune) * depth
+                        && !(on(P::UseTtRescue) && self.tt_rescue(pos, m, alpha, prev1))
                     {
                         self.stats.hist_prunes += 1;
                         continue;
