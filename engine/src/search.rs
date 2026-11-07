@@ -989,13 +989,23 @@ impl Searcher {
         (2..=lim).step_by(2).any(|k| self.hash_hist.get(n + 1 - k) == Some(&c.hash))
     }
 
-    fn is_repetition(&self, pos: &Position) -> bool {
+    /// Whether `pos` (at `ply`) is scored a draw by repetition. The last `ply`
+    /// entries of `hash_hist` are the search path (root first), the rest the
+    /// game before the root. Repeating a position of the search path is a draw
+    /// (the side that repeated can repeat again); a position that only
+    /// occurred before the root needs a second earlier occurrence (threefold),
+    /// or a twofold the opponent need not continue would score 0.
+    fn is_repetition(&self, pos: &Position, ply: usize) -> bool {
         let n = self.hash_hist.len();
         let lim = (pos.halfmove as usize).min(n);
+        let mut before_root = false;
         let mut k = 4;
         while k <= lim {
             if self.hash_hist[n - k] == pos.hash {
-                return true;
+                if k <= ply || before_root {
+                    return true;
+                }
+                before_root = true;
             }
             k += 2;
         }
@@ -1449,7 +1459,7 @@ impl Searcher {
         if depth <= 0 {
             // qsearch doesn't check repetitions, so a move into a repeated
             // position at the last ply would otherwise not be scored a draw.
-            if !root && self.is_repetition(pos) {
+            if !root && self.is_repetition(pos, ply) {
                 return 0;
             }
             return self.qsearch(pos, alpha, beta, ply);
@@ -1466,7 +1476,7 @@ impl Searcher {
         }
         let in_check = pos.checkers != 0;
         if !root {
-            if self.is_repetition(pos) || pos.insufficient_material() {
+            if self.is_repetition(pos, ply) || pos.insufficient_material() {
                 return 0;
             }
             // Fifty-move rule, unless the side to move is checkmated.
@@ -1742,7 +1752,7 @@ impl Searcher {
                                 ply + 1,
                                 !cut_node,
                             );
-                        } else if self.is_repetition(&child) {
+                        } else if self.is_repetition(&child, ply + 1) {
                             v = 0;
                         }
                     }
