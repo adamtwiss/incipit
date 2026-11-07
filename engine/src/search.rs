@@ -52,6 +52,11 @@ struct Frame {
     cont_idx: usize, // piece*64+to of the move made at this ply
     excluded: Move,
     mv: Move,
+    // A static eval the parent computed for this ply's node (child-eval LMR):
+    // the node's hash, its raw and corrected eval.
+    pre_key: u64,
+    pre_raw: i32,
+    pre_se: i32,
 }
 
 /// Search statistics, cumulative until reset (bench sums them over its
@@ -826,6 +831,27 @@ impl Searcher {
         }
     }
 
+    /// The child's corrected static eval from the mover's view, None in check.
+    /// The raw eval is the child's TT eval if it has an entry, else the
+    /// network's (the child's accumulator must be pushed). Both are kept for
+    /// the child's node, which then doesn't compute them again.
+    fn child_eval(&mut self, pos: &Position, child: &Position, m: Move, ply: usize, prev1: usize) -> Option<i32> {
+        if child.checkers != 0 {
+            return None;
+        }
+        let raw = match self.tt.probe(child.hash) {
+            Some(e) if (e.eval as i32).abs() < MATE_BOUND => e.eval as i32,
+            _ => self.evaluate(child, ply + 1),
+        };
+        let ci = pos.board[mfrom(m)] as usize * 64 + mto(m);
+        let se = self.corrected(child, raw, ci, prev1);
+        let f = &mut self.stack[ply + 1];
+        f.pre_key = child.hash;
+        f.pre_raw = raw;
+        f.pre_se = se;
+        Some(-se)
+    }
+
     #[inline(always)]
     fn push_acc(&mut self, ply: usize, pos: &Position, child: &Position, m: Move) {
         if cfg!(feature = "hce") {
@@ -1555,8 +1581,14 @@ impl Searcher {
             static_eval = self.stack[ply].static_eval;
             eval = static_eval;
         } else {
-            raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
-            static_eval = self.corrected(pos, raw_eval, prev1, prev2);
+            if self.stack[ply].pre_key == pos.hash {
+                self.stack[ply].pre_key = 0;
+                raw_eval = self.stack[ply].pre_raw;
+                static_eval = self.stack[ply].pre_se;
+            } else {
+                raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
+                static_eval = self.corrected(pos, raw_eval, prev1, prev2);
+            }
             if on(P::UseGainHist) {
                 self.gain_learn(ply, static_eval);
             }
@@ -2056,6 +2088,17 @@ impl Searcher {
                     if on(P::UseTtPv) && tt_pv && !pv_node {
                         r -= 1;
                     }
+                    // The child's static eval: near or above alpha the move may
+                    // well beat it, far below it rarely does.
+                    if on(P::UseCevLmr) && r > 0 {
+                        if let Some(ce) = self.child_eval(pos, &child, m, ply, prev1) {
+                            if ce >= alpha - tp(P::CevLmrMargin) {
+                                r -= 1;
+                            } else if ce < alpha - tp(P::CevLmrMore) {
+                                r += 1;
+                            }
+                        }
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {
@@ -2437,10 +2480,16 @@ impl Searcher {
         if in_check {
             best = -INF;
         } else {
-            raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
-            let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
-            let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
-            best = self.corrected(pos, raw_eval, prev1, prev2);
+            if self.stack[ply].pre_key == pos.hash {
+                self.stack[ply].pre_key = 0;
+                raw_eval = self.stack[ply].pre_raw;
+                best = self.stack[ply].pre_se;
+            } else {
+                raw_eval = if let Some(e) = tte { e.eval as i32 } else { self.evaluate(pos, ply) };
+                let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
+                let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
+                best = self.corrected(pos, raw_eval, prev1, prev2);
+            }
             if on(P::UseGainHist) {
                 self.gain_learn(ply, best);
             }
