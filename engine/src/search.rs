@@ -1905,6 +1905,7 @@ impl Searcher {
                     }
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
                     if on(P::UseFut)
+                        && !(on(P::UseFutNoPv) && pv_node)
                         && !in_check
                         && lmr_d <= tp(P::FutDepth)
                         && static_eval

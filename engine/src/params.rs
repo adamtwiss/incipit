@@ -284,6 +284,8 @@ params! {
     // Continuation correction history (the previous move's piece-square).
     UseCorrCont = "UseCorrCont", 1, 0, 1, 0;
     UseCorrCont2 = "UseCorrCont2", 1, 0, 1, 0;
+    // No futility pruning at PV nodes.
+    UseFutNoPv = "UseFutNoPv", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
