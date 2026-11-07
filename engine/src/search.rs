@@ -1649,6 +1649,10 @@ impl Searcher {
             if on(P::UseNmp)
                 && depth >= tp(P::NmpDepth)
                 && eval >= beta + tp(P::NmpEvalMin)
+                && !(on(P::UseNmpCorr) && raw_eval > -INF && {
+                    let down = (raw_eval - static_eval - tp(P::NmpCorrT)).max(0);
+                    eval - down * tp(P::NmpCorrW) / 64 < beta
+                })
                 && static_eval >= beta - tp(P::NmpDepthMul) * depth + tp(P::NmpMarginBase)
                 && ply >= 1
                 && self.stack[ply - 1].mv != 0

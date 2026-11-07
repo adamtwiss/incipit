@@ -126,6 +126,11 @@ params! {
     // (0: any eval at or above beta).
     NmpEvalCap = "NmpEvalCap", 3, 0, 6, 1;
     NmpEvalMin = "NmpEvalMin", 2, 0, 100, 5;
+    // Null move also needs the eval to clear beta after a penalty for a
+    // downward correction: NmpCorrW/64 cp per cp that the correction history
+    // lowered the eval beyond NmpCorrT.
+    NmpCorrT = "NmpCorrT", 30, 0, 150, 8;
+    NmpCorrW = "NmpCorrW", 32, 0, 128, 6;
     SeMul = "SeMul", 40, 8, 64, 2;
     CapLmrDiv = "CapLmrDiv", 3939, 1000, 16000, 700;
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
@@ -290,6 +295,7 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    UseNmpCorr = "UseNmpCorr", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
