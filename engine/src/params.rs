@@ -52,11 +52,14 @@ params! {
     NmpEvalDiv = "NmpEvalDiv", 128, 60, 400, 15;
     ProbcutMargin = "ProbcutMargin", 260, 100, 350, 13;
     FutBase = "FutBase", 61, 30, 250, 11;
-    FutMul = "FutMul", 58, 10, 200, 8;
+    FutMul = "FutMul", 57, 10, 200, 8;
     // Futility margin by quiet history: a quiet's history sum (the ordering
     // score, four tables of +-16384) over this is added to the margin, so a
     // well-scored quiet survives a margin a badly scored one does not.
-    FutHistDiv = "FutHistDiv", 59, 32, 512, 12;
+    FutHistDiv = "FutHistDiv", 58, 32, 512, 12;
+    // Futility margin cut (cp) at expected all-nodes (non-PV, not a cut node),
+    // where a fail-low is the expected result.
+    FutAllCut = "FutAllCut", 20, 0, 100, 6;
     HistPrune = "HistPrune", 3898, 500, 5000, 225;
     SeeQuiet = "SeeQuiet", 8, 0, 80, 4;
     // Quiet SEE bar by history: the history sum over this is subtracted from
