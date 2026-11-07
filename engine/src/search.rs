@@ -2056,6 +2056,11 @@ impl Searcher {
                     if on(P::UseTtPv) && tt_pv && !pv_node {
                         r -= 1;
                     }
+                    // A quiet that loses material by SEE: one more. Only a
+                    // square the opponent attacks can lose it.
+                    if on(P::UseSeeNegLmr) && quiet && threats >> mto(m) & 1 != 0 && !pos.see_ge(m, 0, &see_vals()) {
+                        r += 1;
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {

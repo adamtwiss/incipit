@@ -284,6 +284,9 @@ params! {
     // Continuation correction history (the previous move's piece-square).
     UseCorrCont = "UseCorrCont", 1, 0, 1, 0;
     UseCorrCont2 = "UseCorrCont2", 1, 0, 1, 0;
+    // One more ply of LMR for a quiet that moves to an attacked square and
+    // loses material by SEE (it survived the quiet SEE prune on history or depth).
+    UseSeeNegLmr = "UseSeeNegLmr", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
