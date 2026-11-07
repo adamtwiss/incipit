@@ -118,6 +118,12 @@ usage:
       --permute FILE       FT neuron order (hidden-layer nets; from the engine's l1perm)
   datatools net-info <file.nnue> ...          show a network's header
   datatools fens <count> <seed> <file.vf> ... sample undecided positions across game phases
+  datatools posfens <in.vf>                 per scored position, in file order: FEN and stored
+                                              white-relative score (TSV), for relabelling
+  datatools setscores <scores.txt> <out_dir> <in.vf>
+                                              replace each scored position's score, in file order,
+                                              with the next line of <scores.txt> (white-relative cp,
+                                              or none for unscored); boards, moves, results kept
   datatools pgnmoves <in.pgn> ...          per move: game, ply, mover, FEN before, UCI move, comment (TSV)
                                               and search-stressing kinds (for the bench set)";
 
@@ -145,6 +151,8 @@ fn main() {
         Some("net") if args.len() >= 5 => cmd_net(&args[2], &args[3], &args[4], &args[5..]),
         Some("net-info") if args.len() >= 3 => cmd_net_info(&args[2..]),
         Some("fens") if args.len() >= 5 => cmd_fens(&args[2], &args[3], &args[4..]),
+        Some("posfens") if args.len() == 3 => cmd_posfens(&args[2]),
+        Some("setscores") if args.len() == 5 => cmd_setscores(&args[2], &args[3], &args[4]),
         Some("pgnmoves") if args.len() >= 3 => cmd_pgnmoves(&args[2..]),
         _ => Err(USAGE.to_string()),
     };
@@ -341,6 +349,66 @@ fn cmd_rescale(factor: &str, out_dir: &str, inputs: &[String]) -> Result<(), Str
         std::fs::write(dest, out).map_err(|e| format!("{}: {}", dest.display(), e))?;
     }
     println!("rescaled {} files by {} into {}", inputs.len(), factor, out_dir);
+    Ok(())
+}
+
+/// FEN and stored white-relative score of every scored position, in file order
+/// (the order `setscores` consumes them).
+fn cmd_posfens(input: &str) -> Result<(), String> {
+    let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
+    let mut w = std::io::BufWriter::with_capacity(1 << 20, std::io::stdout().lock());
+    let mut err = None;
+    viri::for_each_position(&data, |pos, _m, score, _wdl| {
+        if score != viri::NO_SCORE && err.is_none() {
+            if let Err(e) = writeln!(w, "{}\t{}", pos.to_fen(), score) {
+                err = Some(e.to_string());
+            }
+        }
+    })
+    .map_err(|e| format!("{}: {}", input, e))?;
+    if let Some(e) = err {
+        return Err(e);
+    }
+    w.flush().map_err(|e| e.to_string())
+}
+
+/// Replaces each scored position's score with the next line of `scores`
+/// (white-relative cp, or "none"), in the order `posfens` lists them. The line
+/// count must match the scored positions exactly.
+fn cmd_setscores(scores: &str, out_dir: &str, input: &str) -> Result<(), String> {
+    let inputs = [input.to_string()];
+    let dest = output_paths(out_dir, &inputs)?.remove(0);
+    let text = std::fs::read_to_string(scores).map_err(|e| format!("{}: {}", scores, e))?;
+    let mut lines = text.lines();
+    let data = std::fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
+    let (mut used, mut bad) = (0u64, None);
+    let out = viri::map_scores(&data, |_pos, score| {
+        if score == viri::NO_SCORE || bad.is_some() {
+            return score;
+        }
+        used += 1;
+        match lines.next().map(str::trim) {
+            Some("none") => viri::NO_SCORE,
+            Some(l) => l.parse::<i16>().ok().filter(|&v| v != viri::NO_SCORE).unwrap_or_else(|| {
+                bad = Some(format!("{}: bad score {:?} at line {}", scores, l, used));
+                score
+            }),
+            None => {
+                bad = Some(format!("{}: only {} lines for more scored positions", scores, used - 1));
+                score
+            }
+        }
+    })
+    .map_err(|e| format!("{}: {}", input, e))?;
+    if let Some(e) = bad {
+        return Err(e);
+    }
+    if lines.next().is_some() {
+        return Err(format!("{}: more lines than the {} scored positions", scores, used));
+    }
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {}", out_dir, e))?;
+    std::fs::write(&dest, out).map_err(|e| format!("{}: {}", dest.display(), e))?;
+    println!("set {} scores into {}", used, dest.display());
     Ok(())
 }
 
