@@ -342,6 +342,8 @@ pub struct Searcher {
     /// the accumulators pushed on bench are never needed.
     lazy: Vec<LazyAcc>,
     eval_scratch: Box<nnue::Scratch>,
+    /// Set by child_eval: the child's TT entry has a capture as its best move.
+    cev_ttcap: bool,
     pub hash_hist: Vec<u64>,
     tb_hits: u64,
     // Per ply.
@@ -620,6 +622,7 @@ impl Searcher {
             acc: vec![Acc::new(); MAX_PLY + 8],
             lazy: vec![LazyAcc { pos: Position::empty(), m: 0, state: ACC_DONE }; MAX_PLY + 8],
             eval_scratch: nnue::Scratch::new(),
+            cev_ttcap: false,
             root_pos: Position::empty(),
             refresh_cache: nnue::RefreshCache::new(),
         };
@@ -836,10 +839,13 @@ impl Searcher {
     /// network's (the child's accumulator must be pushed). Both are kept for
     /// the child's node, which then doesn't compute them again.
     fn child_eval(&mut self, pos: &Position, child: &Position, m: Move, ply: usize, prev1: usize) -> Option<i32> {
+        self.cev_ttcap = false;
         if child.checkers != 0 {
             return None;
         }
-        let raw = match self.tt.probe(child.hash) {
+        let tte = self.tt.probe(child.hash);
+        self.cev_ttcap = matches!(tte, Some(e) if e.mv != 0 && is_noisy(e.mv));
+        let raw = match tte {
             Some(e) if (e.eval as i32).abs() < MATE_BOUND => e.eval as i32,
             _ => self.evaluate(child, ply + 1),
         };
@@ -2095,6 +2101,10 @@ impl Searcher {
                             if ce >= alpha - tp(P::CevLmrMargin) {
                                 r -= 1;
                             } else if ce < alpha - tp(P::CevLmrMore) {
+                                r += 1;
+                            }
+                            // The child's best reply found so far takes something.
+                            if on(P::UseCttCapLmr) && self.cev_ttcap {
                                 r += 1;
                             }
                         }

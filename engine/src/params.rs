@@ -290,6 +290,9 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    // LMR one ply more when the child's TT move is a capture: an earlier
+    // search found the opponent's best answer takes something.
+    UseCttCapLmr = "UseCttCapLmr", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
