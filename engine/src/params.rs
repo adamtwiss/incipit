@@ -49,6 +49,10 @@ params! {
     // Razoring at any depth: eval + RazorBase + RazorMul * depth^2 <= alpha.
     RazorBase = "RazorBase", 323, 100, 800, 35;
     RazorMul = "RazorMul", 88, 20, 200, 9;
+    // Razoring and futility treat the eval as higher by LowCorrW/64 cp for each
+    // cp that the correction history raised it beyond LowCorrT.
+    LowCorrT = "LowCorrT", 30, 0, 150, 8;
+    LowCorrW = "LowCorrW", 32, 0, 128, 6;
     NmpEvalDiv = "NmpEvalDiv", 128, 60, 400, 15;
     ProbcutMargin = "ProbcutMargin", 260, 100, 350, 13;
     FutBase = "FutBase", 61, 30, 250, 11;
@@ -290,6 +294,7 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    UseLowCorr = "UseLowCorr", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.

@@ -1607,6 +1607,13 @@ impl Searcher {
             }
         }
         self.stack[ply].static_eval = static_eval;
+        // A large upward correction tends to fall short: for razoring and
+        // futility, which prune on a low eval, count part of the excess again.
+        let corr_up = if on(P::UseLowCorr) && raw_eval > -INF && static_eval > -INF {
+            (static_eval - raw_eval - tp(P::LowCorrT)).max(0) * tp(P::LowCorrW) / 64
+        } else {
+            0
+        };
         // Compare with our previous move's eval; if we were in check then, with the one before.
         let improving = !in_check
             && if ply >= 2 && self.stack[ply - 2].static_eval != -INF {
@@ -1637,7 +1644,7 @@ impl Searcher {
                 };
             }
             // razoring
-            if on(P::UseRazor) && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth * depth <= alpha {
+            if on(P::UseRazor) && eval + corr_up + tp(P::RazorBase) + tp(P::RazorMul) * depth * depth <= alpha {
                 self.stats.razor_tries += 1;
                 let v = self.qsearch(pos, alpha, alpha + 1, ply);
                 if v <= alpha {
@@ -1940,6 +1947,7 @@ impl Searcher {
                         && !in_check
                         && lmr_d <= tp(P::FutDepth)
                         && static_eval
+                            + corr_up
                             + tp(P::FutBase)
                             + tp(P::FutMul) * lmr_d
                             + if on(P::UseFutHist) { hist_score / tp(P::FutHistDiv) } else { 0 }
