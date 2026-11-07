@@ -82,6 +82,7 @@ pub struct Stats {
     pub nmp_verify: u64,
     pub nmp_verify_fail: u64,
     pub probcut_cuts: u64,
+    pub near_miss: u64,
     pub iir: u64,
     pub lmp: u64,
     pub futility: u64,
@@ -181,6 +182,7 @@ impl Stats {
             ),
         );
         line("ProbCut:", format!("{} cutoffs ({:.1}/Kn)", self.probcut_cuts, kn(self.probcut_cuts)));
+        line("Near miss:", format!("{} re-searches", self.near_miss));
         line("IIR:", format!("{} reductions", self.iir));
         line("LMP:", format!("{} triggers (remaining quiets skipped)", self.lmp));
         line("Futility:", format!("{} triggers (move or remaining quiets skipped)", self.futility));
@@ -2111,6 +2113,17 @@ impl Searcher {
                     self.stats.lmr_searches += 1;
                 }
                 score = -self.negamax(&child, -alpha - 1, -alpha, new_depth - r, ply + 1, true);
+                // A reduced search that only just failed low gets a deeper look.
+                if on(P::UseNearMiss)
+                    && r > 0
+                    && score < alpha
+                    && score > alpha - tp(P::NearMissMargin)
+                    && !self.stopped
+                {
+                    self.stats.near_miss += 1;
+                    let d = new_depth - r + r.min(tp(P::NearMissAdd));
+                    score = -self.negamax(&child, -alpha - 1, -alpha, d, ply + 1, true);
+                }
                 if score > alpha && r > 0 {
                     self.stats.lmr_researches += 1;
                     // Far above the best so far even reduced: confirm a ply deeper.
