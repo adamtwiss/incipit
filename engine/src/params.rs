@@ -288,6 +288,8 @@ params! {
     // History pruning and futility spare a quiet whose child has a TT entry
     // with a corrected eval (mover's view) of at least alpha - TtRescueMargin.
     UseTtRescue = "UseTtRescue", 1, 0, 1, 0;
+    // SEE pruning of quiets spares a quiet the same way.
+    UseTtRescueSee = "UseTtRescueSee", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.

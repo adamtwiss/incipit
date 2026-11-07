@@ -1961,7 +1961,11 @@ impl Searcher {
                     } else {
                         -tp(P::SeeQuiet) * lmr_d * lmr_d
                     };
-                    if on(P::UseSeeQuiet) && !in_check && !pos.see_ge(m, see_bar, &see_vals()) {
+                    if on(P::UseSeeQuiet)
+                        && !in_check
+                        && !pos.see_ge(m, see_bar, &see_vals())
+                        && !(on(P::UseTtRescueSee) && self.tt_rescue(pos, m, alpha, prev1))
+                    {
                         self.stats.see_quiet += 1;
                         continue;
                     }
