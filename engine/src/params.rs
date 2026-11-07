@@ -108,6 +108,9 @@ params! {
     LmrDeeper = "LmrDeeper", 73, 10, 200, 10;
     CevLmrMargin = "CevLmrMargin", 0, -100, 200, 10;
     CevLmrMore = "CevLmrMore", 100, 20, 400, 15;
+    // Qsearch skips a capture only if SEE says it loses more than this (cp),
+    // so near-equal trades (a bishop for a knight at the SEE values) are tried.
+    QsSeeMargin = "QsSeeMargin", 50, 0, 200, 10;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
@@ -179,10 +182,10 @@ params! {
     GoodCaptureSee = "GoodCaptureSee", -47, -150, 0, 8;
     // SEE piece values (pawn = 100), used by SEE pruning,
     // ProbCut, qsearch SEE and capture ordering.
-    SeeKnight = "SeeKnight", 306, 150, 650, 25;
-    SeeBishop = "SeeBishop", 331, 150, 650, 25;
-    SeeRook = "SeeRook", 505, 250, 1000, 37;
-    SeeQueen = "SeeQueen", 1053, 500, 2000, 75;
+    SeeKnight = "SeeKnight", 305, 150, 650, 25;
+    SeeBishop = "SeeBishop", 341, 150, 650, 25;
+    SeeRook = "SeeRook", 519, 250, 1000, 37;
+    SeeQueen = "SeeQueen", 1031, 500, 2000, 75;
     SeDepth = "SeDepth", 4, 4, 10, 1;
     // A TT entry qualifies its move for the singular test when its depth is
     // at least the node's depth minus this.
