@@ -1906,11 +1906,13 @@ impl Searcher {
                     let lmr_d = (depth - self.lmr[depth.min(63) as usize][legal.min(63) as usize]).max(0);
                     if on(P::UseFut)
                         && !in_check
+                        && !pv_node
                         && lmr_d <= tp(P::FutDepth)
                         && static_eval
                             + tp(P::FutBase)
                             + tp(P::FutMul) * lmr_d
                             + if on(P::UseFutHist) { hist_score / tp(P::FutHistDiv) } else { 0 }
+                            - if !cut_node { tp(P::FutAllCut) } else { 0 }
                             <= alpha
                     {
                         self.stats.futility += 1;

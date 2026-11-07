@@ -57,6 +57,9 @@ params! {
     // score, four tables of +-16384) over this is added to the margin, so a
     // well-scored quiet survives a margin a badly scored one does not.
     FutHistDiv = "FutHistDiv", 59, 32, 512, 12;
+    // Futility margin cut (cp) at expected all-nodes (non-PV, not a cut node),
+    // where a fail-low is the expected result.
+    FutAllCut = "FutAllCut", 20, 0, 100, 6;
     HistPrune = "HistPrune", 3898, 500, 5000, 225;
     SeeQuiet = "SeeQuiet", 8, 0, 80, 4;
     // Quiet SEE bar by history: the history sum over this is subtracted from
