@@ -674,7 +674,7 @@ fn main() {
     let mut uci = Uci {
         pos: Position::from_fen(START_FEN).unwrap(),
         hist: Vec::new(),
-        searcher: Searcher::new(16, stop.clone()),
+        searcher: Searcher::new(64, stop.clone()),
         pool: smp::Pool::new(0),
         overhead: 20,
         reserve_moves: 0,
@@ -683,7 +683,7 @@ fn main() {
         base: None,
     };
     uci.searcher.pt.hit = ponder_hit;
-    let mut hash_mb = 16usize;
+    let mut hash_mb = 64usize;
     while let Ok(cmd) = rx.recv() {
         let toks: Vec<&str> = cmd.split_whitespace().collect();
         if toks.is_empty() {
@@ -693,7 +693,7 @@ fn main() {
             "uci" => {
                 println!("id name {}", NAME);
                 println!("id author {}", AUTHOR);
-                println!("option name Hash type spin default 16 min 1 max 65536");
+                println!("option name Hash type spin default 64 min 1 max 65536");
                 println!("option name Threads type spin default 1 min 1 max {}", MAX_THREADS);
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
                 println!("option name MoveReserve type spin default 0 min 0 max 100");
