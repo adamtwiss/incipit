@@ -641,15 +641,8 @@ impl Searcher {
     /// for the CPU caches at bigger sizes).
     #[inline(always)]
     fn prefetch_eval(&self, hash: u64) {
-        let p = unsafe { self.eval_cache.as_ptr().add(hash as usize & self.eval_mask) } as *const i8;
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            std::arch::x86_64::_mm_prefetch(p, std::arch::x86_64::_MM_HINT_T0)
-        };
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            std::arch::asm!("prfm pldl1keep, [{0}]", in(reg) p, options(nostack, preserves_flags, readonly))
-        };
+        // Eval cache disabled in this test branch: nothing to load.
+        let _ = hash;
     }
 
     /// Resizes (and clears) the eval cache to the largest power-of-two
@@ -895,12 +888,6 @@ impl Searcher {
         // Positions repeat within a search (transpositions, re-searches,
         // nodes that returned before storing to the TT): about 30% of
         // evaluations on bench.
-        let idx = pos.hash as usize & self.eval_mask;
-        let cached = unsafe { *self.eval_cache.get_unchecked(idx) };
-        if cached & !0xffff == pos.hash & !0xffff && cached != 0 {
-            self.stats.eval_hits += 1;
-            return cached as u16 as i16 as i32;
-        }
         let e = if cfg!(feature = "hce") {
             crate::eval::evaluate(pos)
         } else {
@@ -914,7 +901,6 @@ impl Searcher {
             }
         };
         let e = e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
-        unsafe { *self.eval_cache.get_unchecked_mut(idx) = (pos.hash & !0xffff) | (e as i16 as u16 as u64) };
         self.stats.evals += 1;
         e
     }
