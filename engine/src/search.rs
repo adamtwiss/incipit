@@ -2051,7 +2051,22 @@ impl Searcher {
             let new_depth = depth - 1 + ext;
             let mut score;
             if legal == 1 {
-                score = -self.negamax(&child, -beta, -alpha, new_depth, ply + 1, !pv_node && !cut_node);
+                // An upper-bound entry's move failed low last time: most of the
+                // time it does again, so it is searched a little shallower first.
+                let r = if on(P::UseTtUpperRed)
+                    && !pv_node
+                    && m == tt_move
+                    && tt_bound == BOUND_UPPER
+                    && depth >= tp(P::LmrMinDepth)
+                {
+                    tp(P::TtUpperRed).min((new_depth - 1).max(0))
+                } else {
+                    0
+                };
+                score = -self.negamax(&child, -beta, -alpha, new_depth - r, ply + 1, !pv_node && !cut_node);
+                if r > 0 && score > alpha {
+                    score = -self.negamax(&child, -beta, -alpha, new_depth, ply + 1, !pv_node && !cut_node);
+                }
             } else {
                 let mut r = 0;
                 if on(P::UseLmr) && depth >= tp(P::LmrMinDepth) && legal > 1 + root as i32 {

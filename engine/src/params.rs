@@ -108,6 +108,8 @@ params! {
     LmrDeeper = "LmrDeeper", 73, 10, 200, 10;
     CevLmrMargin = "CevLmrMargin", 0, -100, 200, 10;
     CevLmrMore = "CevLmrMore", 100, 20, 400, 15;
+    // Plies off the first move when it is an upper-bound entry's TT move.
+    TtUpperRed = "TtUpperRed", 1, 1, 3, 1;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
@@ -290,6 +292,10 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    // A TT move whose entry is an upper bound (it came from a search that
+    // failed low) is searched reduced first, at full depth only if it beats
+    // alpha.
+    UseTtUpperRed = "UseTtUpperRed", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
