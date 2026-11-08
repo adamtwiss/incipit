@@ -1808,6 +1808,7 @@ impl Searcher {
         let mut best_move = 0;
         let mut legal = 0;
         let mut quiets: [Move; 64] = [0; 64];
+        let mut quiet_nodes: [u64; 64] = [0; 64];
         let mut nq = 0;
         let mut capts: [Move; 32] = [0; 32];
         let mut nc = 0;
@@ -2169,6 +2170,7 @@ impl Searcher {
                 if quiet {
                     if nq < 64 {
                         quiets[nq] = m;
+                        quiet_nodes[nq] = self.nodes - nodes_before;
                         nq += 1;
                     }
                 } else if nc < 32 {
@@ -2200,8 +2202,18 @@ impl Searcher {
                     self.killers[ply][0] = m;
                 }
                 self.update_quiet(pos, m, bonus, prev1, prev2, prev4, prev6, threats);
+                let cp = tp(P::MalusCostPct) as u64;
+                let tot: u64 = quiet_nodes[..nq].iter().sum();
                 for k in 0..nq {
-                    self.update_quiet(pos, quiets[k], -bonus, prev1, prev2, prev4, prev6, threats);
+                    let malus = if cp > 0 && tot > 0 {
+                        // Weight in 64ths: even share plus the node share.
+                        let share = (64 * nq as u64 * quiet_nodes[k] / tot).min(256);
+                        let w = ((100 - cp) * 64 + cp * share) / 100;
+                        bonus * w as i32 / 64
+                    } else {
+                        bonus
+                    };
+                    self.update_quiet(pos, quiets[k], -malus, prev1, prev2, prev4, prev6, threats);
                 }
             } else {
                 let pc = pos.board[mfrom(m)] as usize;

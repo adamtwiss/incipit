@@ -88,6 +88,11 @@ params! {
     // A cutoff beating beta by more than this (cp) earns the history bonus of
     // one ply deeper.
     HistBonusMargin = "HistBonusMargin", 64, 0, 300, 15;
+    // The malus on the quiets searched before a cutoff: MalusCostPct% of it is
+    // shared out by each move's node count (mean weight 1, capped at 4x), the
+    // rest given evenly. A failed move that cost a big subtree was the worse
+    // ordering mistake.
+    MalusCostPct = "MalusCostPct", 50, 0, 100, 10;
     // Quiet ordering: the continuation histories (previous move, ours two plies
     // back, and four and six plies back) weigh in at ContW/8 against the main
     // history's 8/8 (8, 8, 4, 4: the old 1, 1, 1/2, 1/2).
