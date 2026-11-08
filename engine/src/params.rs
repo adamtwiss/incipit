@@ -108,6 +108,9 @@ params! {
     LmrDeeper = "LmrDeeper", 73, 10, 200, 10;
     CevLmrMargin = "CevLmrMargin", 0, -100, 200, 10;
     CevLmrMore = "CevLmrMore", 100, 20, 400, 15;
+    // A second extra ply of LMR for a move whose child eval is below
+    // alpha - CevLmrMore2 (cp, mover's view).
+    CevLmrMore2 = "CevLmrMore2", 300, 150, 1000, 25;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
@@ -290,6 +293,8 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    // The second CevLmrMore2 tier of child-eval LMR.
+    UseCevLmr2 = "UseCevLmr2", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.

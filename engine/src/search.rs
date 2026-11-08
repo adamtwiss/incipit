@@ -2106,6 +2106,9 @@ impl Searcher {
                                 r -= 1;
                             } else if ce < alpha - tp(P::CevLmrMore) {
                                 r += 1;
+                                if on(P::UseCevLmr2) && ce < alpha - tp(P::CevLmrMore2) {
+                                    r += 1;
+                                }
                             }
                         }
                     }
