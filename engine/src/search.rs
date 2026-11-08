@@ -2051,7 +2051,19 @@ impl Searcher {
             let new_depth = depth - 1 + ext;
             let mut score;
             if legal == 1 {
-                score = -self.negamax(&child, -beta, -alpha, new_depth, ply + 1, !pv_node && !cut_node);
+                // At an expected all-node the first move rarely beats alpha
+                // either (bench, depth 6 and up: a TT move 18% of the time, a
+                // capture or quiet 4-6%), so it is searched a little shallower
+                // first.
+                let r = if on(P::UseAllFirstRed) && !pv_node && !cut_node && ext <= 0 && depth >= tp(P::LmrMinDepth) {
+                    tp(P::AllFirstRed).min((new_depth - 1).max(0))
+                } else {
+                    0
+                };
+                score = -self.negamax(&child, -beta, -alpha, new_depth - r, ply + 1, !pv_node && !cut_node);
+                if r > 0 && score > alpha {
+                    score = -self.negamax(&child, -beta, -alpha, new_depth, ply + 1, !pv_node && !cut_node);
+                }
             } else {
                 let mut r = 0;
                 if on(P::UseLmr) && depth >= tp(P::LmrMinDepth) && legal > 1 + root as i32 {
