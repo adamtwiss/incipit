@@ -88,9 +88,8 @@ const BENCH_FENS: [&str; 50] = [
     "8/8/p3k3/1p2p1P1/4K3/P3P3/8/8 b - - 0 63",
 ];
 
-fn bench(depth: i32, eval_cache_kb: usize) {
+fn bench(depth: i32) {
     let mut s = Searcher::new(16, Arc::new(AtomicBool::new(false)));
-    let _ = s.set_eval_cache_kb(eval_cache_kb);
     s.silent = true;
     let t = Instant::now();
     let mut nodes = 0;
@@ -570,17 +569,10 @@ fn main() {
                 return;
             }
             "bench" => {
-                // `bench [depth] [Param=value ...]`, e.g. `bench 13 UseProbcut=0` for ablations
-                // (also EvalCacheKB=N).
-                let mut eval_cache_kb = search::EVAL_CACHE_KB;
+                // `bench [depth] [Param=value ...]`, e.g. `bench 13 UseProbcut=0` for ablations.
                 let mut depth = 13;
                 for a in &args[2..] {
                     if let Some((k, v)) = a.split_once('=') {
-                        if k.eq_ignore_ascii_case("EvalCacheKB") {
-                            // Same range as the UCI option.
-                            eval_cache_kb = v.parse::<usize>().unwrap_or(eval_cache_kb).clamp(16, 1 << 20);
-                            continue;
-                        }
                         if !cfg!(feature = "tune") {
                             eprintln!("{a}: search parameters are constants in this build; build with --features tune (make TUNE=1)");
                             std::process::exit(1);
@@ -602,7 +594,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 }
-                bench(depth, eval_cache_kb);
+                bench(depth);
                 return;
             }
             // Known commands without enough arguments: a usage line, not UCI mode.
@@ -692,7 +684,6 @@ fn main() {
     };
     uci.searcher.pt.hit = ponder_hit;
     let mut hash_mb = 16usize;
-    let mut eval_cache_kb = search::EVAL_CACHE_KB;
     while let Ok(cmd) = rx.recv() {
         let toks: Vec<&str> = cmd.split_whitespace().collect();
         if toks.is_empty() {
@@ -703,7 +694,6 @@ fn main() {
                 println!("id name {}", NAME);
                 println!("id author {}", AUTHOR);
                 println!("option name Hash type spin default 16 min 1 max 65536");
-                println!("option name EvalCacheKB type spin default {} min 16 max 1048576", search::EVAL_CACHE_KB);
                 println!("option name Threads type spin default 1 min 1 max {}", MAX_THREADS);
                 println!("option name MoveOverhead type spin default 20 min 0 max 5000");
                 println!("option name MoveReserve type spin default 0 min 0 max 100");
@@ -742,17 +732,6 @@ fn main() {
                     let name = lower[ni + 1..vi].join(" ");
                     let val = toks.get(vi + 1).copied().unwrap_or("");
                     match name.as_str() {
-                        "evalcachekb" => {
-                            if let Ok(kb) = val.parse::<usize>() {
-                                eval_cache_kb = kb.clamp(16, 1 << 20);
-                                if let Err(got) = uci.searcher.set_eval_cache_kb(eval_cache_kb) {
-                                    println!("info string EvalCacheKB {} not available, using {} KB", kb, got);
-                                }
-                                uci.pool.each(move |s| {
-                                    let _ = s.set_eval_cache_kb(eval_cache_kb);
-                                });
-                            }
-                        }
                         "hash" => {
                             if let Ok(mb) = val.parse::<usize>() {
                                 let mb = mb.clamp(1, 65536);
@@ -783,9 +762,6 @@ fn main() {
                                     uci.pool = smp::Pool::new(0);
                                     uci.pool = smp::Pool::new(n - 1);
                                     uci.searcher.helper_slots = uci.pool.slots();
-                                    uci.pool.each(move |s| {
-                                        let _ = s.set_eval_cache_kb(eval_cache_kb);
-                                    });
                                 }
                             }
                         }

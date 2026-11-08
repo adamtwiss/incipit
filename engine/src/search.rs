@@ -9,19 +9,9 @@ use std::time::Instant;
 
 pub const INF: i32 = 32000;
 
-/// Entries in an eval cache of `kb` kilobytes (8 bytes each, a power of two).
-fn eval_cache_entries(kb: usize) -> usize {
-    let n = (kb.max(1) << 10) / 8;
-    1 << (usize::BITS - 1 - n.leading_zeros())
-}
 pub const MATE: i32 = 31000;
 pub const MATE_BOUND: i32 = MATE - 512;
 pub const MAX_PLY: usize = 128;
-/// Default eval cache size in KB (UCI EvalCacheKB). Sized for the per-core
-/// L2: under concurrent load (16 engines on sn1) 2 MB tables evict the FT
-/// weights from the shared L3 and cost ~9% nps, while 256 KB is neutral for
-/// the plain net and +5% for the hidden net.
-pub const EVAL_CACHE_KB: usize = 256;
 /// Tablebase wins score TB_WIN - ply: above every eval (evals stay below
 /// MATE_BOUND) and below every mate (MATE - ply >= MATE - MAX_PLY), so code
 /// that treats |score| >= MATE_BOUND as decisive handles them like mates.
@@ -319,10 +309,6 @@ pub struct Searcher {
     no_nmp_ply: usize,
     root_depth: i32,
     seldepth: usize,
-    /// Raw static evals by position: hash bits 16..64 check the entry, bits
-    /// 0..16 hold the eval (i16). Direct-mapped, indexed by the low hash bits.
-    eval_cache: Box<[u64]>,
-    eval_mask: usize,
     /// Shared with helper threads while they search; only the owner holds
     /// it between searches (see `clear`).
     pub tt: Arc<TT>,
@@ -569,8 +555,6 @@ impl Searcher {
         let lmr = Box::new([[0i32; 64]; 64]);
         let mut s = Searcher {
             tt: Arc::new(TT::new(hash_mb)),
-            eval_cache: vec![0u64; eval_cache_entries(EVAL_CACHE_KB)].into_boxed_slice(),
-            eval_mask: eval_cache_entries(EVAL_CACHE_KB) - 1,
             nodes: 0,
             stop_flag,
             pt: Box::new(PonderTm {
@@ -637,52 +621,12 @@ impl Searcher {
         }
     }
 
-    /// Starts loading the eval-cache slot for `hash` (the table is too large
-    /// for the CPU caches at bigger sizes).
-    #[inline(always)]
-    fn prefetch_eval(&self, hash: u64) {
-        let p = unsafe { self.eval_cache.as_ptr().add(hash as usize & self.eval_mask) } as *const i8;
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            std::arch::x86_64::_mm_prefetch(p, std::arch::x86_64::_MM_HINT_T0)
-        };
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            std::arch::asm!("prfm pldl1keep, [{0}]", in(reg) p, options(nostack, preserves_flags, readonly))
-        };
-    }
-
-    /// Resizes (and clears) the eval cache to the largest power-of-two
-    /// number of entries that fits in `kb` kilobytes.
-    /// The old cache is freed first, so the peak is the new size, not both;
-    /// if the memory isn't there it falls back to smaller sizes (Err with
-    /// the size it got) instead of aborting.
-    pub fn set_eval_cache_kb(&mut self, kb: usize) -> Result<(), usize> {
-        self.eval_cache = vec![0u64; 1].into_boxed_slice();
-        self.eval_mask = 0;
-        let mut n = eval_cache_entries(kb);
-        loop {
-            let mut v: Vec<u64> = Vec::new();
-            if v.try_reserve_exact(n).is_ok() {
-                v.resize(n, 0);
-                self.eval_cache = v.into_boxed_slice();
-                self.eval_mask = n - 1;
-                return if n == eval_cache_entries(kb) { Ok(()) } else { Err(n * 8 / 1024) };
-            }
-            if n == 1 {
-                return Err(0);
-            }
-            n /= 2;
-        }
-    }
-
     pub fn clear(&mut self) {
         self.pt.spend_avg = 1.0;
         self.pt.ponder_seen = false;
         // Helpers drop their handles when a search ends, so between searches
         // this is the only one.
         Arc::get_mut(&mut self.tt).expect("TT cleared during a search").clear();
-        self.eval_cache.fill(0);
         *self.hist = [[[[0; 64]; 64]; 4]; 2];
         self.gain.iter_mut().for_each(|g| *g = [0; 64]);
         Arc::get_mut(&mut self.sh).expect("histories cleared during a search").clear();
@@ -895,11 +839,12 @@ impl Searcher {
         // Positions repeat within a search (transpositions, re-searches,
         // nodes that returned before storing to the TT): about 30% of
         // evaluations on bench.
-        let idx = pos.hash as usize & self.eval_mask;
-        let cached = unsafe { *self.eval_cache.get_unchecked(idx) };
-        if cached & !0xffff == pos.hash & !0xffff && cached != 0 {
+        // The eval lives in the main TT: search entries carry it, and
+        // `store_eval` adds eval-only entries for positions evaluated but not
+        // stored. Replacing a separate eval cache with this gained +9.9 (#4995).
+        if let Some(e) = self.tt.probe_eval(pos.hash) {
             self.stats.eval_hits += 1;
-            return cached as u16 as i16 as i32;
+            return e as i32;
         }
         let e = if cfg!(feature = "hce") {
             crate::eval::evaluate(pos)
@@ -914,7 +859,7 @@ impl Searcher {
             }
         };
         let e = e.clamp(-MATE_BOUND + 1, MATE_BOUND - 1);
-        unsafe { *self.eval_cache.get_unchecked_mut(idx) = (pos.hash & !0xffff) | (e as i16 as u16 as u64) };
+        self.tt.store_eval(pos.hash, e);
         self.stats.evals += 1;
         e
     }
@@ -1670,7 +1615,6 @@ impl Searcher {
                 let mut child = *pos;
                 child.make_null();
                 self.tt.prefetch(child.hash);
-                self.prefetch_eval(child.hash);
                 self.lazy[ply + 1] = LazyAcc { pos: child, m: 0, state: ACC_COPY };
                 self.stack[ply].mv = 0;
                 self.stack[ply].cont_idx = 0;
@@ -1731,7 +1675,6 @@ impl Searcher {
                         continue;
                     }
                     self.tt.prefetch(child.hash);
-                    self.prefetch_eval(child.hash);
                     self.push_acc(ply, pos, &child, m);
                     let pc = pos.board[mfrom(m)] as usize;
                     self.stack[ply].mv = m;
@@ -2006,7 +1949,6 @@ impl Searcher {
                 continue;
             }
             self.tt.prefetch(child.hash);
-            self.prefetch_eval(child.hash);
             legal += 1;
 
             // extensions
@@ -2561,7 +2503,6 @@ impl Searcher {
                 continue;
             }
             self.tt.prefetch(child.hash);
-            self.prefetch_eval(child.hash);
             legal += 1;
             self.push_acc(ply, pos, &child, m);
             self.gain_par[ply + 1] = None;
