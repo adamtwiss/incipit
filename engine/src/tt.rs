@@ -271,6 +271,48 @@ impl TT {
             },
         );
     }
+    /// The raw eval stored for `key`, from a search entry or an eval-only
+    /// one (bound NONE with the pv bit set, written by `store_eval`).
+    #[inline(always)]
+    pub fn probe_eval(&self, key: u64) -> Option<i16> {
+        let b = unsafe { self.table.get_unchecked(self.idx(key)) };
+        for i in 0..WAYS {
+            let (k, d) = b.read(i);
+            if k == key as u32 && ((d >> 56) as u8 & 3 != BOUND_NONE || (d >> 55) & 1 != 0) {
+                let e = (d >> 32) as u16 as i16;
+                if (e as i32).abs() < crate::search::MATE_BOUND {
+                    return Some(e);
+                }
+            }
+        }
+        None
+    }
+    /// Stores an eval-only entry for `key` (a position evaluated but not
+    /// searched to a stored result). It takes only an empty slot, another
+    /// eval-only one or one from an earlier search, so it never displaces a
+    /// search result of this search; search probes ignore it (bound NONE).
+    #[inline(always)]
+    pub fn store_eval(&self, key: u64, eval: i32) {
+        let gen = self.gen.load(Relaxed);
+        let b = unsafe { self.table.get_unchecked(self.idx(key)) };
+        let mut slot = WAYS;
+        for k in 0..WAYS {
+            let (ek, d) = b.read(k);
+            let bd = (d >> 56) as u8;
+            if ek == key as u32 && (bd & 3 != BOUND_NONE || (d >> 55) & 1 != 0) {
+                return;
+            }
+            if slot == WAYS && (bd & 3 == BOUND_NONE || bd >> 2 != gen) {
+                slot = k;
+            }
+        }
+        if slot < WAYS {
+            b.write(
+                slot,
+                &Entry { key, mv: 0, score: 0, eval: eval as i16, depth: 0, bound: BOUND_NONE | (gen << 2), pv: true },
+            );
+        }
+    }
     /// Permille of entries in use from the current search (first 1000).
     pub fn hashfull(&self) -> usize {
         let gen = self.gen.load(Relaxed);
@@ -358,5 +400,34 @@ mod tests {
             .collect();
         let hits: u64 = threads.into_iter().map(|h| h.join().unwrap()).sum();
         assert!(hits > 100_000, "too few hits to test anything: {hits}");
+    }
+
+    /// Eval-only entries: invisible to `probe`, read by `probe_eval`, never
+    /// displacing a search entry of the current search, and replaced first.
+    #[test]
+    fn eval_only_entries() {
+        let tt = TT::new(1);
+        let key = 0x1234_5678_9abc_def0u64;
+        tt.store_eval(key, 57);
+        assert!(tt.probe(key).is_none());
+        assert_eq!(tt.probe_eval(key), Some(57));
+        // A search entry for the same key wins for both probes.
+        tt.store(key, 5, 10, 61, 4, BOUND_LOWER, false);
+        assert_eq!(tt.probe(key).map(|e| e.eval), Some(61));
+        // Fill a bucket with this search's entries: an eval-only store for a
+        // new key in it is dropped.
+        let tt2 = TT::with_buckets(1);
+        for k in 0..WAYS as u64 {
+            tt2.store(mix(k), 1, 0, 0, 10, BOUND_EXACT, false);
+        }
+        tt2.store_eval(mix(99), 9);
+        assert_eq!(tt2.probe_eval(mix(99)), None);
+        // From an earlier search they give way.
+        tt2.new_search();
+        tt2.store_eval(mix(99), 9);
+        assert_eq!(tt2.probe_eval(mix(99)), Some(9));
+        // Mate-range evals (stored by in-check nodes) are not returned.
+        tt.store(key ^ 1, 0, 0, -32000, 2, BOUND_UPPER, false);
+        assert_eq!(tt.probe_eval(key ^ 1), None);
     }
 }
