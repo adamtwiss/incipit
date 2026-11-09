@@ -1716,8 +1716,10 @@ impl Searcher {
                 }
             }
         }
-        // internal iterative reduction
-        if on(P::UseIir) && depth >= tp(P::IirDepth) && tt_move == 0 && (pv_node || cut_node) {
+        // internal iterative reduction. Not in a singular-exclusion search:
+        // it has no TT move only because it doesn't probe, and its depth is
+        // already halved.
+        if on(P::UseIir) && depth >= tp(P::IirDepth) && tt_move == 0 && excluded == 0 && (pv_node || cut_node) {
             self.stats.iir += 1;
             depth -= 1;
         }
