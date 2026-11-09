@@ -324,9 +324,14 @@ impl Uci {
             // the soft target (left / 2 at movestogo 1) exceeded the cap, and
             // the last move before the control was always cut mid-iteration.
             let hard_num = if (1..=3).contains(&mtg) { 12 - 2 * (mtg - 1) } else { 6 };
-            let hard = (left.saturating_mul(hard_num) / 15)
-                .min(soft.saturating_mul(params::tp(params::P::TmHardMul) as i64))
-                .max(1);
+            // In sudden death the clock never refills, so one long move costs
+            // the rest of the game more: a lower multiple there.
+            let hard_mul = if mtg == 0 && inc < self.overhead {
+                params::tp(params::P::TmSdHardMul)
+            } else {
+                params::tp(params::P::TmHardMul)
+            };
+            let hard = (left.saturating_mul(hard_num) / 15).min(soft.saturating_mul(hard_mul as i64)).max(1);
             let soft = soft.min(hard).max(1);
             lim.soft_ms = Some(soft as u64);
             lim.hard_ms = Some(hard as u64);

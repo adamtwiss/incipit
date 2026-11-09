@@ -134,6 +134,10 @@ params! {
     TmSoftDiv = "TmSoftDiv", 28, 12, 40, 1;
     TmIncPct = "TmIncPct", 79, 40, 100, 3;
     TmHardMul = "TmHardMul", 5, 2, 6, 1;
+    // Sudden death (no increment): the hard cap's multiple of the soft limit.
+    // At 5x (TmHardMul) one move could take 18% of the clock (lichess 10+0:
+    // 81-107 s of 600 s on move 2 with a stable score); 3 caps it near 11%.
+    TmSdHardMul = "TmSdHardMul", 3, 2, 6, 1;
     // Exponent (x100) on the soft target's combined scale (node share x
     // stability x fail-lows): 100 = linear.
     TmScalePow = "TmScalePow", 106, 50, 250, 15;
