@@ -229,6 +229,7 @@ impl Uci {
         let mut movetime = None;
         let mut depth = MAX_PLY as i32;
         let mut nodes = None;
+        let mut mate: Option<u32> = None;
         let mut ponder = false;
         let mut infinite = false;
         let mut search_moves = Vec::new();
@@ -262,6 +263,7 @@ impl Uci {
                 "movetime" => movetime = v,
                 "depth" => depth = v.unwrap_or(depth as i64).clamp(1, MAX_PLY as i64 - 4) as i32,
                 "nodes" => nodes = v.map(|x| x.max(1) as u64),
+                "mate" => mate = v.filter(|&n| n > 0).map(|n| n.min(MAX_PLY as i64 / 2) as u32),
                 "ponder" | "infinite" => {
                     ponder |= toks[i] == "ponder";
                     infinite |= toks[i] == "infinite";
@@ -336,6 +338,7 @@ impl Uci {
         self.searcher.pt.pondering = ponder;
         self.searcher.pt.ponder_seen |= ponder;
         self.searcher.search_moves = search_moves;
+        self.searcher.mate_moves = mate;
         self.pool.start(&self.pos, &self.hist, &self.searcher);
         let (m, _) = self.searcher.search(&self.pos, &lim);
         let hit_at_return = self.searcher.pt.hit.load(Ordering::SeqCst);
