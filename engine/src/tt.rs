@@ -132,6 +132,24 @@ impl Table {
         }
         // SAFETY: the extra `align` bytes leave room for the offset.
         let buckets = unsafe { base.add(base.align_offset(align)) } as *mut Bucket;
+        // Ask for transparent huge pages on the 2 MB-aligned interior (THP is
+        // usually in `madvise` mode): probes hit random lines all over the
+        // table, so 4 KB pages cost a TLB miss on most of them.
+        #[cfg(target_os = "linux")]
+        {
+            extern "C" {
+                fn madvise(addr: *mut u8, len: usize, advice: i32) -> i32;
+            }
+            const MADV_HUGEPAGE: i32 = 14;
+            const HUGE: usize = 2 << 20;
+            let start = (base as usize).next_multiple_of(HUGE);
+            let end = (base as usize + layout.size()) / HUGE * HUGE;
+            if end > start {
+                // SAFETY: [start, end) lies inside this allocation; a failed
+                // call only leaves the default page size.
+                unsafe { madvise(start as *mut u8, end - start, MADV_HUGEPAGE) };
+            }
+        }
         Some(Table { base, layout, buckets, len })
     }
 }
