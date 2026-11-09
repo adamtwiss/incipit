@@ -1029,10 +1029,13 @@ impl Searcher {
         }
         // Root in the tablebases. A win or a loss: play the move that keeps
         // the result, with the fifty-move counter taken into account (DTZ),
-        // without searching. A draw: search as usual, but only the moves
-        // that keep it (a cursed win's moves that keep that), so the engine
-        // still looks for the move that asks the most of the opponent
-        // instead of taking any drawing move.
+        // without searching. A draw, or a table move that would repeat a
+        // game position (which the tables don't know about): search as
+        // usual, but only the moves that keep the result (a cursed win's
+        // moves that keep that). So a drawn root still looks for the move
+        // that asks the most of the opponent, and no search here can pick a
+        // move that gives the result away: the search itself only probes
+        // after captures and pawn moves.
         // Fathom's root probe isn't thread-safe: the main thread alone does
         // it. After a win or loss it returns at once and the helpers, which
         // search on, are stopped with it.
@@ -1040,13 +1043,7 @@ impl Searcher {
         if crate::tb::largest() > 0 && self.search_moves.is_empty() && self.thread_id == 0 {
             if let Some(t) = crate::tb::probe_root_moves(root) {
                 let (w, m) = (t.wdl, t.best);
-                if w == crate::tb::Wdl::Draw {
-                    if t.keep.len() < root_moves {
-                        self.root_tb = t.keep;
-                        fallback = self.root_tb[0];
-                        root_moves = self.root_tb.len();
-                    }
-                } else if !self.repeats_after(root, m) {
+                if w != crate::tb::Wdl::Draw && !self.repeats_after(root, m) {
                     let s = if w == crate::tb::Wdl::Win { TB_WIN - 1 } else { -TB_WIN + 1 };
                     if !self.silent {
                         // A tablebase result is certain: report it as such, not
@@ -1064,6 +1061,11 @@ impl Searcher {
                         );
                     }
                     return (m, s);
+                }
+                if t.keep.len() < root_moves {
+                    self.root_tb = t.keep;
+                    fallback = self.root_tb[0];
+                    root_moves = self.root_tb.len();
                 }
             }
         }
@@ -2686,6 +2688,33 @@ mod tests {
         let mut fresh = Searcher::new(16, Arc::new(AtomicBool::new(false)));
         fresh.silent = true;
         assert_eq!(used.search(&pos, &lim), fresh.search(&pos, &lim));
+    }
+
+    /// A drawn tablebase root is searched over the draw-keeping moves only.
+    /// In this KRvKB position Kd1 loses, and an unrestricted search played
+    /// it in a game. Needs the 5-man tables in /tablebases, and loads them
+    /// (process-wide state other tests' searches would see), so run it
+    /// alone: `cargo test --release drawn_tb_root -- --ignored`.
+    #[test]
+    #[ignore]
+    fn drawn_tb_root_keeps_the_draw() {
+        crate::attacks::init();
+        crate::nnue::init();
+        if !std::path::Path::new("/tablebases/KRvKB.rtbz").exists() || crate::tb::init("/tablebases") < 4 {
+            return;
+        }
+        let pos = Position::from_fen("8/8/3b4/8/8/3K4/4R3/2k5 b - - 71 44").unwrap();
+        let t = crate::tb::probe_root_moves(&pos).unwrap();
+        assert_eq!(t.wdl, crate::tb::Wdl::Draw);
+        let losing = pos.parse_move("c1d1").unwrap();
+        assert!(!t.keep.contains(&losing));
+        let mut s = Searcher::new(8, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        for d in 1..=8 {
+            let (m, _) = s.search(&pos, &Limits { soft_ms: None, hard_ms: None, depth: d, nodes: None });
+            assert!(t.keep.contains(&m), "depth {d} played {}", pos.move_uci(m));
+        }
+        crate::tb::init("");
     }
 
     /// Printed scores: 100 at the WDL model's 50%-win score, scaled in
