@@ -1123,81 +1123,33 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
             e.bb[pc as usize] = cur;
         }
     }
-    apply_rows(&mut e.acc[..h], acc.side_mut(p, h), n, h, &adds[..na], &subs[..ns]);
-    // Entries hold the piece and pair rows only; the threats go on top.
-    add_threats(acc.side_mut(p, h), n, h, p, pos, ki.1);
-}
-
-/// v += the rows `adds` - the rows `subs`, then out = v. One pass per row.
-/// (Wrapping i16 arithmetic: the order of the rows doesn't matter.)
-#[cfg(not(target_arch = "aarch64"))]
-#[inline(always)]
-fn apply_rows(v: &mut [i16], out: &mut [i16], n: &Network, h: usize, adds: &[usize], subs: &[usize]) {
-    for &f in adds {
-        for (x, &w) in v.iter_mut().zip(row(n, f, h)) {
-            *x = x.wrapping_add(w);
+    // Two one-pass kernel calls: the entry += its piece deltas (in place),
+    // then acc = entry + the threat rows (entries hold piece and pair rows
+    // only), so each accumulator value is loaded and stored once per call
+    // rather than once per row.
+    let mut a16 = [std::ptr::null::<i16>(); 32];
+    let mut s16 = [std::ptr::null::<i16>(); 32];
+    for (d, &f) in a16.iter_mut().zip(&adds[..na]) {
+        *d = row(n, f, h).as_ptr();
+    }
+    for (d, &f) in s16.iter_mut().zip(&subs[..ns]) {
+        *d = row(n, f, h).as_ptr();
+    }
+    // Safe: in place (each block is loaded before it is stored); every row
+    // holds h values.
+    unsafe { (n.rows)(e.acc.as_mut_ptr(), e.acc.as_ptr(), h, &a16[..na], &s16[..ns], &[], &[]) };
+    let mut a8 = [std::ptr::null::<i8>(); crate::threats::MAX_ACTIVE];
+    let mut k = 0;
+    if let Some(var) = n.thr {
+        let mut t = [0u32; crate::threats::MAX_ACTIVE];
+        k = crate::threats::active_into(var, pos, p, ki.1, &mut t);
+        for (d, &f) in a8.iter_mut().zip(&t[..k]) {
+            *d = thr_row(n, f, h).as_ptr();
         }
     }
-    for &f in subs {
-        for (x, &w) in v.iter_mut().zip(row(n, f, h)) {
-            *x = x.wrapping_sub(w);
-        }
-    }
-    out.copy_from_slice(v);
-}
-
-/// NEON version of apply_rows: one pass over v, 128 values at a time held in
-/// sixteen registers while every row is applied, so v is read and written
-/// once instead of once per row. h is a multiple of 32; a 32-value tail
-/// step handles sizes that aren't multiples of 128.
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn apply_rows(v: &mut [i16], out: &mut [i16], n: &Network, h: usize, adds: &[usize], subs: &[usize]) {
-    #[inline(always)]
-    unsafe fn chunk<const K: usize>(
-        v: *mut i16,
-        out: *mut i16,
-        w: *const i16,
-        h: usize,
-        adds: &[usize],
-        subs: &[usize],
-    ) {
-        use std::arch::aarch64::*;
-        let mut x = [vdupq_n_s16(0); K];
-        for k in 0..K {
-            x[k] = vld1q_s16(v.add(8 * k));
-        }
-        for &f in adds {
-            let r = w.add(f * h);
-            for k in 0..K {
-                x[k] = vaddq_s16(x[k], vld1q_s16(r.add(8 * k)));
-            }
-        }
-        for &f in subs {
-            let r = w.add(f * h);
-            for k in 0..K {
-                x[k] = vsubq_s16(x[k], vld1q_s16(r.add(8 * k)));
-            }
-        }
-        for k in 0..K {
-            vst1q_s16(v.add(8 * k), x[k]);
-            vst1q_s16(out.add(8 * k), x[k]);
-        }
-    }
-    // Safe: v and out hold h values, and load() checks every feature row
-    // (f * h .. f * h + h) is inside ftw.
-    unsafe {
-        let w = n.ftw.as_ptr();
-        let mut o = 0;
-        while o + 128 <= h {
-            chunk::<16>(v.as_mut_ptr().add(o), out.as_mut_ptr().add(o), w.add(o), h, adds, subs);
-            o += 128;
-        }
-        while o < h {
-            chunk::<4>(v.as_mut_ptr().add(o), out.as_mut_ptr().add(o), w.add(o), h, adds, subs);
-            o += 32;
-        }
-    }
+    // Safe: acc and the entry are distinct buffers of h values; every row
+    // holds h values.
+    unsafe { (n.rows)(acc.side_mut(p, h).as_mut_ptr(), e.acc.as_ptr(), h, &[], &[], &a8[..k], &[]) };
 }
 
 #[inline(never)]
