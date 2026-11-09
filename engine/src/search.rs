@@ -1489,7 +1489,10 @@ impl Searcher {
         }
 
         // Tablebase WDL probe: valid right after a capture or pawn move
-        // (halfmove 0) without castling rights.
+        // (halfmove 0) without castling rights. A result that doesn't end
+        // the node still bounds it: a win is a floor for alpha and for the
+        // score returned, a loss a ceiling for beta and the score.
+        let (mut tb_min, mut tb_max) = (-INF, INF);
         if !root
             && excluded == 0
             && pos.halfmove == 0
@@ -1514,6 +1517,13 @@ impl Searcher {
                     let ev = if in_check { -INF } else { self.evaluate(pos, ply) };
                     self.tt.store(pos.hash, 0, ss, ev, (depth + 6).min(MAX_PLY as i32 - 1), bound, pv_node || tt_pv);
                     return s;
+                }
+                if bound == BOUND_LOWER {
+                    tb_min = s;
+                    alpha = alpha.max(s);
+                } else {
+                    tb_max = s;
+                    beta = beta.min(s);
                 }
             }
         }
@@ -2180,6 +2190,7 @@ impl Searcher {
             }
         }
 
+        let best_score = best_score.clamp(tb_min, tb_max);
         if excluded == 0 {
             let bound = if best_score >= beta {
                 BOUND_LOWER
