@@ -300,6 +300,9 @@ pub struct Searcher {
     pub silent: bool,
     /// UCI searchmoves: the root moves to consider (empty = all).
     pub search_moves: Vec<Move>,
+    /// `go mate N`: stop once a completed iteration proves a mate in at most
+    /// N moves for the side to move.
+    pub mate_moves: Option<u32>,
     /// 0 for the main thread, 1.. for Lazy SMP helpers (see smp.rs).
     pub thread_id: usize,
     /// Helpers' node counts (helper i at i - 1), for the main thread's totals.
@@ -595,6 +598,7 @@ impl Searcher {
             lines: Vec::new(),
             no_nmp_ply: usize::MAX,
             search_moves: Vec::new(),
+            mate_moves: None,
             lmr,
             silent: false,
             thread_id: 0,
@@ -1223,6 +1227,12 @@ impl Searcher {
                 stability = 0;
             }
             prev_best = best;
+            if let Some(n) = self.mate_moves {
+                if score >= MATE - MAX_PLY as i32 && score >= MATE - (2 * n as i32 - 1) {
+                    tm_stop = "mate";
+                    break;
+                }
+            }
             if let Some(soft) = lim.soft_ms {
                 let total = self.nodes.max(1) as f64;
                 let frac = self.root_node_counts[mfrom(best)][mto(best)] as f64 / total;
@@ -2559,6 +2569,23 @@ impl Searcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `go mate N`: the search stops at the iteration that proves a mate in at
+    /// most N moves, instead of running on to the depth limit.
+    #[test]
+    fn go_mate_stops_at_proven_mate() {
+        crate::attacks::init();
+        crate::nnue::init();
+        let pos = Position::from_fen("6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1").unwrap();
+        let lim = Limits { soft_ms: None, hard_ms: None, depth: 64, nodes: Some(50_000_000) };
+        let mut s = Searcher::new(1, Arc::new(AtomicBool::new(false)));
+        s.silent = true;
+        s.mate_moves = Some(1);
+        let (m, score) = s.search(&pos, &lim);
+        assert_eq!(m, pos.parse_move("d1d8").unwrap());
+        assert_eq!(score, MATE - 1);
+        assert!(s.total_nodes() < 1_000_000, "stopped at the proven mate, not the node limit");
+    }
 
     #[test]
     fn futile_killer_does_not_hide_high_history_mate() {
