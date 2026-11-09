@@ -115,6 +115,15 @@ pub fn probe_wdl(pos: &Position) -> Option<Wdl> {
 
 /// Raw TB_RESULT of a root (DTZ) probe. Not thread-safe.
 fn root_result(pos: &Position) -> Option<u32> {
+    root_result_into(pos, std::ptr::null_mut())
+}
+
+/// Size of the per-move results array (TB_MAX_MOVES in tbprobe.h).
+const MAX_MOVES: usize = 192 + 1;
+
+/// `root_result`, also filling `results` (null, or MAX_MOVES entries) with
+/// one TB_RESULT per legal move, ended by RESULT_FAILED.
+fn root_result_into(pos: &Position, results: *mut u32) -> Option<u32> {
     if pos.occ().count_ones() > largest() || pos.castling != 0 {
         return None;
     }
@@ -132,25 +141,58 @@ fn root_result(pos: &Position) -> Option<u32> {
             pos.halfmove as u32,
             ep_of(pos),
             pos.stm == WHITE,
-            std::ptr::null_mut(),
+            results,
         )
     };
     (v != RESULT_FAILED).then_some(v)
+}
+
+/// The move of a TB_RESULT (tbprobe.h: to bits 4-9, from 10-15, promotes
+/// 16-18), None for the no-move results (checkmate, stalemate).
+fn result_move(pos: &Position, v: u32) -> Option<Move> {
+    let (to, from, promo) = ((v >> 4) & 63, (v >> 10) & 63, (v >> 16) & 7);
+    if from == to {
+        return None;
+    }
+    let uci = format!("{}{}{}", sq_str(from as usize), sq_str(to as usize), ["", "q", "r", "b", "n"][promo as usize]);
+    pos.parse_move(&uci)
+}
+
+/// A root probe's result for the position and for each legal move.
+pub struct RootMoves {
+    /// The position's result (cursed wins and blessed losses as draws).
+    pub wdl: Wdl,
+    /// A move that keeps it (DTZ-optimal).
+    pub best: Move,
+    /// The legal moves whose result, fifty-move counter included, is the
+    /// best any move reaches on the tables' five-step scale (loss, blessed
+    /// loss, draw, cursed win, win): the moves a search may choose between
+    /// without giving the result away.
+    pub keep: Vec<Move>,
+}
+
+/// Root probe (DTZ) with the per-move results. Not thread-safe.
+#[allow(dead_code)]
+pub fn probe_root_moves(pos: &Position) -> Option<RootMoves> {
+    let mut results = [RESULT_FAILED; MAX_MOVES];
+    let v = root_result_into(pos, results.as_mut_ptr())?;
+    let best = result_move(pos, v)?;
+    let moves: Vec<(Move, u32)> = results
+        .iter()
+        .take_while(|&&r| r != RESULT_FAILED)
+        .filter_map(|&r| result_move(pos, r).map(|m| (m, r & 15)))
+        .collect();
+    let top = moves.iter().map(|&(_, w)| w).max()?;
+    let keep = moves.iter().filter(|&&(_, w)| w == top).map(|&(m, _)| m).collect();
+    Some(RootMoves { wdl: wdl_of(v & 15), best, keep })
 }
 
 /// Root probe (DTZ): the WDL of the position and a move that keeps it,
 /// taking the fifty-move counter into account. Not thread-safe.
 pub fn probe_root(pos: &Position) -> Option<(Wdl, Move)> {
     let v = root_result(pos)?;
-    // TB_RESULT layout (tbprobe.h): wdl bits 0-3, to 4-9, from 10-15, promotes 16-18,
-    // dtz 20-31.
-    let (to, from, promo) = ((v >> 4) & 63, (v >> 10) & 63, (v >> 16) & 7);
-    if from == to {
-        return None; // checkmate or stalemate: no move
-    }
-    let uci = format!("{}{}{}", sq_str(from as usize), sq_str(to as usize), ["", "q", "r", "b", "n"][promo as usize]);
-    let m = pos.parse_move(&uci)?;
-    Some((wdl_of(v & 15), m))
+    // None for checkmate or stalemate: no move.
+    Some((wdl_of(v & 15), result_move(pos, v)?))
 }
 
 /// WDL and DTZ (plies to the next capture or pawn move along the best line,
