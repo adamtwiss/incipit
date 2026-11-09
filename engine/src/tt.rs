@@ -255,14 +255,7 @@ impl TT {
                 found = true;
                 break;
             }
-            // A was-PV entry (bit 55) counts TtPvKeep plies deeper than it
-            // is, so it survives replacement longer.
-            let q = if bd & 3 == BOUND_NONE {
-                i32::MIN
-            } else {
-                ((d >> 48) as u8 & 127) as i32 - 8 * age(bd)
-                    + if on(P::UseTtPvKeep) && (d >> 55) & 1 != 0 { tp(P::TtPvKeep) } else { 0 }
-            };
+            let q = if bd & 3 == BOUND_NONE { i32::MIN } else { Self::quality(d, gen) };
             if q < worst {
                 worst = q;
                 slot = k;
@@ -309,18 +302,32 @@ impl TT {
     /// searched to a stored result). It takes only an empty slot, another
     /// eval-only one or one from an earlier search, so it never displaces a
     /// search result of this search; search probes ignore it (bound NONE).
+    /// Of those it takes the one worth least: an empty or eval-only slot
+    /// before any search entry, then the earlier search's entry `store`
+    /// would replace first. (Taking the first in slot order overwrote the
+    /// previous search's entries, deep ones included, in buckets that still
+    /// had a free slot.)
     #[inline(always)]
     pub fn store_eval(&self, key: u64, eval: i32) {
         let gen = self.gen.load(Relaxed);
         let b = unsafe { self.table.get_unchecked(self.idx(key)) };
         let mut slot = WAYS;
+        let mut worst = i32::MAX;
         for k in 0..WAYS {
             let (ek, d) = b.read(k);
             let bd = (d >> 56) as u8;
             if ek == key as u32 && (bd & 3 != BOUND_NONE || (d >> 55) & 1 != 0) {
                 return;
             }
-            if slot == WAYS && (bd & 3 == BOUND_NONE || bd >> 2 != gen) {
+            let q = if bd & 3 == BOUND_NONE {
+                i32::MIN
+            } else if bd >> 2 != gen {
+                Self::quality(d, gen)
+            } else {
+                continue;
+            };
+            if q < worst {
+                worst = q;
                 slot = k;
             }
         }
@@ -330,6 +337,15 @@ impl TT {
                 &Entry { key, mv: 0, score: 0, eval: eval as i16, depth: 0, bound: BOUND_NONE | (gen << 2), pv: true },
             );
         }
+    }
+    /// A search entry's worth when a victim is chosen, from its packed
+    /// word: depth less 8 per search of age; a was-PV entry (bit 55) counts
+    /// TtPvKeep plies deeper than it is, so it survives longer.
+    #[inline(always)]
+    fn quality(d: u64, gen: u8) -> i32 {
+        let bd = (d >> 56) as u8;
+        ((d >> 48) as u8 & 127) as i32 - 8 * (gen.wrapping_sub(bd >> 2) & 63) as i32
+            + if on(P::UseTtPvKeep) && (d >> 55) & 1 != 0 { tp(P::TtPvKeep) } else { 0 }
     }
     /// Permille of entries in use from the current search (first 1000).
     pub fn hashfull(&self) -> usize {
@@ -444,6 +460,25 @@ mod tests {
         tt2.new_search();
         tt2.store_eval(mix(99), 9);
         assert_eq!(tt2.probe_eval(mix(99)), Some(9));
+        // Among an earlier search's entries the least valuable gives way, and
+        // a free slot goes before any of them: a deep entry in the first
+        // slot survives eval-only stores.
+        let tt3 = TT::with_buckets(1);
+        tt3.store(mix(0), 1, 0, 0, 30, BOUND_EXACT, false);
+        for k in 1..WAYS as u64 - 1 {
+            tt3.store(mix(k), 1, 0, 0, 2 + k as i32, BOUND_LOWER, false);
+        }
+        tt3.new_search();
+        tt3.store_eval(mix(50), 5); // the empty slot
+        tt3.store_eval(mix(51), 6); // then that eval-only entry again
+        assert!((0..WAYS as u64 - 1).all(|k| tt3.probe(mix(k)).is_some()));
+        assert_eq!((tt3.probe_eval(mix(50)), tt3.probe_eval(mix(51))), (None, Some(6)));
+        // With that slot taken by this search, the shallowest old entry goes.
+        tt3.store(mix(60), 1, 0, 0, 1, BOUND_LOWER, false);
+        tt3.store_eval(mix(52), 7);
+        assert_eq!(tt3.probe(mix(0)).map(|e| e.depth), Some(30));
+        assert!(tt3.probe(mix(1)).is_none() && tt3.probe(mix(2)).is_some() && tt3.probe(mix(60)).is_some());
+        assert_eq!(tt3.probe_eval(mix(52)), Some(7));
         // Mate-range evals (stored by in-check nodes) are not returned.
         tt.store(key ^ 1, 0, 0, -32000, 2, BOUND_UPPER, false);
         assert_eq!(tt.probe_eval(key ^ 1), None);
