@@ -113,6 +113,7 @@ usage:
                            (same file any distance, adjacent files within one rank), 2 = 608
                            (within one rank) (trainer pp=1 ppw=N)
       --threats V          threat inputs of variant V (0, 1, 2; trainer thr=V): i8 rows after all layers
+      --threat-width K     narrow threat block: threat rows over FT lanes 0..K only (trainer thrk=K)
       --l1-skip            the hidden layer's last neuron is a linear skip to the output (trainer l1skip=1; needs --l2)
       --description TEXT   training run, data and settings
       --permute FILE       FT neuron order (hidden-layer nets; from the engine's l1perm)
@@ -1250,6 +1251,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         l1_shift: 0,
         l2: 0,
         threats: None,
+        threat_width: 0,
     };
     let mut qb_set = false;
     let mut i = 0;
@@ -1302,6 +1304,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
                 }
                 arch.threats = Some(v);
             }
+            "--threat-width" => arch.threat_width = num()? as usize,
             "--hidden" => arch.hidden = num()? as usize,
             "--l1" => arch.l1 = num()? as usize,
             "--l1-shift" => arch.l1_shift = num()? as u32,

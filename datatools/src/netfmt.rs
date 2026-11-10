@@ -20,6 +20,8 @@ pub const TAG_OUTPUT_BUCKETS: u16 = 0x0004;
 pub const TAG_LAYER: u16 = 0x0005;
 pub const TAG_QUANT: u16 = 0x0006;
 pub const TAG_LAYER_QUANT: u16 = 0x0007;
+/// Narrow threat block: the threat rows cover FT lanes 0..width only (u32).
+pub const TAG_THREAT_WIDTH: u16 = 0x0008;
 pub const TAG_DESCRIPTION: u16 = 0x8001;
 
 pub const INPUT_PSQ768: u16 = 1;
@@ -87,6 +89,9 @@ pub struct Arch {
     pub l2: usize,
     /// Threat inputs of this variant (trainer thr=), hidden-layer nets only.
     pub threats: Option<usize>,
+    /// Narrow threat block (trainer thrk=): threat rows over FT lanes 0..this
+    /// only (0 = all lanes).
+    pub threat_width: usize,
 }
 
 impl Arch {
@@ -106,6 +111,15 @@ impl Arch {
     /// Threat feature rows (0 without threats).
     pub fn threat_features(&self) -> usize {
         self.threats.map_or(0, crate::threats::features)
+    }
+
+    /// Values per threat row: the narrow width, or the hidden size.
+    pub fn threat_row(&self) -> usize {
+        if self.threat_width > 0 {
+            self.threat_width
+        } else {
+            self.hidden
+        }
     }
 }
 
@@ -162,7 +176,7 @@ pub fn write_hidden(
     thr: &[i8],
 ) -> Vec<u8> {
     let (h, nb, l1, l2) = (arch.hidden, arch.output_buckets, arch.l1, arch.l2);
-    assert_eq!(thr.len(), arch.threat_features() * h);
+    assert_eq!(thr.len(), arch.threat_features() * arch.threat_row());
     let nb1 = if arch.l1_shared { 1 } else { nb };
     let last = if l2 > 0 { l2 } else { l1 };
     // Hidden-layer inputs: 2h (SCReLU) or h (pairwise).
@@ -272,6 +286,9 @@ fn assemble(
     }
     if let Some(lq) = layer_quant {
         field(&mut fields, TAG_LAYER_QUANT, lq);
+    }
+    if arch.threat_width > 0 {
+        field(&mut fields, TAG_THREAT_WIDTH, &(arch.threat_width as u32).to_le_bytes());
     }
 
     let mut p = Vec::new();
@@ -391,7 +408,15 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     if nlin > l1 {
         return Err(format!("--l1-lin {} is more than the {} hidden neurons", nlin, l1));
     }
-    let n_thr = arch.threat_features() * h;
+    let tw = arch.threat_row();
+    if arch.threat_width > 0 && (arch.threats.is_none() || tw % 32 != 0 || tw > if pw { h / 2 } else { h }) {
+        return Err(format!(
+            "--threat-width {} needs --threats and a multiple of 32 up to {}",
+            tw,
+            if pw { h / 2 } else { h }
+        ));
+    }
+    let n_thr = arch.threat_features() * tw;
     let expect =
         2 * (n_ftw + h) + nb1 * l1 * inl + 4 * (nb1 * l1 + nb * l2 * (in2 + 1) + nb * last + nb + nb * nlin) + n_thr;
     let ok = data.len() == expect.div_ceil(64) * 64
@@ -438,16 +463,24 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     }
     // The order covers the hidden layer's inputs per perspective: h neurons, or
     // for pairwise nets h/2 pairs (neurons j and j + h/2 move together).
-    let p = &arch.perm;
     let u = if pw { h / 2 } else { h };
     let mut seen = vec![false; u];
-    if p.len() != u || !p.iter().all(|&i| i < u && !std::mem::replace(&mut seen[i], true)) {
+    if arch.perm.len() != u || !arch.perm.iter().all(|&i| i < u && !std::mem::replace(&mut seen[i], true)) {
         return Err(format!("--permute: need a permutation of 0..{}", u));
     }
-    let full: Vec<usize> = if pw { p.iter().copied().chain(p.iter().map(|&i| i + u)).collect() } else { p.clone() };
+    // A narrow threat block keeps its lanes first: the order's neurons below
+    // the width, then the rest, each in the given order.
+    let stable: Vec<usize>;
+    let p = if arch.threat_width > 0 {
+        stable = arch.perm.iter().filter(|&&i| i < tw).chain(arch.perm.iter().filter(|&&i| i >= tw)).copied().collect();
+        &stable
+    } else {
+        &arch.perm
+    };
+    let full: Vec<usize> = if pw { p.iter().copied().chain(p.iter().map(|&i| i + u)).collect() } else { p.to_vec() };
     let ftw: Vec<i16> = ftw.chunks_exact(h).flat_map(|row| full.iter().map(move |&i| row[i])).collect();
     let ftb: Vec<i16> = full.iter().map(|&i| ftb[i]).collect();
-    let thr: Vec<i8> = thr.chunks_exact(h).flat_map(|row| full.iter().map(move |&i| row[i])).collect();
+    let thr: Vec<i8> = thr.chunks_exact(tw).flat_map(|row| full[..tw].iter().map(move |&i| row[i])).collect();
     let w1: Vec<i8> = w1
         .chunks_exact(2 * u)
         .flat_map(|row| p.iter().map(move |&i| row[i]).chain(p.iter().map(move |&i| row[u + i])))
@@ -555,6 +588,9 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
             TAG_DESCRIPTION => {
                 let _ = writeln!(s, "description: {}", String::from_utf8_lossy(p));
             }
+            TAG_THREAT_WIDTH if len >= 4 => {
+                let _ = writeln!(s, "threat width: lanes 0..{}", p32(0));
+            }
             other => {
                 let _ = writeln!(s, "field 0x{:04x}: {} bytes", other, len);
             }
@@ -593,6 +629,7 @@ mod tests {
             perm: Vec::new(),
             l1_shift: 0,
             threats: None,
+            threat_width: 0,
             l2: 16,
         }
     }
@@ -626,7 +663,7 @@ mod tests {
         for v in b1.iter().chain(&wm).chain(&bm).chain(&w2).chain(&b2).chain(&linf) {
             d.extend_from_slice(&v.to_le_bytes());
         }
-        d.extend((0..a.threat_features() * h).map(|i| ((i % 251) as i32 - 125) as i8 as u8));
+        d.extend((0..a.threat_features() * a.threat_row()).map(|i| ((i % 251) as i32 - 125) as i8 as u8));
         while d.len() % 64 != 0 {
             d.push(0);
         }
@@ -724,6 +761,40 @@ mod tests {
         assert_eq!(got(&net_rev, 7), want);
         // The file without threat rows is too short.
         assert!(convert(&t, "bullet", &d).is_err());
+    }
+
+    /// A narrow threat block (rows over lanes 0..32 of 128): rows of 32
+    /// values, the width in the header, and a permutation that keeps the
+    /// threat lanes first (stable within each part).
+    #[test]
+    fn narrow_threats_round_trip() {
+        crate::attacks::init();
+        let mut t = arch();
+        t.pawn_pairs = true;
+        t.pawn_pair_window = 2;
+        t.threats = Some(0);
+        t.threat_width = 32;
+        let (dt, ..) = bullet_file(&t);
+        let (tw, nt) = (32, t.threat_features());
+        let net = convert(&t, "bullet", &dt).unwrap();
+        let row = |i: usize| -> Vec<i8> { (i * tw..(i + 1) * tw).map(|j| ((j % 251) as i32 - 125) as i8).collect() };
+        let got = |n: &[u8], i: usize| -> Vec<i8> {
+            let o = n.len() - nt * tw + i * tw;
+            n[o..o + tw].iter().map(|&b| b as i8).collect()
+        };
+        assert_eq!(got(&net, nt - 1), row(nt - 1));
+        assert!(describe(&net).unwrap().contains("threat width: lanes 0..32"));
+        let mut rev = t.clone();
+        rev.perm = (0..64).rev().collect();
+        let net_rev = convert(&rev, "bullet", &dt).unwrap();
+        let want: Vec<i8> = (0..tw).rev().map(|i| row(7)[i]).collect();
+        assert_eq!(got(&net_rev, 7), want);
+        // Wider than a pairwise half, or not a multiple of 32: refused.
+        for bad in [96, 48] {
+            let mut b = t.clone();
+            b.threat_width = bad;
+            assert!(convert(&b, "bullet", &bullet_file(&b).0).is_err());
+        }
     }
 
     /// Converting a Bullet file gives exactly what write_hidden writes from
