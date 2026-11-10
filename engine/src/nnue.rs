@@ -370,6 +370,10 @@ pub fn load(d: &[u8]) -> Result<Network, String> {
         n.ftw = Aligned::from(n.ftw.iter().enumerate().map(|(i, &w)| if i >= start { w.clamp(-127, 127) } else { w }));
         n.ppw8 = n.ftw[start..].iter().map(|&w| w as i8).collect();
     }
+    // The sizes with_h! and pick_eval specialise; any other runs the generic path.
+    if !matches!(n.h, 128 | 256 | 512 | 768 | 1024 | 1280 | 1536 | 2048) {
+        eprintln!("warning: network hidden size {} has no specialised path (slower evaluation)", n.h);
+    }
     n.eval = pick_eval(&n);
     n.rows = pick_rows();
     Ok(n)
@@ -861,6 +865,7 @@ macro_rules! with_h {
             512 => $f::<512>($($arg),*),
             768 => $f::<768>($($arg),*),
             1024 => $f::<1024>($($arg),*),
+            1280 => $f::<1280>($($arg),*),
             1536 => $f::<1536>($($arg),*),
             2048 => $f::<2048>($($arg),*),
             _ => $f::<0>($($arg),*),
@@ -1621,6 +1626,11 @@ unsafe fn rows_x512(
         block::<16>(dst, src, o, a16, s16, a8, s8);
         o += 512;
     }
+    // Widths of 256 mod 512 (768, 1280): one half block, not eight single ones.
+    if o + 256 <= h {
+        block::<8>(dst, src, o, a16, s16, a8, s8);
+        o += 256;
+    }
     while o < h {
         block::<1>(dst, src, o, a16, s16, a8, s8);
         o += 32;
@@ -1861,6 +1871,7 @@ fn pick_eval(n: &Network) -> EvalFn {
                 512 => $f::<512> as EvalFn,
                 768 => $f::<768> as EvalFn,
                 1024 => $f::<1024> as EvalFn,
+                1280 => $f::<1280> as EvalFn,
                 1536 => $f::<1536> as EvalFn,
                 2048 => $f::<2048> as EvalFn,
                 _ => $f::<0> as EvalFn,
