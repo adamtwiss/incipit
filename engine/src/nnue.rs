@@ -75,6 +75,8 @@ const TAG_OUTPUT_BUCKETS: u16 = 0x0004;
 const TAG_LAYER: u16 = 0x0005;
 const TAG_QUANT: u16 = 0x0006;
 const TAG_LAYER_QUANT: u16 = 0x0007;
+/// Narrow threat block: the threat rows cover FT lanes 0..width only (u32).
+const TAG_THREAT_WIDTH: u16 = 0x0008;
 const OPTIONAL: u16 = 0x8000;
 const INPUT_PSQ768: u16 = 1;
 /// Pawn-pair inputs (src/pawnpairs.rs): shared by every king bucket, so their
@@ -134,8 +136,10 @@ pub struct Network {
     ppw8: Vec<i8>,
     /// Threat inputs (src/threats.rs) of this variant, or None.
     thr: Option<usize>,
-    /// The threat rows, i8 [threat feature][h], at the FT's scale. Not in ftw.
+    /// The threat rows, i8 [threat feature][tw], at the FT's scale. Not in ftw.
     thrw8: AlignedI8,
+    /// Lanes the threat rows cover (0..tw): h, or less for a narrow threat block.
+    tw: usize,
     ftb: Aligned, // [h]
     ow: Aligned,  // [output bucket][2h], side to move first
     ob: Vec<i32>, // [output bucket]
@@ -402,6 +406,7 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
     let mut layers = Vec::new();
     let mut quant = None;
     let mut layer_quant: Vec<(u32, i32)> = Vec::new();
+    let mut thr_width = None;
     let mut o = 16;
     while o + 8 <= header {
         let (tag, len) = (u16_at(o), u32_at(o + 4) as usize);
@@ -444,6 +449,10 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
             TAG_QUANT => {
                 need(12)?;
                 quant = Some((p32(0) as i32, p32(4) as i32, p32(8) as i32));
+            }
+            TAG_THREAT_WIDTH => {
+                need(4)?;
+                thr_width = Some(p32(0) as usize);
             }
             TAG_LAYER_QUANT => {
                 layer_quant = (0..len / 8).map(|i| (p32(8 * i), p32(8 * i + 4) as i32)).collect();
@@ -514,6 +523,12 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
     if act == ACT_PAIRWISE && !(layers.len() == 2 || layers.len() == 3) {
         return Err("a pairwise feature transformer needs a hidden layer".into());
     }
+    let tw = thr_width.unwrap_or(h);
+    // The kernels split a narrow block's lanes at tw: a multiple of every
+    // kernel's lane step (32).
+    if thr_width.is_some() && (thr.is_none() || tw == 0 || tw > h || tw % 32 != 0) {
+        return Err(format!("unsupported threat width {} (hidden {}, threats {:?})", tw, h, thr));
+    }
     if layers.len() == 2 || layers.len() == 3 {
         return load_hidden(
             d,
@@ -532,6 +547,7 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
             pp,
             ppw,
             thr,
+            tw,
         );
     }
     if pp || thr.is_some() {
@@ -595,6 +611,7 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
         ppw8: Vec::new(),
         thr: None,
         thrw8: AlignedI8::zeroed(0),
+        tw: h,
         ftb,
         ow,
         ob,
@@ -624,6 +641,7 @@ fn load_hidden(
     pp: bool,
     ppw: usize,
     thr: Option<usize>,
+    tw: usize,
 ) -> Result<Network, String> {
     let (l1, l2) = (layers[0], layers[layers.len() - 1]);
     // A middle layer: the second hidden layer.
@@ -701,7 +719,7 @@ fn load_hidden(
     let n_ftw = (nkb * 768 + if pp { crate::pawnpairs::features(ppw) } else { 0 }) * h;
     // Threat rows (i8) come last, after every layer, from a 64-byte file
     // offset (zero padding before them; older files have none).
-    let n_thr = thr.map_or(0, crate::threats::features) * h;
+    let n_thr = thr.map_or(0, crate::threats::features) * tw;
     let layers = 2 * (n_ftw + h)
         + nb1 * ln * inl
         + 4 * (nb1 * ln + buckets * n2 * (in2 + 1) + buckets * (last_in + 1) + if lin { buckets * ln } else { 0 });
@@ -802,6 +820,7 @@ fn load_hidden(
         ppw8: Vec::new(),
         thr,
         thrw8,
+        tw,
         ftb,
         ow: Aligned::from(std::iter::empty()),
         ob: Vec::new(),
@@ -1058,24 +1077,24 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
             }
         }
     }
-    add_threats(v, n, h, p, pos, ki.1);
+    add_threats(v, n, p, pos, ki.1);
 }
 
-/// Threat feature f's i8 row.
+/// Threat feature f's i8 row (n.tw values).
 #[inline(always)]
-fn thr_row(n: &Network, f: u32, h: usize) -> &[i8] {
-    let f = f as usize;
-    &n.thrw8[f * h..(f + 1) * h]
+fn thr_row(n: &Network, f: u32) -> &[i8] {
+    let (f, t) = (f as usize, n.tw);
+    &n.thrw8[f * t..(f + 1) * t]
 }
 
 /// v += every active threat row of `pos` for perspective p (mirror xor).
 #[inline]
-fn add_threats(v: &mut [i16], n: &Network, h: usize, p: usize, pos: &Position, xor: usize) {
+fn add_threats(v: &mut [i16], n: &Network, p: usize, pos: &Position, xor: usize) {
     let Some(var) = n.thr else { return };
     let mut t = [0u32; crate::threats::MAX_ACTIVE];
     let k = crate::threats::active_into(var, pos, p, xor, &mut t);
     for &f in &t[..k] {
-        add_row8(v, thr_row(n, f, h), true);
+        add_row8(v, thr_row(n, f), true);
     }
 }
 
@@ -1149,12 +1168,12 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
         let mut t = [0u32; crate::threats::MAX_ACTIVE];
         k = crate::threats::active_into(var, pos, p, ki.1, &mut t);
         for (d, &f) in a8.iter_mut().zip(&t[..k]) {
-            *d = thr_row(n, f, h).as_ptr();
+            *d = thr_row(n, f).as_ptr();
         }
     }
     // Safe: acc and the entry are distinct buffers of h values; every row
     // holds h values.
-    unsafe { (n.rows)(acc.side_mut(p, h).as_mut_ptr(), e.acc.as_ptr(), h, &[], &[], &a8[..k], &[]) };
+    unsafe { rows_tw(n, acc.side_mut(p, h).as_mut_ptr(), e.acc.as_ptr(), h, &[], &[], &a8[..k], &[], [0, 0]) };
 }
 
 #[inline(never)]
@@ -1245,6 +1264,8 @@ fn update_thr<const H: usize>(
             }
         }
     }
+    // The i8 lists start with these full-width pawn-pair rows; threat rows follow.
+    let npair = cnt;
     // Unchanged king mirror for every perspective built here, so the
     // parent's xor is the child's. Every target's row pointer is written and
     // the count advances by its valid bit (no branch on excluded threats).
@@ -1274,7 +1295,7 @@ fn update_thr<const H: usize>(
                     let f = sl.offset + (sl.valid & ((1u64 << ft) - 1)).count_ones();
                     // In bounds or one row past the end when not valid (then
                     // never read: the count doesn't advance over it).
-                    let r = base.wrapping_add(f as usize * h);
+                    let r = base.wrapping_add(f as usize * n.tw);
                     prefetch_row(r, h);
                     r8[p][side][c] = MaybeUninit::new(r);
                     c += (sl.valid >> ft & 1) as usize;
@@ -1298,7 +1319,8 @@ fn update_thr<const H: usize>(
             unsafe {
                 let init =
                     |r: &[MaybeUninit<*const i8>]| &*(r as *const [MaybeUninit<*const i8>] as *const [*const i8]);
-                (n.rows)(
+                rows_tw(
+                    n,
                     acc.side_mut(p, h).as_mut_ptr(),
                     new,
                     h,
@@ -1306,6 +1328,7 @@ fn update_thr<const H: usize>(
                     &[old],
                     init(&r8[p][1][..cnt[p][1]]),
                     init(&r8[p][0][..cnt[p][0]]),
+                    [npair[p][1], npair[p][0]],
                 );
             }
             continue;
@@ -1323,7 +1346,8 @@ fn update_thr<const H: usize>(
         // h-long row of the net, and both sides of the accumulators hold h.
         unsafe {
             let init = |r: &[MaybeUninit<*const i8>]| &*(r as *const [MaybeUninit<*const i8>] as *const [*const i8]);
-            (n.rows)(
+            rows_tw(
+                n,
                 acc.side_mut(p, h).as_mut_ptr(),
                 parent.side(p, h).as_ptr(),
                 h,
@@ -1331,6 +1355,7 @@ fn update_thr<const H: usize>(
                 &s16[..ns],
                 init(&r8[p][1][..cnt[p][1]]),
                 init(&r8[p][0][..cnt[p][0]]),
+                [npair[p][1], npair[p][0]],
             );
         }
     }
@@ -1383,6 +1408,46 @@ fn sync_entry(n: &Network, h: usize, p: usize, pos: &Position, cache: &mut Refre
 ///
 /// # Safety
 /// dst, src and every row hold h values; h is a multiple of 32.
+/// `(n.rows)` over h lanes where the i8 lists hold `pairs` (adds, subs)
+/// full-width pawn-pair rows, then threat rows that cover lanes 0..n.tw: a
+/// narrow threat block runs as two calls, lanes tw..h without the threat rows
+/// (the other row pointers moved on by tw).
+///
+/// Safety: as `(n.rows)`; at most 32 i16 and 64 pawn-pair rows per list.
+#[inline(always)]
+unsafe fn rows_tw(
+    n: &Network,
+    dst: *mut i16,
+    src: *const i16,
+    h: usize,
+    a16: &[*const i16],
+    s16: &[*const i16],
+    a8: &[*const i8],
+    s8: &[*const i8],
+    pairs: [usize; 2],
+) {
+    let t = n.tw;
+    if t == h || (a8.len() == pairs[0] && s8.len() == pairs[1]) {
+        return (n.rows)(dst, src, h, a16, s16, a8, s8);
+    }
+    (n.rows)(dst, src, t, a16, s16, a8, s8);
+    let (mut b16, mut c16) = ([std::ptr::null::<i16>(); 32], [std::ptr::null::<i16>(); 32]);
+    let (mut b8, mut c8) = ([std::ptr::null::<i8>(); 64], [std::ptr::null::<i8>(); 64]);
+    for (d, &r) in b16.iter_mut().zip(a16) {
+        *d = r.add(t);
+    }
+    for (d, &r) in c16.iter_mut().zip(s16) {
+        *d = r.add(t);
+    }
+    for (d, &r) in b8.iter_mut().zip(&a8[..pairs[0]]) {
+        *d = r.add(t);
+    }
+    for (d, &r) in c8.iter_mut().zip(&s8[..pairs[1]]) {
+        *d = r.add(t);
+    }
+    (n.rows)(dst.add(t), src.add(t), h - t, &b16[..a16.len()], &c16[..s16.len()], &b8[..pairs[0]], &c8[..pairs[1]]);
+}
+
 type RowsFn = unsafe fn(*mut i16, *const i16, usize, &[*const i16], &[*const i16], &[*const i8], &[*const i8]);
 
 fn pick_rows() -> RowsFn {
@@ -3466,6 +3531,13 @@ mod tests {
 
     /// `synth_net` with threat inputs of variant `thr` (small i8 rows, last).
     fn synth_net_thr(pp: Option<usize>, thr: Option<usize>, seed: u64) -> Vec<u8> {
+        synth_net_tw(pp, thr, seed, 128, false)
+    }
+
+    /// synth_net_thr with threat rows of tw values (a narrow threat block when
+    /// tw < 128), or with `padded` the same net as a full-width one: each
+    /// threat row zero-filled to 128.
+    fn synth_net_tw(pp: Option<usize>, thr: Option<usize>, seed: u64, tw: usize, padded: bool) -> Vec<u8> {
         let (h, nkb, nb, l1, l2) = (128usize, 32usize, 8usize, 16usize, 16usize);
         let mut r = seed | 1;
         let mut next = move || {
@@ -3520,6 +3592,9 @@ mod tests {
         p.extend_from_slice(&128i32.to_le_bytes());
         p.extend_from_slice(&[0u8; 16]);
         field(&mut f, TAG_LAYER_QUANT, &p);
+        if tw < h && !padded {
+            field(&mut f, TAG_THREAT_WIDTH, &(tw as u32).to_le_bytes());
+        }
         f.extend_from_slice(&[0u8; 8]); // end of fields
         let header = (16 + f.len()).div_ceil(64) * 64;
         let mut d = MAGIC.to_vec();
@@ -3537,8 +3612,75 @@ mod tests {
         for _ in 0..n_f32 {
             d.extend_from_slice(&(((next() % 2001) as f32 - 1000.0) / 1000.0).to_le_bytes());
         }
-        d.extend((0..thr.map_or(0, crate::threats::features) * h).map(|_| ((next() % 61) as i32 - 30) as i8 as u8));
+        for _ in 0..thr.map_or(0, crate::threats::features) {
+            d.extend((0..tw).map(|_| ((next() % 61) as i32 - 30) as i8 as u8));
+            if padded {
+                d.resize(d.len() + h - tw, 0);
+            }
+        }
         d
+    }
+
+    /// A narrow threat block (rows over lanes 0..64 of 128) builds the same
+    /// accumulators and evaluations as the full-width net with those rows
+    /// zero-filled, incrementally and by refresh, along random games.
+    #[test]
+    fn narrow_threats_match_padded() {
+        crate::attacks::init();
+        let narrow = load(&synth_net_tw(Some(2), Some(0), 0x2468_ace0, 64, false)).unwrap();
+        let wide = load(&synth_net_tw(Some(2), Some(0), 0x2468_ace0, 64, true)).unwrap();
+        assert_eq!((narrow.tw, wide.tw), (64, 128));
+        let (mut cn, mut cw) = (RefreshCache::with_net(&narrow), RefreshCache::with_net(&wide));
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut checked = 0;
+        for g in 0..40 {
+            let fens = [START_FEN, "r3k2r/1pp2pp1/p2p3p/4p3/4P3/P2P3P/1PP2PP1/R3K2R w KQkq - 0 1"];
+            let mut pos = Position::from_fen(fens[g % 2]).unwrap();
+            let (mut an, mut aw) = (Acc::new(), Acc::new());
+            for p in 0..2 {
+                refresh_persp::<128>(&mut an, &narrow, p, &pos);
+                refresh_persp::<128>(&mut aw, &wide, p, &pos);
+            }
+            assert!(an.v[..256] == aw.v[..256], "narrow != padded refresh in {}", pos.to_fen());
+            for _ in 0..120 {
+                let mut list = MoveList::new();
+                pos.gen_moves(&mut list, false);
+                let legal: Vec<Move> = (0..list.len())
+                    .map(|i| list[i])
+                    .filter(|&m| {
+                        let mut c = pos;
+                        c.make_move(m)
+                    })
+                    .collect();
+                if legal.is_empty() {
+                    break;
+                }
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let m = legal[(seed % legal.len() as u64) as usize];
+                let mut child = pos;
+                child.make_move(m);
+                let (mut n2, mut w2, mut full) = (Acc::new(), Acc::new(), Acc::new());
+                update::<128>(&mut n2, &narrow, &an, &pos, &child, m, &mut cn);
+                update::<128>(&mut w2, &wide, &aw, &pos, &child, m, &mut cw);
+                for p in 0..2 {
+                    refresh_persp::<128>(&mut full, &narrow, p, &child);
+                }
+                assert!(n2.v[..256] == w2.v[..256], "narrow != padded after {} in {}", pos.move_uci(m), pos.to_fen());
+                assert!(n2.v[..256] == full.v[..256], "narrow incremental != refresh after {}", pos.move_uci(m));
+                let mut sc = Scratch::new();
+                // Safe: both accumulators were built for their nets.
+                let (en, ew) =
+                    unsafe { ((narrow.eval)(&narrow, &n2, &child, &mut sc), (wide.eval)(&wide, &w2, &child, &mut sc)) };
+                assert_eq!(en, ew);
+                checked += 1;
+                pos = child;
+                an = n2;
+                aw = w2;
+            }
+        }
+        assert!(checked > 2000, "only {} positions checked", checked);
     }
 
     /// The SIMD row kernel (AVX2 or NEON) matches a plain wrapping loop:
