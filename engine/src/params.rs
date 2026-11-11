@@ -299,11 +299,11 @@ params! {
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
     // The fail-low bonus also covers the opponent's previous capture or
     // promotion (in capture history).
-    UsePriorCapt = "UsePriorCapt", 1, 0, 1, 0;
+    UsePriorCapt = "UsePriorCapt", 0, 0, 1, 0;
     // History updates at exact-bound nodes (ExactHistPct).
-    UseExactHist = "UseExactHist", 0, 0, 1, 0;
+    UseExactHist = "UseExactHist", 1, 0, 1, 0;
     // The exact-bound update also gives the other moves their malus.
-    UseExactMalus = "UseExactMalus", 1, 0, 1, 0;
+    UseExactMalus = "UseExactMalus", 0, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
