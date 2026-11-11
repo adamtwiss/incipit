@@ -2467,6 +2467,11 @@ impl Searcher {
                 }
             }
             if best >= beta {
+                // Standing pat assumes the side to move can at least hold the
+                // eval; returned as a bound, halfway back to beta.
+                if on(P::UseQsBlend) && best.abs() < MATE_BOUND {
+                    return (best + beta) / 2;
+                }
                 return best;
             }
             if best > alpha {

@@ -293,6 +293,9 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    // A qsearch stand-pat cutoff (static eval >= beta) returns the midpoint of
+    // the eval and beta instead of the eval.
+    UseQsBlend = "UseQsBlend", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
