@@ -2093,6 +2093,11 @@ impl Searcher {
                             }
                         }
                     }
+                    // Near the root a misjudged move changes the root's
+                    // decision directly, with no siblings to absorb it.
+                    if on(P::UseNearRoot) && ply <= tp(P::NearRootPly) as usize {
+                        r -= 1;
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {
