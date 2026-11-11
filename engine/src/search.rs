@@ -944,6 +944,18 @@ impl Searcher {
         (2..=lim).step_by(2).any(|k| self.hash_hist.get(n + 1 - k) == Some(&c.hash))
     }
 
+    /// The score of a draw found in the search: 0, or with UseDrawJitter +1 or
+    /// -1 cp by node-count parity, so drawn lines are not all scored exactly
+    /// level and the search keeps telling them apart.
+    #[inline(always)]
+    fn draw_score(&self) -> i32 {
+        if on(P::UseDrawJitter) {
+            1 - (self.nodes & 2) as i32
+        } else {
+            0
+        }
+    }
+
     /// Whether `pos` (at `ply`) is scored a draw by repetition. The last `ply`
     /// entries of `hash_hist` are the search path (root first), the rest the
     /// game before the root. Repeating a position of the search path is a draw
@@ -1429,7 +1441,7 @@ impl Searcher {
             // qsearch doesn't check repetitions, so a move into a repeated
             // position at the last ply would otherwise not be scored a draw.
             if !root && self.is_repetition(pos, ply) {
-                return 0;
+                return self.draw_score();
             }
             return self.qsearch(pos, alpha, beta, ply);
         }
@@ -1446,11 +1458,11 @@ impl Searcher {
         let in_check = pos.checkers != 0;
         if !root {
             if self.is_repetition(pos, ply) || pos.insufficient_material() {
-                return 0;
+                return self.draw_score();
             }
             // Fifty-move rule, unless the side to move is checkmated.
             if pos.halfmove >= 100 {
-                return if in_check && !pos.has_legal_move() { -MATE + ply as i32 } else { 0 };
+                return if in_check && !pos.has_legal_move() { -MATE + ply as i32 } else { self.draw_score() };
             }
             if ply >= MAX_PLY - 2 {
                 return if in_check { 0 } else { Self::damp(pos, self.evaluate(pos, ply)) };
@@ -2444,10 +2456,10 @@ impl Searcher {
             return if in_check { 0 } else { Self::damp(pos, self.evaluate(pos, ply)) };
         }
         if pos.insufficient_material() {
-            return 0;
+            return self.draw_score();
         }
         if pos.halfmove >= 100 {
-            return if in_check && !pos.has_legal_move() { -MATE + ply as i32 } else { 0 };
+            return if in_check && !pos.has_legal_move() { -MATE + ply as i32 } else { self.draw_score() };
         }
         let pv_node = beta - alpha > 1;
         self.stats.tt_probes += 1;
