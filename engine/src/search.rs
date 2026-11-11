@@ -19,17 +19,26 @@ pub const TB_WIN: i32 = MATE - 2 * MAX_PLY as i32;
 const CORR_SIZE: usize = 16384;
 pub const CORR_GRAIN: i32 = 256;
 
-/// The history's threat index of a move: bit 0 when the opponent attacks
-/// the square it leaves, bit 1 when it attacks the square it goes to
+/// The opponent's attacks at a node: every square it attacks, and the
+/// squares attacked by the piece it just moved (UseThreatHist3; else 0).
+#[derive(Clone, Copy, Default)]
+struct Thr(u64, u64);
+
+/// The history's threat index of a move: whether the opponent attacks the
+/// square it leaves (and if so, whether the piece just moved attacks it,
+/// UseThreatHist3), times whether it attacks the square it goes to
 /// (UseThreatHist2 off: only the first; UseThreatHist off: 0).
 #[inline(always)]
-fn th(threats: u64, from: usize, to: usize) -> usize {
+fn th(t: Thr, from: usize, to: usize) -> usize {
     if !on(P::UseThreatHist) {
         return 0;
     }
-    let f = ((threats >> from) & 1) as usize;
+    let mut f = ((t.0 >> from) & 1) as usize;
+    if f != 0 {
+        f += ((t.1 >> from) & 1) as usize;
+    }
     if on(P::UseThreatHist2) {
-        f | (((threats >> to) & 1) as usize) << 1
+        f + 3 * ((t.0 >> to) & 1) as usize
     } else {
         f
     }
@@ -38,7 +47,7 @@ fn th(threats: u64, from: usize, to: usize) -> usize {
 #[derive(Clone, Copy, Default)]
 struct Frame {
     static_eval: i32,
-    threats: u64,    // squares the opponent attacks at this ply
+    threats: Thr,    // the opponent's attacks at this ply (Thr)
     cont_idx: usize, // piece*64+to of the move made at this ply
     excluded: Move,
     mv: Move,
@@ -317,7 +326,7 @@ pub struct Searcher {
     pub tt: Arc<TT>,
     // Quiet history by side, whether the moving piece stands on a square
     // the opponent attacks, from and to.
-    hist: Box<[[[[i16; 64]; 64]; 4]; 2]>,
+    hist: Box<[[[[i16; 64]; 64]; 6]; 2]>,
     /// Continuation and correction history: one set shared by all Lazy SMP
     /// threads while they search (see SharedHist).
     pub sh: Arc<SharedHist>,
@@ -579,7 +588,7 @@ impl Searcher {
             start: Instant::now(),
             hard_ms: None,
             node_limit: None,
-            hist: Box::new([[[[0; 64]; 64]; 4]; 2]),
+            hist: Box::new([[[[0; 64]; 64]; 6]; 2]),
             sh: SharedHist::new(),
             capt: Box::new([[[0; 7]; 64]; 12]),
             killers: Align64([[0; 2]; MAX_PLY + 4]),
@@ -635,7 +644,7 @@ impl Searcher {
         // Helpers drop their handles when a search ends, so between searches
         // this is the only one.
         Arc::get_mut(&mut self.tt).expect("TT cleared during a search").clear();
-        *self.hist = [[[[0; 64]; 64]; 4]; 2];
+        *self.hist = [[[[0; 64]; 64]; 6]; 2];
         self.gain.iter_mut().for_each(|g| *g = [0; 64]);
         Arc::get_mut(&mut self.sh).expect("histories cleared during a search").clear();
         *self.capt = [[[0; 7]; 64]; 12];
@@ -1500,7 +1509,7 @@ impl Searcher {
                 if tt_score >= beta && tt_move != 0 && !is_noisy(tt_move) {
                     // reward quiet tt move causing cutoff
                     let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
-                    let threats = pos.attacks_by(pos.stm ^ 1);
+                    let threats = self.thr(pos, ply);
                     upd(
                         &mut self.hist[pos.stm][th(threats, mfrom(tt_move), mto(tt_move))][mfrom(tt_move)]
                             [mto(tt_move)],
@@ -1766,7 +1775,7 @@ impl Searcher {
         let mut list = MoveList::new();
         let mut scores = Stack256::<i32>::new();
         let us = pos.stm;
-        let threats = pos.attacks_by(pos.stm ^ 1);
+        let threats = self.thr(pos, ply);
         self.stack[ply].threats = threats;
         let killers = if on(P::UseKillers) { self.killers[ply] } else { [0, 0] };
         // Moves come in stages: the TT move, the noisy moves, the quiets,
@@ -2267,7 +2276,7 @@ impl Searcher {
         prev2: usize,
         prev4: usize,
         prev6: usize,
-        threats: u64,
+        threats: Thr,
     ) {
         let pc = pos.board[mfrom(m)] as usize;
         let ci = pc * 64 + mto(m);
@@ -2304,7 +2313,7 @@ impl Searcher {
         prev2: usize,
         prev4: usize,
         prev6: usize,
-        threats: u64,
+        threats: Thr,
     ) -> usize {
         let old = list.len();
         debug_assert_eq!(scores.len(), old);
@@ -2344,8 +2353,32 @@ impl Searcher {
         }
     }
 
+    /// The opponent's attacks at this node (see Thr).
     #[inline(always)]
-    fn quiet_history(&self, pos: &Position, m: Move, prev: [usize; 4], threats: u64) -> i32 {
+    fn thr(&self, pos: &Position, ply: usize) -> Thr {
+        let them = pos.stm ^ 1;
+        let mut new = 0;
+        if on(P::UseThreatHist3) && ply >= 1 && self.stack[ply - 1].mv != 0 {
+            use crate::attacks::{bishop_attacks, knight_attacks, pawn_attacks, rook_attacks};
+            let sq = mto(self.stack[ply - 1].mv);
+            let pc = pos.board[sq];
+            if pc != NONE_PC && pc_color(pc) == them {
+                let occ = pos.occ();
+                new = match pc_type(pc) {
+                    PAWN => pawn_attacks(them, sq),
+                    KNIGHT => knight_attacks(sq),
+                    BISHOP => bishop_attacks(sq, occ),
+                    ROOK => rook_attacks(sq, occ),
+                    QUEEN => bishop_attacks(sq, occ) | rook_attacks(sq, occ),
+                    _ => 0,
+                };
+            }
+        }
+        Thr(pos.attacks_by(them), new)
+    }
+
+    #[inline(always)]
+    fn quiet_history(&self, pos: &Position, m: Move, prev: [usize; 4], threats: Thr) -> i32 {
         let pc = pos.board[mfrom(m)] as usize;
         let ci = pc * 64 + mto(m);
         self.hist[pos.stm][th(threats, mfrom(m), mto(m))][mfrom(m)][mto(m)] as i32
@@ -2372,7 +2405,7 @@ impl Searcher {
         prev2: usize,
         prev4: usize,
         prev6: usize,
-        threats: u64,
+        threats: Thr,
     ) {
         // Squares from which each piece type of ours gives direct check to
         // the enemy king, with the current occupancy (a slider moving along
@@ -2511,7 +2544,7 @@ impl Searcher {
         // history of their own threat bucket, as the main search writes it
         // (a king in check always leaves an attacked square, so bucket 0
         // held another kind of move's history).
-        let threats = if in_check { pos.attacks_by(pos.stm ^ 1) } else { 0 };
+        let threats = if in_check { self.thr(pos, ply) } else { Thr::default() };
         let mut scores = Stack256::<i32>::new();
         for &m in list.as_slice() {
             let score = if m == tt_move {
@@ -2634,7 +2667,7 @@ mod tests {
         // second fails futility, but Rd8's history clears the same margin.
         s.killers[1] = [pos.parse_move("h2h3").unwrap(), pos.parse_move("g2g3").unwrap()];
         let mate = pos.parse_move("d1d8").unwrap();
-        let threats = pos.attacks_by(BLACK);
+        let threats = Thr(pos.attacks_by(BLACK), 0);
         s.hist[WHITE][th(threats, mfrom(mate), mto(mate))][mfrom(mate)][mto(mate)] = 16000;
         s.acc[1].refresh(&pos);
         s.lazy[1] = LazyAcc { pos, m: 0, state: ACC_DONE };

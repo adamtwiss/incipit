@@ -277,6 +277,9 @@ params! {
     UseThreatHist = "UseThreatHist", 1, 0, 1, 0;
     // ... and by whether the square it goes to is attacked.
     UseThreatHist2 = "UseThreatHist2", 1, 0, 1, 0;
+    // ... and, for an attacked from-square, by whether the piece the opponent
+    // just moved attacks it.
+    UseThreatHist3 = "UseThreatHist3", 1, 0, 1, 0;
     UseCheckOrder = "UseCheckOrder", 1, 0, 1, 0;
     UseGainHist = "UseGainHist", 1, 0, 1, 0;
     UseGainHistPrune = "UseGainHistPrune", 1, 0, 1, 0;
