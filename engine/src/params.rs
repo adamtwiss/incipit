@@ -108,6 +108,9 @@ params! {
     LmrDeeper = "LmrDeeper", 78, 10, 200, 10;
     CevLmrMargin = "CevLmrMargin", 6, -100, 200, 10;
     CevLmrMore = "CevLmrMore", 90, 20, 400, 15;
+    // A second ply less where the child eval is at least alpha + CevLess2
+    // (UseCevLess2).
+    CevLess2 = "CevLess2", 100, 0, 400, 15;
     // Qsearch skips a capture only if SEE says it loses more than this (cp),
     // so near-equal trades (a bishop for a knight at the SEE values) are tried.
     QsSeeMargin = "QsSeeMargin", 50, 0, 200, 10;
@@ -293,6 +296,7 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    UseCevLess2 = "UseCevLess2", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
