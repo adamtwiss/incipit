@@ -74,6 +74,9 @@ params! {
     // scale (HistMax is one saturated table): a check comes ahead of quiets
     // with ordinary history and behind ones every table rates highly.
     CheckBonus = "CheckBonus", 2381, 0, 8192, 256;
+    // With UseKillerHist, a killer is ordered among the quiets by its history
+    // plus KillerBonus (history scale) instead of ahead of all of them.
+    KillerBonus = "KillerBonus", 8192, 0, 32000, 512;
     // Quiet ordering: the move's learned eval gain (cp, see `gain_learn`)
     // times this joins the history score.
     GainOrdMul = "GainOrdMul", 47, 0, 256, 8;
@@ -278,6 +281,7 @@ params! {
     // ... and by whether the square it goes to is attacked.
     UseThreatHist2 = "UseThreatHist2", 1, 0, 1, 0;
     UseCheckOrder = "UseCheckOrder", 1, 0, 1, 0;
+    UseKillerHist = "UseKillerHist", 1, 0, 1, 0;
     UseGainHist = "UseGainHist", 1, 0, 1, 0;
     UseGainHistPrune = "UseGainHistPrune", 1, 0, 1, 0;
     // Continuation history keyed by our move three plies back (prev6), at

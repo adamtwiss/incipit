@@ -1916,10 +1916,11 @@ impl Searcher {
             // TT/killer priority is an ordering bonus, not a history value.
             // Other quiets already carry their history in the ordering score,
             // with the gain history's share, which is for ordering only.
+            let killer = quiet && (m == killers[0] || m == killers[1]);
             let hist_score = if !quiet {
                 0
             } else if mscore < (1 << 27) {
-                mscore - self.gain_order(pos, m)
+                mscore - self.gain_order(pos, m) - if killer { tp(P::KillerBonus) } else { 0 }
             } else {
                 self.quiet_history(pos, m, [prev1, prev2, prev4, prev6], threats)
             };
@@ -1943,7 +1944,7 @@ impl Searcher {
                         self.stats.futility += 1;
                         // A boosted move can precede quiets with higher
                         // history. Its failure cannot prune those moves too.
-                        skip_quiets = !on(P::UseFutHist) || mscore < (1 << 27);
+                        skip_quiets = !on(P::UseFutHist) || (mscore < (1 << 27) && !killer);
                         continue;
                     }
                     if on(P::UseHistPrune)
@@ -2072,7 +2073,7 @@ impl Searcher {
                         r -= 1;
                     }
                     // Killers (good captures have their own term above).
-                    if quiet && mscore >= (1 << 27) {
+                    if quiet && (mscore >= (1 << 27) || killer) {
                         r -= 1;
                     }
                     if tt_capture {
@@ -2408,14 +2409,15 @@ impl Searcher {
                     // never reached are never evaluated.
                     (1 << 28) + base
                 }
-            } else if m == killers[0] {
+            } else if !on(P::UseKillerHist) && m == killers[0] {
                 (1 << 27) + 2
-            } else if m == killers[1] {
+            } else if !on(P::UseKillerHist) && m == killers[1] {
                 (1 << 27) + 1
             } else {
                 self.quiet_history(pos, m, [prev1, prev2, prev4, prev6], threats)
                     + if check_sq[pc_type(pos.board[mfrom(m)])] >> mto(m) & 1 != 0 { tp(P::CheckBonus) } else { 0 }
                     + self.gain_order(pos, m)
+                    + if m == killers[0] || m == killers[1] { tp(P::KillerBonus) } else { 0 }
             };
             scores.push(score);
         }
