@@ -2088,6 +2088,11 @@ impl Searcher {
                         if let Some(ce) = self.child_eval(pos, &child, m, ply, prev1) {
                             if ce >= alpha - tp(P::CevLmrMargin) {
                                 r -= 1;
+                                // Well above alpha: likely to beat it, so close
+                                // to full depth.
+                                if on(P::UseCevLess2) && ce >= alpha + tp(P::CevLess2) {
+                                    r -= 1;
+                                }
                             } else if ce < alpha - tp(P::CevLmrMore) {
                                 r += 1;
                             }
