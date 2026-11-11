@@ -40,6 +40,7 @@ struct Frame {
     static_eval: i32,
     threats: u64,    // squares the opponent attacks at this ply
     cont_idx: usize, // piece*64+to of the move made at this ply
+    capt: usize,     // captured piece type of that move (6 if none)
     excluded: Move,
     mv: Move,
     // A static eval the parent computed for this ply's node (child-eval LMR):
@@ -1689,6 +1690,7 @@ impl Searcher {
                     let pc = pos.board[mfrom(m)] as usize;
                     self.stack[ply].mv = m;
                     self.stack[ply].cont_idx = pc * 64 + mto(m);
+                    self.stack[ply].capt = pos.captured_type(m);
                     self.gain_par[ply + 1] = None;
                     self.hash_hist.push(pos.hash);
                     let mut v = -self.qsearch(&child, -pc_beta, -pc_beta + 1, ply + 1);
@@ -2006,6 +2008,7 @@ impl Searcher {
             let pc = pos.board[mfrom(m)] as usize;
             self.stack[ply].mv = m;
             self.stack[ply].cont_idx = pc * 64 + mto(m);
+            self.stack[ply].capt = pos.captured_type(m);
             self.gain_par[ply + 1] =
                 if quiet && static_eval != -INF { Some((pc as u8, mto(m) as u8, static_eval)) } else { None };
             self.hash_hist.push(pos.hash);
@@ -2169,7 +2172,11 @@ impl Searcher {
         } else if alpha == orig_alpha && excluded == 0 && ply >= 1 && tp(P::PriorBonusPct) > 0 {
             // Fail low: the opponent's last move, if quiet, held against every reply.
             let pm = self.stack[ply - 1].mv;
-            if pm != 0 && !is_noisy(pm) {
+            if pm != 0 && is_noisy(pm) && on(P::UsePriorCapt) {
+                let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
+                let f = &self.stack[ply - 1];
+                upd(&mut self.capt[f.cont_idx / 64][mto(pm)][f.capt], bonus * tp(P::PriorBonusPct) / 100);
+            } else if pm != 0 && !is_noisy(pm) {
                 let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
                 let bonus = bonus * tp(P::PriorBonusPct) / 100;
                 let prev3 = if ply >= 3 { self.stack[ply - 3].cont_idx } else { 0 };
@@ -2186,6 +2193,31 @@ impl Searcher {
                 }
                 if prev5 != 0 {
                     upd_shared(&self.sh.cont[prev5][prev1], bonus);
+                }
+            }
+        }
+
+        if on(P::UseExactHist) && alpha > orig_alpha && best_score < beta && excluded == 0 {
+            // Exact bound: the best move beat every earlier one without a cutoff.
+            let bonus = (tp(P::HistMul) * depth - tp(P::HistOff)).clamp(0, tp(P::HistMax));
+            let bonus = bonus * tp(P::ExactHistPct) / 100;
+            let m = best_move;
+            if !is_noisy(m) {
+                self.update_quiet(pos, m, bonus, prev1, prev2, prev4, prev6, threats);
+            } else {
+                let pc = pos.board[mfrom(m)] as usize;
+                let ct = pos.captured_type(m);
+                upd(&mut self.capt[pc][mto(m)][ct], bonus);
+            }
+            if on(P::UseExactMalus) {
+                for k in 0..nq {
+                    self.update_quiet(pos, quiets[k], -bonus, prev1, prev2, prev4, prev6, threats);
+                }
+                for k in 0..nc {
+                    let cm = capts[k];
+                    let pc = pos.board[mfrom(cm)] as usize;
+                    let ct = pos.captured_type(cm);
+                    upd(&mut self.capt[pc][mto(cm)][ct], -bonus);
                 }
             }
         }

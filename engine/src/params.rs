@@ -85,6 +85,10 @@ params! {
     // Bonus for the opponent's previous quiet move when this node fails low (it refuted
     // every reply): PriorBonusPct% of the cutoff bonus at this depth; 0 disables it.
     PriorBonusPct = "PriorBonusPct", 61, 0, 150, 8;
+    // A node that raises alpha without a cutoff (exact bound) gives its best
+    // move ExactHistPct% of the cutoff bonus and the other quiets and
+    // captures searched the same malus.
+    ExactHistPct = "ExactHistPct", 50, 0, 150, 8;
     // A cutoff beating beta by more than this (cp) earns the history bonus of
     // one ply deeper.
     HistBonusMargin = "HistBonusMargin", 66, 0, 300, 15;
@@ -293,6 +297,13 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    // The fail-low bonus also covers the opponent's previous capture or
+    // promotion (in capture history).
+    UsePriorCapt = "UsePriorCapt", 1, 0, 1, 0;
+    // History updates at exact-bound nodes (ExactHistPct).
+    UseExactHist = "UseExactHist", 0, 0, 1, 0;
+    // The exact-bound update also gives the other moves their malus.
+    UseExactMalus = "UseExactMalus", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
