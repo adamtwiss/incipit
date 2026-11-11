@@ -293,6 +293,9 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    // A fail-high at a non-PV node returns (score * depth + beta) / (depth + 1)
+    // instead of the fail-soft score: shallow cutoffs are pulled towards beta.
+    UseCutBlend = "UseCutBlend", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.

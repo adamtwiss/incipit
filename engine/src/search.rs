@@ -2190,6 +2190,17 @@ impl Searcher {
             }
         }
 
+        // A fail-soft score above beta is a lower bound found with the
+        // subtree's pruning; the shallower the search, the less of the margin
+        // over beta it has earned, so it is pulled towards beta by 1/(depth+1).
+        if on(P::UseCutBlend)
+            && !pv_node
+            && best_score > beta
+            && best_score.abs() < MATE_BOUND
+            && beta.abs() < MATE_BOUND
+        {
+            best_score = (best_score * depth + beta) / (depth + 1);
+        }
         if excluded == 0 {
             let bound = if best_score >= beta {
                 BOUND_LOWER
