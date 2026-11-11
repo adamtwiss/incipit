@@ -293,6 +293,9 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    // In-search draws (repetition, fifty moves, insufficient material) score
+    // +1 or -1 cp by node-count parity instead of exactly 0.
+    UseDrawJitter = "UseDrawJitter", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
