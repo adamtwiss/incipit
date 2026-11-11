@@ -2093,6 +2093,11 @@ impl Searcher {
                             }
                         }
                     }
+                    // The best root move has been refuted this iteration: the
+                    // others get a closer look while a replacement is found.
+                    if on(P::UseRescue) && root && self.pt.root_fail_low {
+                        r -= tp(P::RescueRed);
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {

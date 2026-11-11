@@ -112,6 +112,9 @@ params! {
     // so near-equal trades (a bishop for a knight at the SEE values) are tried.
     QsSeeMargin = "QsSeeMargin", 50, 0, 200, 10;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
+    // Plies less reduction for root moves while the iteration has failed low
+    // at the root (UseRescue).
+    RescueRed = "RescueRed", 1, 0, 3, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 23, 0, 60, 3;
     NmpMarginBase = "NmpMarginBase", 138, 0, 400, 20;
@@ -293,6 +296,8 @@ params! {
     // (mover's view) is at least alpha - CevLmrMargin, one more below
     // alpha - CevLmrMore.
     UseCevLmr = "UseCevLmr", 1, 0, 1, 0;
+    // Root moves reduced RescueRed plies less after a root fail-low.
+    UseRescue = "UseRescue", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
