@@ -2413,8 +2413,15 @@ impl Searcher {
             } else if m == killers[1] {
                 (1 << 27) + 1
             } else {
+                let pt = pc_type(pos.board[mfrom(m)]);
+                // Sixth or seventh rank from the mover's side.
+                let push = on(P::UsePushOrder)
+                    && pt == PAWN
+                    && (if pos.stm == WHITE { mto(m) / 8 } else { 7 - mto(m) / 8 }) >= 5
+                    && (threats >> mto(m) & 1 == 0 || pos.see_ge(m, 0, &see_vals()));
                 self.quiet_history(pos, m, [prev1, prev2, prev4, prev6], threats)
-                    + if check_sq[pc_type(pos.board[mfrom(m)])] >> mto(m) & 1 != 0 { tp(P::CheckBonus) } else { 0 }
+                    + if check_sq[pt] >> mto(m) & 1 != 0 { tp(P::CheckBonus) } else { 0 }
+                    + if push { tp(P::PushBonus) } else { 0 }
                     + self.gain_order(pos, m)
             };
             scores.push(score);

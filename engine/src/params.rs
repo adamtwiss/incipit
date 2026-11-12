@@ -74,6 +74,11 @@ params! {
     // scale (HistMax is one saturated table): a check comes ahead of quiets
     // with ordinary history and behind ones every table rates highly.
     CheckBonus = "CheckBonus", 8192, 0, 16384, 256;
+    // Ordering bonus, on the same scale, for a pawn push to the sixth or
+    // seventh rank that does not lose the pawn by exchange (UsePushOrder).
+    // Starts at half the check bonus: in bench such pushes beat alpha about
+    // half as often as safe checks.
+    PushBonus = "PushBonus", 4096, 0, 16384, 256;
     // Quiet ordering: the move's learned eval gain (cp, see `gain_learn`)
     // times this joins the history score.
     GainOrdMul = "GainOrdMul", 47, 0, 256, 8;
@@ -278,6 +283,7 @@ params! {
     // ... and by whether the square it goes to is attacked.
     UseThreatHist2 = "UseThreatHist2", 1, 0, 1, 0;
     UseCheckOrder = "UseCheckOrder", 1, 0, 1, 0;
+    UsePushOrder = "UsePushOrder", 1, 0, 1, 0;
     UseGainHist = "UseGainHist", 1, 0, 1, 0;
     UseGainHistPrune = "UseGainHistPrune", 1, 0, 1, 0;
     // Continuation history keyed by our move three plies back (prev6), at
