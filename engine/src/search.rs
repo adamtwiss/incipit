@@ -2387,6 +2387,10 @@ impl Searcher {
         } else {
             [0; 6]
         };
+        // Squares from which each piece type of ours attacks an enemy piece
+        // worth more (knights and bishops count as equal), computed at the
+        // first quiet of the call.
+        let mut att_sq: Option<[u64; 6]> = None;
         for &m in moves {
             let score = if m == tt_move {
                 1 << 30
@@ -2413,12 +2417,49 @@ impl Searcher {
             } else if m == killers[1] {
                 (1 << 27) + 1
             } else {
+                let pt = pc_type(pos.board[mfrom(m)]);
+                let attack = on(P::UseAttackOrder) && {
+                    let a = *att_sq.get_or_insert_with(|| Self::attack_squares(pos));
+                    // A piece that already attacks such a target from its own
+                    // square is not making a new threat.
+                    a[pt] >> mto(m) & 1 != 0
+                        && a[pt] >> mfrom(m) & 1 == 0
+                        && (threats >> mto(m) & 1 == 0 || pos.see_ge(m, 0, &see_vals()))
+                };
                 self.quiet_history(pos, m, [prev1, prev2, prev4, prev6], threats)
-                    + if check_sq[pc_type(pos.board[mfrom(m)])] >> mto(m) & 1 != 0 { tp(P::CheckBonus) } else { 0 }
+                    + if check_sq[pt] >> mto(m) & 1 != 0 { tp(P::CheckBonus) } else { 0 }
+                    + if attack { tp(P::AttackBonus) } else { 0 }
                     + self.gain_order(pos, m)
             };
             scores.push(score);
         }
+    }
+
+    /// For each of our piece types (pawn .. queen), the squares from which
+    /// it would attack an enemy piece worth more: pawns attack minors, rooks
+    /// and queens; knights and bishops attack rooks and queens; rooks attack
+    /// queens. Sliders use the current occupancy.
+    fn attack_squares(pos: &Position) -> [u64; 6] {
+        use crate::attacks::{bishop_attacks, knight_attacks, pawn_attacks, rook_attacks};
+        let them = pos.stm ^ 1;
+        let occ = pos.occ();
+        let mut a = [0u64; 6];
+        let mut x = pos.pcs(them, KNIGHT) | pos.pcs(them, BISHOP) | pos.pcs(them, ROOK) | pos.pcs(them, QUEEN);
+        while x != 0 {
+            let t = x.trailing_zeros() as usize;
+            x &= x - 1;
+            a[PAWN] |= pawn_attacks(them, t);
+            let tt = pc_type(pos.board[t]);
+            if tt >= ROOK {
+                let (b, r) = (bishop_attacks(t, occ), rook_attacks(t, occ));
+                a[KNIGHT] |= knight_attacks(t);
+                a[BISHOP] |= b;
+                if tt == QUEEN {
+                    a[ROOK] |= r;
+                }
+            }
+        }
+        a
     }
 
     fn qsearch(&mut self, pos: &Position, mut alpha: i32, beta: i32, ply: usize) -> i32 {
