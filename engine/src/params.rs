@@ -278,6 +278,9 @@ params! {
     // ... and by whether the square it goes to is attacked.
     UseThreatHist2 = "UseThreatHist2", 1, 0, 1, 0;
     UseCheckOrder = "UseCheckOrder", 1, 0, 1, 0;
+    // No check bonus for a check onto an attacked square that loses
+    // material by exchange (SEE < 0).
+    UseCheckSee = "UseCheckSee", 1, 0, 1, 0;
     UseGainHist = "UseGainHist", 1, 0, 1, 0;
     UseGainHistPrune = "UseGainHistPrune", 1, 0, 1, 0;
     // Continuation history keyed by our move three plies back (prev6), at

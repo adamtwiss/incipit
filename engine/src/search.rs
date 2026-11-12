@@ -2413,8 +2413,14 @@ impl Searcher {
             } else if m == killers[1] {
                 (1 << 27) + 1
             } else {
+                // A check that loses the piece by exchange gets no bonus: in
+                // bench such checks beat alpha less often than other quiets
+                // (2% of those searched, against 33% for safe checks). The
+                // exchange is only evaluated for checks onto attacked squares.
+                let check = check_sq[pc_type(pos.board[mfrom(m)])] >> mto(m) & 1 != 0
+                    && (!on(P::UseCheckSee) || threats >> mto(m) & 1 == 0 || pos.see_ge(m, 0, &see_vals()));
                 self.quiet_history(pos, m, [prev1, prev2, prev4, prev6], threats)
-                    + if check_sq[pc_type(pos.board[mfrom(m)])] >> mto(m) & 1 != 0 { tp(P::CheckBonus) } else { 0 }
+                    + if check { tp(P::CheckBonus) } else { 0 }
                     + self.gain_order(pos, m)
             };
             scores.push(score);
