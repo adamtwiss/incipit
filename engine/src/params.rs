@@ -73,7 +73,7 @@ params! {
     // Ordering bonus for a quiet move giving direct check, on the history
     // scale (HistMax is one saturated table): a check comes ahead of quiets
     // with ordinary history and behind ones every table rates highly.
-    CheckBonus = "CheckBonus", 4762, 0, 8192, 256;
+    CheckBonus = "CheckBonus", 8192, 0, 16384, 256;
     // Quiet ordering: the move's learned eval gain (cp, see `gain_learn`)
     // times this joins the history score.
     GainOrdMul = "GainOrdMul", 47, 0, 256, 8;
