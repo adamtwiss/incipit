@@ -56,16 +56,16 @@ params! {
     // Futility margin by quiet history: a quiet's history sum (the ordering
     // score, four tables of +-16384) over this is added to the margin, so a
     // well-scored quiet survives a margin a badly scored one does not.
-    FutHistDiv = "FutHistDiv", 59, 32, 512, 12;
-    HistPrune = "HistPrune", 3750, 500, 5000, 225;
+    FutHistDiv = "FutHistDiv", 54, 32, 512, 12;
+    HistPrune = "HistPrune", 3740, 500, 5000, 225;
     SeeQuiet = "SeeQuiet", 8, 0, 80, 4;
     // Quiet SEE bar by history: the history sum over this is subtracted from
     // the bar.
     SeeHistDiv = "SeeHistDiv", 99, 32, 512, 12;
     SeeNoisy = "SeeNoisy", 116, 10, 200, 10;
-    LmrBaseX100 = "LmrBaseX100", 45, 30, 130, 5;
-    LmrDivX100 = "LmrDivX100", 287, 150, 350, 10;
-    LmrHistDiv = "LmrHistDiv", 11795, 3000, 16000, 650;
+    LmrBaseX100 = "LmrBaseX100", 46, 30, 130, 5;
+    LmrDivX100 = "LmrDivX100", 290, 150, 350, 10;
+    LmrHistDiv = "LmrHistDiv", 11963, 3000, 16000, 650;
     AspDelta = "AspDelta", 15, 3, 40, 2;
     HistMul = "HistMul", 446, 100, 500, 20;
     HistOff = "HistOff", 45, 0, 500, 25;
@@ -73,7 +73,7 @@ params! {
     // Ordering bonus for a quiet move giving direct check, on the history
     // scale (HistMax is one saturated table): a check comes ahead of quiets
     // with ordinary history and behind ones every table rates highly.
-    CheckBonus = "CheckBonus", 8192, 0, 16384, 256;
+    CheckBonus = "CheckBonus", 7549, 0, 16384, 256;
     // Quiet ordering: the move's learned eval gain (cp, see `gain_learn`)
     // times this joins the history score.
     GainOrdMul = "GainOrdMul", 44, 0, 256, 8;
@@ -105,12 +105,12 @@ params! {
     SeDouble = "SeDouble", 16, 5, 50, 2;
     // A reduced search that beats the best score so far by more than LmrDeeper is
     // re-searched one ply deeper than the full depth.
-    LmrDeeper = "LmrDeeper", 81, 10, 200, 10;
-    CevLmrMargin = "CevLmrMargin", 10, -100, 200, 10;
-    CevLmrMore = "CevLmrMore", 91, 20, 400, 15;
+    LmrDeeper = "LmrDeeper", 82, 10, 200, 10;
+    CevLmrMargin = "CevLmrMargin", 11, -100, 200, 10;
+    CevLmrMore = "CevLmrMore", 96, 20, 400, 15;
     // A second ply less where the child eval is at least alpha + CevLess2
     // (UseCevLess2).
-    CevLess2 = "CevLess2", 100, 0, 400, 15;
+    CevLess2 = "CevLess2", 102, 0, 400, 15;
     // Qsearch skips a capture only if SEE says it loses more than this (cp),
     // so near-equal trades (a bishop for a knight at the SEE values) are tried.
     QsSeeMargin = "QsSeeMargin", 51, 0, 200, 10;
