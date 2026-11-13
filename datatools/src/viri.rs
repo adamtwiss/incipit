@@ -353,6 +353,46 @@ pub fn for_each_game(data: &[u8], mut f: impl FnMut(&[(Position, Move)], u8)) ->
     Ok(())
 }
 
+/// Visits every game in a viriformat buffer with its stored scores: `f(&[(position, move, score)], wdl)`.
+pub fn for_each_game_scored(data: &[u8], mut f: impl FnMut(&[(Position, Move, i16)], u8)) -> Result<(), String> {
+    let mut game = Vec::new();
+    let mut i = 0;
+    while i < data.len() {
+        if i + 32 > data.len() {
+            return Err(format!("truncated board at byte {}", i));
+        }
+        let (mut pos, _, wdl) = unpack_board(&data[i..i + 32]).ok_or_else(|| format!("bad board at byte {}", i))?;
+        i += 32;
+        game.clear();
+        loop {
+            if i + 4 > data.len() {
+                return Err(format!("unterminated game at byte {}", i));
+            }
+            let raw = u16::from_le_bytes([data[i], data[i + 1]]);
+            let score = i16::from_le_bytes([data[i + 2], data[i + 3]]);
+            i += 4;
+            if raw == 0 && score == 0 {
+                break;
+            }
+            let mut list = MoveList::new();
+            pos.gen_moves(&mut list, false);
+            let m = (0..list.len())
+                .map(|k| list[k])
+                .find(|&m| {
+                    encode_move(&pos, m) == raw && {
+                        let mut c = pos;
+                        c.make_move(m)
+                    }
+                })
+                .ok_or_else(|| format!("illegal move {:04x} in {}", raw, pos.to_fen()))?;
+            game.push((pos, m, score));
+            pos.make_move(m);
+        }
+        f(&game, wdl);
+    }
+    Ok(())
+}
+
 /// Visits every (position, move, score) in a viriformat buffer, replaying each
 /// game with the engine's move generator. Stops at the first undecodable game.
 pub fn for_each_position(data: &[u8], mut f: impl FnMut(&Position, Move, i16, u8)) -> Result<(), String> {
