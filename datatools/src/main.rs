@@ -70,14 +70,18 @@ usage:
                                               won table positions (side to move wins, DTZ >= min_dtz plies)
                                               for conversion tests: up to per_class each of KRvK, KQvK, KBNvK,
                                               KQvKR, as EPD on stdout
-  datatools tbrelabel <tb_dir> <out_dir> [--fix-result] [--score CP | --score-dtz LO HI PER_PAWN | --score-keep CP] <in.vf> ...
+  datatools tbrelabel <tb_dir> <out_dir> [--fix-result] [--score CP | --score-dtz LO HI PER_PAWN | --score-keep CP | --score-grade LO PER D CAP] <in.vf> ...
                                               relabel with the Syzygy tables: --fix-result sets each game's
                                               result to the table result at its first table position with a
                                               fresh fifty-move clock (as tbstats); --score CP sets the score of
                                               every scored table position to +-CP (win/loss, side to move) or 0
                                               (draw); --score-dtz grades wins from HI at DTZ 0 to LO at DTZ 100
                                               plies, plus PER_PAWN per pawn of material lead; --score-keep CP
-                                              keeps the search score when it shows the win by >= CP, else +-CP
+                                              keeps the search score when it shows the win by >= CP, else +-CP;
+                                              --score-grade: a target in the net's output units, LO + PER per
+                                              unit of progress (material lead, 0.2 per pawn rank, DTZ to D plies
+                                              when pawnless), capped at CAP, stored as +-(10000 + target) for
+                                              incipit-train-v2 tbt= (only on calibrated copies)
   datatools wdlstats <out.csv> <in.vf> ...    win/draw/loss counts by (material, eval), side to move,
                                               for fitting a WDL model (from ply 16, not in check, scored)
   datatools wdlfit <stats.csv>                 fit the WDL model to wdlstats output (maximum likelihood)
@@ -1239,7 +1243,18 @@ enum TbLabel {
     /// The search score when it already shows the win at least this clearly,
     /// else this value.
     Keep(i32),
+    /// A target in the net's output units (incipit-train-v2 `tbt=`), stored as
+    /// 10000 + target: `lo + per * x`, capped at `cap`, with x in pawns =
+    /// material lead + 0.2 per rank each of the winner's pawns has advanced +
+    /// (pawnless winner) 1 - min(DTZ, d) / d, kept below 1 (else 0.5). Every
+    /// winner capture adds >= 1 to the lead and changes the DTZ term by < 1, a
+    /// pawn push adds rank progress with the DTZ term fixed, and a promotion
+    /// adds >= 2, so the target never falls along the winner's progress.
+    Grade { lo: i32, per: i32, d: i32, cap: i32 },
 }
+
+/// Stored score of a `Grade` target: above any calibrated label (|label| <= 3684).
+const TBT_BASE: i32 = 10000;
 
 impl TbLabel {
     /// `sign`: +1 white wins, -1 black wins (0: draw, label 0). `search`:
@@ -1262,6 +1277,30 @@ impl TbLabel {
                 (base + per_pawn * sign * lead).max(lo / 2)
             }
             TbLabel::Keep(cp) => (sign * search).max(cp),
+            TbLabel::Grade { lo, per, d, cap } => {
+                let w = if sign > 0 { position::WHITE } else { position::BLACK };
+                let values = [1, 3, 3, 5, 9];
+                let lead: i32 = (0..5)
+                    .map(|pc| {
+                        let n = |c: usize| (p.pieces[pc] & p.colors[c]).count_ones() as i32;
+                        values[pc] * (n(w) - n(w ^ 1))
+                    })
+                    .sum();
+                // Progress in thousandths of a pawn.
+                let (mut pawns, mut steps) = (p.pieces[0] & p.colors[w], 0);
+                while pawns != 0 {
+                    let rank = pawns.trailing_zeros() as i32 / 8;
+                    steps += if w == position::WHITE { rank - 1 } else { 6 - rank };
+                    pawns &= pawns - 1;
+                }
+                let g = if p.pieces[0] & p.colors[w] != 0 {
+                    500
+                } else {
+                    (1000 - 1000 * (dtz as i32).min(d) / d).min(999)
+                };
+                let x = (1000 * lead + 200 * steps + g).max(0);
+                TBT_BASE + (lo + per * x / 1000).min(cap)
+            }
         }
     }
 }
@@ -1345,6 +1384,13 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
                 label = Some(TbLabel::Dtz { lo: cp(&mut it, a)?, hi: cp(&mut it, a)?, per_pawn: cp(&mut it, a)? })
             }
             "--score-keep" => label = Some(TbLabel::Keep(cp(&mut it, a)?)),
+            "--score-grade" => {
+                let (lo, per, d, cap) = (cp(&mut it, a)?, cp(&mut it, a)?, cp(&mut it, a)?, cp(&mut it, a)?);
+                if d == 0 || cap > 9000 {
+                    return Err("--score-grade needs D > 0 and CAP <= 9000".into());
+                }
+                label = Some(TbLabel::Grade { lo, per, d, cap })
+            }
             _ => inputs.push(a.clone()),
         }
     }
@@ -1389,7 +1435,7 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
                     let mut q = *p;
                     q.halfmove = 0;
                     let Some((r, dtz)) = (match label {
-                        TbLabel::Dtz { .. } => tb::probe_dtz(&q),
+                        TbLabel::Dtz { .. } | TbLabel::Grade { .. } => tb::probe_dtz(&q),
                         _ => tb::probe_wdl(&q).map(|r| (r, 0)),
                     }) else {
                         failed += 1;
