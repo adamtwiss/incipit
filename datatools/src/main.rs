@@ -70,7 +70,7 @@ usage:
                                               won table positions (side to move wins, DTZ >= min_dtz plies)
                                               for conversion tests: up to per_class each of KRvK, KQvK, KBNvK,
                                               KQvKR, as EPD on stdout
-  datatools tbrelabel <tb_dir> <out_dir> [--fix-result] [--score CP | --score-dtz LO HI PER_PAWN | --score-keep CP | --score-grade LO PER D CAP] <in.vf> ...
+  datatools tbrelabel <tb_dir> <out_dir> [--fix-result] [--label-unscored] [--score CP | --score-dtz LO HI PER_PAWN | --score-keep CP | --score-grade LO PER D CAP] <in.vf> ...
                                               relabel with the Syzygy tables: --fix-result sets each game's
                                               result to the table result at its first table position with a
                                               fresh fifty-move clock (as tbstats); --score CP sets the score of
@@ -81,7 +81,10 @@ usage:
                                               --score-grade: a target in the net's output units, LO + PER per
                                               unit of progress (material lead, 0.2 per pawn rank, DTZ to D plies
                                               when pawnless), capped at CAP, stored as +-(10000 + target) for
-                                              incipit-train-v2 tbt= (only on calibrated copies)
+                                              incipit-train-v2 tbt= (only on calibrated copies);
+                                              --label-unscored also scores table positions stored
+                                              unscored (a mate score in games played out without
+                                              tables), which are otherwise left alone
   datatools wdlstats <out.csv> <in.vf> ...    win/draw/loss counts by (material, eval), side to move,
                                               for fitting a WDL model (from ply 16, not in check, scored)
   datatools wdlfit <stats.csv>                 fit the WDL model to wdlstats output (maximum likelihood)
@@ -1368,6 +1371,7 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
         return Err(format!("no tablebases found in {}", tb_path));
     }
     let (mut fix_result, mut label, mut inputs) = (false, None, Vec::new());
+    let mut label_unscored = false;
     let mut it = args.iter();
     let cp = |it: &mut std::slice::Iter<String>, flag: &str| -> Result<i32, String> {
         let v: i32 = it.next().and_then(|v| v.parse().ok()).ok_or(format!("{} needs cp values", flag))?;
@@ -1379,6 +1383,7 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
     while let Some(a) = it.next() {
         match a.as_str() {
             "--fix-result" => fix_result = true,
+            "--label-unscored" => label_unscored = true,
             "--score" => label = Some(TbLabel::Flat(cp(&mut it, a)?)),
             "--score-dtz" => {
                 label = Some(TbLabel::Dtz { lo: cp(&mut it, a)?, hi: cp(&mut it, a)?, per_pawn: cp(&mut it, a)? })
@@ -1427,7 +1432,7 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
             }
             if let Some(label) = label {
                 for (k, (p, s)) in game.iter().enumerate() {
-                    if *s == viri::NO_SCORE || !in_tb(p) {
+                    if (*s == viri::NO_SCORE && !label_unscored) || !in_tb(p) {
                         continue;
                     }
                     // Probed with a fresh fifty-move count; with a running clock
