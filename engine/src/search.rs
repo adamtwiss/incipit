@@ -1645,6 +1645,14 @@ impl Searcher {
                 && self.stack[ply - 1].mv != 0
                 && ply != self.no_nmp_ply
                 && pos.has_non_pawns(pos.stm)
+                // Against a draw bound the null move would let the side to
+                // move claim the draw on its static eval: a repetition found
+                // elsewhere makes the bound exact, and a better move for the
+                // other side then fails low at the draw. Below a null window
+                // at a draw score alpha the side to move here has beta at the
+                // draw score and the other side beta one above it, so only
+                // the claiming side is excluded.
+                && !(on(P::UseNmpDrawGuard) && beta.abs() == on(P::UseDrawJitter) as i32)
             {
                 self.stats.nmp_tries += 1;
                 let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(tp(P::NmpEvalCap));
