@@ -300,6 +300,9 @@ params! {
     // In-search draws (repetition, fifty moves, insufficient material) score
     // +1 or -1 cp by node-count parity instead of exactly 0.
     UseDrawJitter = "UseDrawJitter", 1, 0, 1, 0;
+    // No null-move pruning at a node whose beta is within 2 cp of a draw
+    // score (0, or +-1 with UseDrawJitter).
+    UseNmpDrawGuard = "UseNmpDrawGuard", 1, 0, 1, 0;
 }
 
 /// A feature switch (a step-0 parameter) is on.
