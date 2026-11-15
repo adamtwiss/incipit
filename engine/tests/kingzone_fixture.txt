@@ -1,0 +1,11 @@
+# King-zone fixture: FEN | white-perspective features | black-perspective features (engine src/kingzone.rs).
+rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 |  | 
+6k1/8/8/8/8/8/r7/6K1 w - - 0 1 | 33 39 45 | 51 57 63
+6k1/R7/8/8/8/8/8/6K1 b - - 0 1 | 51 57 63 | 33 39 45
+r3k2r/ppq2ppp/2n5/3Np3/2B5/8/PPP2PPP/R3K2R w KQkq - 0 1 | 55 | 37
+r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N1PN2/PP2BPPP/R2QKB1R b KQ - 0 8 |  | 
+8/1k6/1P5P/5B2/K1p5/p6r/8/3R4 w - - 3 62 | 12 15 66 72 92 | 14 18 24 90 93
+2kr3r/ppp2ppp/2n5/8/1b1q4/2N2N2/PPP2PPP/R2QK2R w KQ - 0 12 | 46 | 52
+8/8/4k3/8/2K5/8/3Q4/8 b - - 0 1 | 47 52 53 70 82 | 16 28 46 47 53
+4r1k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1 |  | 
+r5k1/1b3p1p/pp4pB/2p1q3/4P3/2PB4/P4PPP/R4RK1 b - - 1 20 | 56 74 | 26 38

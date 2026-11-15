@@ -125,6 +125,7 @@ usage:
       --l1-dual            the second hidden layer takes SCReLU and CReLU of the first (needs --l2)
       --l1-lin N           the first N hidden neurons' pre-activations also feed the output (trainer l1lin=N)
       --pawn-pairs         1488 pawn-pair input rows after the king buckets' rows (trainer pp=1)
+      --king-zone          king-zone inputs (trainer kz=1): 96 FT rows after the pawn pairs
       --pawn-pair-window N pawn pairs in window N: 0 = 1488 rows (as --pawn-pairs), 1 = 928
                            (same file any distance, adjacent files within one rank), 2 = 608
                            (within one rank) (trainer pp=1 ppw=N)
@@ -1296,11 +1297,8 @@ impl TbLabel {
                     steps += if w == position::WHITE { rank - 1 } else { 6 - rank };
                     pawns &= pawns - 1;
                 }
-                let g = if p.pieces[0] & p.colors[w] != 0 {
-                    500
-                } else {
-                    (1000 - 1000 * (dtz as i32).min(d) / d).min(999)
-                };
+                let g =
+                    if p.pieces[0] & p.colors[w] != 0 { 500 } else { (1000 - 1000 * (dtz as i32).min(d) / d).min(999) };
                 let x = (1000 * lead + 200 * steps + g).max(0);
                 TBT_BASE + (lo + per * x / 1000).min(cap)
             }
@@ -1484,6 +1482,7 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         l1_lin: 0,
         pawn_pairs: false,
         pawn_pair_window: 0,
+        king_zone: false,
         perm: Vec::new(),
         l1_shift: 0,
         l2: 0,
@@ -1515,6 +1514,11 @@ fn cmd_net(source: &str, input: &str, out_dir: &str, opts: &[String]) -> Result<
         }
         if flag == "--pawn-pairs" {
             arch.pawn_pairs = true;
+            i += 1;
+            continue;
+        }
+        if flag == "--king-zone" {
+            arch.king_zone = true;
             i += 1;
             continue;
         }

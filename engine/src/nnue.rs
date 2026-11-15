@@ -22,8 +22,9 @@ pub const MAX_H: usize = 2048;
 /// (rows from `pair_start` on, clamped to i8 at load), summed in i16 with
 /// wrapping adds; reject a net where some neuron could wrap, since both the
 /// incremental and the refresh path would do so identically and no check
-/// would notice.
-fn check_ft_range(ftw: &[i16], ftb: &[i16], pair_start: usize) -> Result<(), String> {
+/// would notice. `extra` more rows past `pair_start` can be active on top
+/// of the pairs (the king-zone rows, kept to i8 as the pair rows).
+fn check_ft_range(ftw: &[i16], ftb: &[i16], pair_start: usize, extra: usize) -> Result<(), String> {
     let h = ftb.len();
     let mut piece = vec![0i32; h];
     let mut pair = vec![0i32; h];
@@ -35,7 +36,7 @@ fn check_ft_range(ftw: &[i16], ftb: &[i16], pair_start: usize) -> Result<(), Str
         };
         *m = (*m).max(w);
     }
-    let pairs = crate::pawnpairs::MAX_ACTIVE as i32;
+    let pairs = (crate::pawnpairs::MAX_ACTIVE + extra) as i32;
     for j in 0..h {
         let worst = 32 * piece[j] + pairs * pair[j] + (ftb[j] as i32).abs();
         if worst > i16::MAX as i32 {
@@ -53,6 +54,11 @@ fn check_ft_range(ftw: &[i16], ftb: &[i16], pair_start: usize) -> Result<(), Str
 /// so check the sum against a cap of 96 on top of the piece rows: the bound
 /// covers every position play produces, not contrived ones.
 const THREAT_CAP: i32 = 96;
+
+/// King-zone rows add up to 96 more, but 20,000 varied game positions
+/// (docs/l1perm_fens.txt) reach at most 16 active (mean 2.4), so the range
+/// check counts twice that.
+const KING_ZONE_CAP: usize = 32;
 
 fn check_thr_range(ftw: &[i16], ftb: &[i16], thr: &[i8]) -> Result<(), String> {
     if thr.is_empty() {
@@ -83,6 +89,7 @@ const INPUT_PSQ768: u16 = 1;
 const INPUT_PAWN_PAIRS: u16 = 2;
 /// Threat inputs (src/threats.rs): kinds 5, 6, 7 are variants 0, 1, 2.
 const INPUT_THREATS: u16 = 5;
+const INPUT_KING_ZONE: u16 = 8;
 const ACT_NONE: u8 = 0;
 const ACT_CRELU: u8 = 2;
 const ACT_SCRELU: u8 = 3;
@@ -132,6 +139,11 @@ pub struct Network {
     /// The pawn-pair rows as i8, [pair feature][h]: a pawn move reads half the
     /// bytes. The i16 copies in ftw are clamped to the same values at load.
     ppw8: Vec<i8>,
+    /// King-zone inputs (src/kingzone.rs; with pawn pairs and threats only):
+    /// feature f is FT row pp_base + kz_off + f, and its i8 copy is
+    /// row8(kz_off + f) (the rows follow the pair rows and are clamped alike).
+    kz: bool,
+    kz_off: usize,
     /// Threat inputs (src/threats.rs) of this variant, or None.
     thr: Option<usize>,
     /// The threat rows, i8 [threat feature][h], at the FT's scale. Not in ftw.
@@ -303,6 +315,9 @@ impl Drop for Aligned {
 #[repr(C, align(64))]
 pub struct Acc {
     pub v: [i16; 2 * MAX_H],
+    /// The king-zone features in v, per perspective (king-zone nets), so an
+    /// update computes only the child's.
+    kz: [u128; 2],
 }
 
 static mut NET: *const Network = std::ptr::null();
@@ -477,6 +492,12 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
             (pp, ppw, rest) = (true, (k - INPUT_PAWN_PAIRS) as usize, r);
         }
     }
+    let mut kz = false;
+    if let [(INPUT_KING_ZONE, f), r @ ..] = rest {
+        if *f as usize == crate::kingzone::FEATURES {
+            (kz, rest) = (true, r);
+        }
+    }
     if let [(k, f), r @ ..] = rest {
         if (INPUT_THREATS..INPUT_THREATS + crate::threats::VARIANTS as u16).contains(k)
             && *f as usize == crate::threats::features((k - INPUT_THREATS) as usize)
@@ -531,11 +552,12 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
             &layer_quant,
             pp,
             ppw,
+            kz,
             thr,
         );
     }
-    if pp || thr.is_some() {
-        return Err("pawn-pair and threat inputs need a hidden layer".into());
+    if pp || thr.is_some() || kz {
+        return Err("pawn-pair, king-zone and threat inputs need a hidden layer".into());
     }
     let &[(lin, lout, lact, lwt, lbt, lflags)] = layers.as_slice() else {
         return Err(format!("{} layers after the feature transformer; one to three are supported", layers.len()));
@@ -563,7 +585,7 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
     };
     let ftw = i16s(nkb * 768 * h);
     let ftb = i16s(h);
-    check_ft_range(&ftw, &ftb, ftw.len())?;
+    check_ft_range(&ftw, &ftb, ftw.len(), 0)?;
     let ow = i16s(buckets * 2 * h);
     // The output kernels multiply clamp(a) * w in i16 before widening.
     let max_ow = ow.iter().map(|&w| (w as i32).abs()).max().unwrap_or(0);
@@ -593,6 +615,8 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
         ppw: 0,
         pp_base: 0,
         ppw8: Vec::new(),
+        kz: false,
+        kz_off: 0,
         thr: None,
         thrw8: AlignedI8::zeroed(0),
         ftb,
@@ -623,8 +647,12 @@ fn load_hidden(
     layer_quant: &[(u32, i32)],
     pp: bool,
     ppw: usize,
+    kz: bool,
     thr: Option<usize>,
 ) -> Result<Network, String> {
+    if kz && (!pp || thr.is_none()) {
+        return Err("king-zone inputs need pawn pairs and threats".into());
+    }
     let (l1, l2) = (layers[0], layers[layers.len() - 1]);
     // A middle layer: the second hidden layer.
     let mid = (layers.len() == 3).then(|| layers[1]);
@@ -697,8 +725,12 @@ fn load_hidden(
             shift, w_scale
         ));
     }
-    // The pawn-pair rows follow the king buckets' rows in the same block.
-    let n_ftw = (nkb * 768 + if pp { crate::pawnpairs::features(ppw) } else { 0 }) * h;
+    // The pawn-pair rows, then the king-zone rows, follow the king buckets'
+    // rows in the same block.
+    let n_ftw = (nkb * 768
+        + if pp { crate::pawnpairs::features(ppw) } else { 0 }
+        + if kz { crate::kingzone::FEATURES } else { 0 })
+        * h;
     // Threat rows (i8) come last, after every layer, from a 64-byte file
     // offset (zero padding before them; older files have none).
     let n_thr = thr.map_or(0, crate::threats::features) * h;
@@ -718,7 +750,7 @@ fn load_hidden(
     };
     let ftw = i16s(n_ftw);
     let ftb = i16s(h);
-    check_ft_range(&ftw, &ftb, nkb * 768 * h)?;
+    check_ft_range(&ftw, &ftb, nkb * 768 * h, if kz { KING_ZONE_CAP } else { 0 })?;
     // File: [bucket][out][in]. Kernels want each group of 4 inputs for all
     // outputs together: [bucket][in / 4][out][in % 4].
     let mut w1 = AlignedI8::zeroed(nb1 * ln * inl);
@@ -800,6 +832,8 @@ fn load_hidden(
         ppw,
         pp_base: nkb * 768,
         ppw8: Vec::new(),
+        kz,
+        kz_off: if pp { crate::pawnpairs::features(ppw) } else { 0 },
         thr,
         thrw8,
         ftb,
@@ -892,7 +926,7 @@ fn row(n: &Network, f: usize, h: usize) -> &[i16] {
 
 impl Acc {
     pub fn new() -> Self {
-        Acc { v: [0; 2 * MAX_H] }
+        Acc { v: [0; 2 * MAX_H], kz: [0; 2] }
     }
 
     // Safe: p < 2 and load() checks h <= MAX_H.
@@ -911,6 +945,7 @@ impl Acc {
     pub fn copy_from(&mut self, other: &Acc) {
         let h2 = 2 * net().h;
         self.v[..h2].copy_from_slice(&other.v[..h2]);
+        self.kz = other.kz;
     }
 
     pub fn refresh(&mut self, pos: &Position) {
@@ -1041,6 +1076,13 @@ fn add_sub_rows8(dst: &mut [i16], src: &[i16], adds: &[&[i16]], subs: &[&[i16]],
 fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Position) {
     let h = hidden::<H>(n);
     let ki = kinfo(n, p, pos.king_sq(p));
+    let kzm = if n.kz {
+        let f = ki.1 ^ if p == WHITE { 0 } else { 56 };
+        acc.kz[p] = crate::kingzone::masks(pos, [f, f])[p];
+        acc.kz[p]
+    } else {
+        0
+    };
     let v = acc.side_mut(p, h);
     v.copy_from_slice(&n.ftb[..h]);
     for sq in Bits(pos.occ()) {
@@ -1054,6 +1096,16 @@ fn refresh_persp<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Pos
         let k = crate::pawnpairs::active_bb(n.ppw, pos.pcs(WHITE, PAWN), pos.pcs(BLACK, PAWN), p, ki.1, &mut pairs);
         for &f in &pairs[..k] {
             for (x, &w) in v.iter_mut().zip(row(n, n.pp_base + f as usize, h)) {
+                *x = x.wrapping_add(w);
+            }
+        }
+    }
+    if n.kz {
+        let mut m = kzm;
+        while m != 0 {
+            let k = m.trailing_zeros() as usize;
+            m &= m - 1;
+            for (x, &w) in v.iter_mut().zip(row(n, n.pp_base + n.kz_off + k, h)) {
                 *x = x.wrapping_add(w);
             }
         }
@@ -1143,13 +1195,24 @@ fn refresh_cached<const H: usize>(acc: &mut Acc, n: &Network, p: usize, pos: &Po
     // Safe: in place (each block is loaded before it is stored); every row
     // holds h values.
     unsafe { (n.rows)(e.acc.as_mut_ptr(), e.acc.as_ptr(), h, &a16[..na], &s16[..ns], &[], &[]) };
-    let mut a8 = [std::ptr::null::<i8>(); crate::threats::MAX_ACTIVE];
+    let mut a8 = [std::ptr::null::<i8>(); crate::threats::MAX_ACTIVE + crate::kingzone::FEATURES];
     let mut k = 0;
     if let Some(var) = n.thr {
         let mut t = [0u32; crate::threats::MAX_ACTIVE];
         k = crate::threats::active_into(var, pos, p, ki.1, &mut t);
         for (d, &f) in a8.iter_mut().zip(&t[..k]) {
             *d = thr_row(n, f, h).as_ptr();
+        }
+    }
+    // King-zone rows, like the threats, are not in the entries.
+    if n.kz {
+        let f = ki.1 ^ if p == WHITE { 0 } else { 56 };
+        let mut m = crate::kingzone::masks(pos, [f, f])[p];
+        acc.kz[p] = m;
+        while m != 0 {
+            a8[k] = row8(n, n.kz_off + m.trailing_zeros() as usize, h).as_ptr();
+            m &= m - 1;
+            k += 1;
         }
     }
     // Safe: acc and the entry are distinct buffers of h values; every row
@@ -1242,6 +1305,22 @@ fn update_thr<const H: usize>(
         for p in 0..2 {
             if !bucket[p] {
                 crate::pawnpairs::delta(n.ppw, old, new, p, ki[p].1, |f, add| push(p, add, row8(n, f, h).as_ptr()));
+            }
+        }
+    }
+    // King-zone rows that change (not in the cache entries, so also for a
+    // perspective whose king changes bucket; its mirror state stays here).
+    if n.kz {
+        let fx = [ki[0].1, ki[1].1 ^ 56];
+        let (old, new) = (parent.kz, crate::kingzone::masks(child, fx));
+        // A perspective rebuilt through the refresh cache (full) sets its own.
+        acc.kz = new;
+        for p in 0..2 {
+            for (mut d, add) in [(old[p] & !new[p], false), (new[p] & !old[p], true)] {
+                while d != 0 {
+                    push(p, add, row8(n, n.kz_off + d.trailing_zeros() as usize, h).as_ptr());
+                    d &= d - 1;
+                }
             }
         }
     }
@@ -3466,6 +3545,11 @@ mod tests {
 
     /// `synth_net` with threat inputs of variant `thr` (small i8 rows, last).
     fn synth_net_thr(pp: Option<usize>, thr: Option<usize>, seed: u64) -> Vec<u8> {
+        synth_net_kz(pp, thr, false, seed)
+    }
+
+    /// `synth_net_thr` with king-zone inputs when `kz`.
+    fn synth_net_kz(pp: Option<usize>, thr: Option<usize>, kz: bool, seed: u64) -> Vec<u8> {
         let (h, nkb, nb, l1, l2) = (128usize, 32usize, 8usize, 16usize, 16usize);
         let mut r = seed | 1;
         let mut next = move || {
@@ -3484,6 +3568,9 @@ mod tests {
         let mut sets: Vec<(u16, u32)> = vec![(INPUT_PSQ768, 768)];
         if let Some(w) = pp {
             sets.push((INPUT_PAWN_PAIRS + w as u16, crate::pawnpairs::features(w) as u32));
+        }
+        if kz {
+            sets.push((INPUT_KING_ZONE, crate::kingzone::FEATURES as u32));
         }
         if let Some(v) = thr {
             sets.push((INPUT_THREATS + v as u16, crate::threats::features(v) as u32));
@@ -3528,9 +3615,12 @@ mod tests {
         d.extend_from_slice(&(header as u32).to_le_bytes());
         d.extend_from_slice(&f);
         d.resize(header, 0);
-        let rows = nkb * 768 + pp.map_or(0, crate::pawnpairs::features);
+        let rows =
+            nkb * 768 + pp.map_or(0, crate::pawnpairs::features) + if kz { crate::kingzone::FEATURES } else { 0 };
+        // Smaller with king-zone rows, so the range check's worst case fits.
+        let amp = if kz { 60 } else { 200 };
         for _ in 0..rows * h + h {
-            d.extend_from_slice(&((next() % 401) as i16 - 200).to_le_bytes());
+            d.extend_from_slice(&((next() % (2 * amp + 1)) as i16 - amp as i16).to_le_bytes());
         }
         d.extend((0..nb * l1 * h).map(|_| (next() % 41) as u8));
         let n_f32 = nb * l1 + nb * l2 * (l1 + 1) + nb * (l2 + 1);
@@ -3590,15 +3680,15 @@ mod tests {
     fn ft_range_counts_pawn_pairs() {
         // Two neurons; the piece rows alone fit (32 x 1000 < 32767).
         let (piece, bias) = ([1000i16, 0, 0, 0], [0i16, 0]);
-        assert!(check_ft_range(&piece, &bias, piece.len()).is_ok());
+        assert!(check_ft_range(&piece, &bias, piece.len(), 0).is_ok());
         // Adding pair rows of 127 for neuron 0 can exceed i16 with 120 pairs.
         let with_pairs = [1000i16, 0, 0, 0, 127, 0];
-        assert!(check_ft_range(&with_pairs, &bias, 4).is_err());
+        assert!(check_ft_range(&with_pairs, &bias, 4, 0).is_err());
         // Pair weights count as clamped: 1100 overflows as a piece weight
         // (32 x 1100) but is 127 as a pair weight (120 x 127 fits).
         let small = [0i16, 0, 1100, 0];
-        assert!(check_ft_range(&small, &bias, 2).is_ok());
-        assert!(check_ft_range(&small, &bias, 4).is_err());
+        assert!(check_ft_range(&small, &bias, 2, 0).is_ok());
+        assert!(check_ft_range(&small, &bias, 4, 0).is_err());
     }
 
     /// Incremental accumulator updates equal a full rebuild, for both sides,
@@ -3617,11 +3707,18 @@ mod tests {
             "4k3/p1p1p1p1/1p1p1p1p/P1P1P1P1/1P1P1P1P/8/8/4K3 w - - 0 1",
             "bqnb1rkr/pp3ppp/3ppn2/2p5/5P2/P2P4/NPP1P1PP/BQ1BNRKR w HFhf - 2 9",
         ];
-        let cases =
-            [(None, None), (Some(0), None), (Some(1), None), (Some(2), None), (Some(2), Some(0)), (None, Some(2))];
-        for (pp, thr) in cases {
-            let n = load(&synth_net_thr(pp, thr, 0x1234_5678)).unwrap();
-            assert_eq!((n.pp, n.ppw, n.thr), (pp.is_some(), pp.unwrap_or(0), thr));
+        let cases = [
+            (None, None, false),
+            (Some(0), None, false),
+            (Some(1), None, false),
+            (Some(2), None, false),
+            (Some(2), Some(0), false),
+            (None, Some(2), false),
+            (Some(2), Some(0), true),
+        ];
+        for (pp, thr, kz) in cases {
+            let n = load(&synth_net_kz(pp, thr, kz, 0x1234_5678)).unwrap();
+            assert_eq!((n.pp, n.ppw, n.thr, n.kz), (pp.is_some(), pp.unwrap_or(0), thr, kz));
             let mut cache = RefreshCache::with_net(&n);
             let mut seed = 0x9E37_79B9_7F4A_7C15u64;
             let mut checked = 0;
@@ -3658,9 +3755,10 @@ mod tests {
                     }
                     assert!(
                         inc.v[..256] == full.v[..256],
-                        "pawn pairs {:?}, threats {:?}: incremental != refresh after {} in {}",
+                        "pawn pairs {:?}, threats {:?}, king zone {}: incremental != refresh after {} in {}",
                         pp,
                         thr,
+                        kz,
                         pos.move_uci(m),
                         pos.to_fen()
                     );

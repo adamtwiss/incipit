@@ -53,7 +53,12 @@ unchanged), from a 64-byte file offset: zero padding (0-63 bytes) separates
 them from the last layer. Files written before this rule have no padding,
 and readers accept both. Pawn pairs are shared by every king bucket: their rows are not repeated
 per bucket but come once, after all the king buckets' rows (hidden-layer nets
-only).
+only). Kind `8` = king zone (96 features, defined in `engine/src/kingzone.rs`:
+empty squares next to each king attacked by each enemy piece type), listed
+after the pawn pairs and before the threats; its rows are i16 in the FT block,
+shared by every king bucket, right after the pawn-pair rows, and the engine
+clamps them to i8 as it does the pair rows. The engine reads king-zone nets
+with pawn pairs and threats only.
 
 **`0x0002` KING_BUCKETS** (required).
 

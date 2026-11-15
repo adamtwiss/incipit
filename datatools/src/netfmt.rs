@@ -34,6 +34,10 @@ pub const PAWN_PAIR_WINDOW_FEATURES: [usize; 3] = [1488, 928, 608];
 /// 0, 1 and 2. Their rows are i8 at the FT's scale, shared by every king
 /// bucket, and stored after all the layers' weights.
 pub const INPUT_THREATS: u16 = 5;
+/// King-zone inputs (the engine's src/kingzone.rs): FT rows (i16) shared by
+/// every king bucket, after the pawn-pair rows.
+pub const INPUT_KING_ZONE: u16 = 8;
+pub const KING_ZONE_FEATURES: usize = 96;
 pub const ACT_NONE: u8 = 0;
 pub const ACT_CRELU: u8 = 2;
 pub const ACT_SCRELU: u8 = 3;
@@ -74,6 +78,9 @@ pub struct Arch {
     /// (trainer ppw=).
     pub pawn_pairs: bool,
     pub pawn_pair_window: usize,
+    /// King-zone inputs (trainer kz=1): KING_ZONE_FEATURES more FT rows after
+    /// the pawn-pair rows (hidden-layer nets only).
+    pub king_zone: bool,
     /// FT neuron order for a net with a hidden layer: new neuron k is old
     /// neuron perm[k] (empty = unchanged). Reordering the FT columns and the
     /// matching hidden-layer inputs together leaves every eval unchanged; the
@@ -101,6 +108,11 @@ impl Arch {
         } else {
             0
         }
+    }
+
+    /// FT rows after the king buckets' rows: pawn pairs, then king zone.
+    pub fn extra_rows(&self) -> usize {
+        self.pair_features() + if self.king_zone { KING_ZONE_FEATURES } else { 0 }
     }
 
     /// Threat feature rows (0 without threats).
@@ -237,7 +249,7 @@ fn assemble(
 ) -> Vec<u8> {
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
     let pp = arch.pair_features();
-    assert_eq!(ftw.len(), (nkb * 768 + pp) * h);
+    assert_eq!(ftw.len(), (nkb * 768 + arch.extra_rows()) * h);
     assert_eq!(ftb.len(), h);
 
     let mut fields = Vec::new();
@@ -245,6 +257,9 @@ fn assemble(
     let mut sets: Vec<(u16, u32)> = vec![(INPUT_PSQ768, 768)];
     if arch.pawn_pairs {
         sets.push((INPUT_PAWN_PAIRS + arch.pawn_pair_window as u16, pp as u32));
+    }
+    if arch.king_zone {
+        sets.push((INPUT_KING_ZONE, KING_ZONE_FEATURES as u32));
     }
     if let Some(v) = arch.threats {
         sets.push((INPUT_THREATS + v as u16, arch.threat_features() as u32));
@@ -310,8 +325,8 @@ pub fn convert(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, String
     if arch.l1 > 0 {
         return convert_hidden(arch, source, data);
     }
-    if arch.pawn_pairs || arch.threats.is_some() {
-        return Err("--pawn-pairs and --threats need a hidden layer (--l1)".into());
+    if arch.pawn_pairs || arch.threats.is_some() || arch.king_zone {
+        return Err("--pawn-pairs, --threats and --king-zone need a hidden layer (--l1)".into());
     }
     let (h, nkb, nb) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets);
     let n_ftw = nkb * 768 * h;
@@ -368,8 +383,9 @@ fn convert_hidden(arch: &Arch, source: &str, data: &[u8]) -> Result<Vec<u8>, Str
     }
     let (h, nkb, nb, l1) = (arch.hidden, arch.num_king_buckets(), arch.output_buckets, arch.l1);
     let nb1 = if arch.l1_shared { 1 } else { nb };
-    // Bullet's l0w holds every king bucket's rows, then the pawn-pair rows.
-    let n_ftw = (nkb * 768 + arch.pair_features()) * h;
+    // Bullet's l0w holds every king bucket's rows, then the pawn-pair rows and
+    // the king-zone rows.
+    let n_ftw = (nkb * 768 + arch.extra_rows()) * h;
     let l2 = arch.l2;
     let last = if l2 > 0 { l2 } else { l1 };
     let pw = arch.activation == ACT_PAIRWISE;
@@ -507,6 +523,7 @@ pub fn describe(data: &[u8]) -> Result<String, String> {
                             5 => "threats, variant 0",
                             6 => "threats, variant 1",
                             7 => "threats, variant 2",
+                            INPUT_KING_ZONE => "king zone",
                             _ => "unknown",
                         };
                         format!("{} ({}, {} features)", kind, name, p32(6 + 8 * i))
@@ -590,6 +607,7 @@ mod tests {
             l1_lin: 4,
             pawn_pairs: false,
             pawn_pair_window: 0,
+            king_zone: false,
             perm: Vec::new(),
             l1_shift: 0,
             threats: None,
