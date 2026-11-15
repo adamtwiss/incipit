@@ -17,32 +17,43 @@ use crate::position::*;
 /// Largest hidden size the accumulators can hold.
 pub const MAX_H: usize = 2048;
 
-/// An accumulator is the bias plus at most 32 piece rows (every piece on
-/// the board) and, in nets with pawn pairs, at most MAX_ACTIVE pair rows
-/// (rows from `pair_start` on, clamped to i8 at load), summed in i16 with
-/// wrapping adds; reject a net where some neuron could wrap, since both the
-/// incremental and the refresh path would do so identically and no check
-/// would notice. `extra` more rows past `pair_start` can be active on top
-/// of the pairs (the king-zone rows, kept to i8 as the pair rows).
-fn check_ft_range(ftw: &[i16], ftb: &[i16], pair_start: usize, extra: usize) -> Result<(), String> {
+/// An accumulator is the bias plus at most 32 piece rows (one piece per
+/// square), in nets with pawn pairs at most MAX_ACTIVE pair rows (rows from
+/// `pair_start` on, clamped to i8 at load), and with king-zone inputs at most
+/// `kz.1` king-zone rows (from weight `kz.0` on, clamped alike; start =
+/// ftw.len() for none), summed in i16 with wrapping adds. Reject a net where
+/// some neuron could wrap, since both the incremental and the refresh path
+/// would do so identically and no check would notice. The bound per neuron:
+/// for the worst king bucket, the 32 squares with the largest weight of any
+/// piece there, plus the largest MAX_ACTIVE pair weights and the largest
+/// kz.1 king-zone weights, plus the bias.
+fn check_ft_range(ftw: &[i16], ftb: &[i16], pair_start: usize, kz: (usize, usize)) -> Result<(), String> {
     let h = ftb.len();
-    let mut piece = vec![0i32; h];
-    let mut pair = vec![0i32; h];
-    for (i, &w) in ftw.iter().enumerate() {
-        let (m, w) = if i < pair_start {
-            (&mut piece[i % h], (w as i32).abs())
-        } else {
-            (&mut pair[i % h], (w as i32).abs().min(127))
-        };
-        *m = (*m).max(w);
-    }
-    let pairs = (crate::pawnpairs::MAX_ACTIVE + extra) as i32;
+    let top = |v: &mut Vec<i32>, k: usize| -> i32 {
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        v.iter().take(k).sum()
+    };
+    let rows = |a: usize, b: usize| (a / h..b / h).map(move |r| &ftw[r * h..(r + 1) * h]);
+    let nkb = pair_start / h / 768;
     for j in 0..h {
-        let worst = 32 * piece[j] + pairs * pair[j] + (ftb[j] as i32).abs();
+        let mut piece = 0;
+        for b in 0..nkb {
+            let mut sq = [0i32; 64];
+            for (f, r) in rows((b * 768) * h, (b + 1) * 768 * h).enumerate() {
+                sq[f % 64] = sq[f % 64].max((r[j] as i32).abs());
+            }
+            piece = piece.max(top(&mut sq.to_vec(), 32));
+        }
+        let pairs = top(
+            &mut rows(pair_start, kz.0).map(|r| (r[j] as i32).abs().min(127)).collect(),
+            crate::pawnpairs::MAX_ACTIVE,
+        );
+        let zone = top(&mut rows(kz.0, ftw.len()).map(|r| (r[j] as i32).abs().min(127)).collect(), kz.1);
+        let worst = piece + pairs + zone + (ftb[j] as i32).abs();
         if worst > i16::MAX as i32 {
             return Err(format!(
-                "feature transformer neuron {}: piece weights up to {}, pawn-pair weights up to {} and bias {} can overflow i16",
-                j, piece[j], pair[j], ftb[j]
+                "feature transformer neuron {}: piece rows up to {}, pawn-pair rows up to {}, king-zone rows up to {} and bias {} can overflow i16",
+                j, piece, pairs, zone, ftb[j]
             ));
         }
     }
@@ -585,7 +596,7 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
     };
     let ftw = i16s(nkb * 768 * h);
     let ftb = i16s(h);
-    check_ft_range(&ftw, &ftb, ftw.len(), 0)?;
+    check_ft_range(&ftw, &ftb, ftw.len(), (ftw.len(), 0))?;
     let ow = i16s(buckets * 2 * h);
     // The output kernels multiply clamp(a) * w in i16 before widening.
     let max_ow = ow.iter().map(|&w| (w as i32).abs()).max().unwrap_or(0);
@@ -750,7 +761,8 @@ fn load_hidden(
     };
     let ftw = i16s(n_ftw);
     let ftb = i16s(h);
-    check_ft_range(&ftw, &ftb, nkb * 768 * h, if kz { KING_ZONE_CAP } else { 0 })?;
+    let kz0 = (nkb * 768 + if pp { crate::pawnpairs::features(ppw) } else { 0 }) * h;
+    check_ft_range(&ftw, &ftb, nkb * 768 * h, if kz { (kz0, KING_ZONE_CAP) } else { (ftw.len(), 0) })?;
     // File: [bucket][out][in]. Kernels want each group of 4 inputs for all
     // outputs together: [bucket][in / 4][out][in % 4].
     let mut w1 = AlignedI8::zeroed(nb1 * ln * inl);
@@ -3674,21 +3686,47 @@ mod tests {
         }
     }
 
-    /// The overflow check counts every pawn pair a position can have on top
-    /// of the 32 piece rows, with pair weights as clamped to i8 at load.
+    /// The overflow check: per neuron, the 32 squares with the largest piece
+    /// weight in the worst bucket, the largest MAX_ACTIVE pair weights and the
+    /// largest king-zone weights (both as clamped to i8 at load), and the bias.
     #[test]
-    fn ft_range_counts_pawn_pairs() {
-        // Two neurons; the piece rows alone fit (32 x 1000 < 32767).
-        let (piece, bias) = ([1000i16, 0, 0, 0], [0i16, 0]);
-        assert!(check_ft_range(&piece, &bias, piece.len(), 0).is_ok());
-        // Adding pair rows of 127 for neuron 0 can exceed i16 with 120 pairs.
-        let with_pairs = [1000i16, 0, 0, 0, 127, 0];
-        assert!(check_ft_range(&with_pairs, &bias, 4, 0).is_err());
-        // Pair weights count as clamped: 1100 overflows as a piece weight
-        // (32 x 1100) but is 127 as a pair weight (120 x 127 fits).
-        let small = [0i16, 0, 1100, 0];
-        assert!(check_ft_range(&small, &bias, 2, 0).is_ok());
-        assert!(check_ft_range(&small, &bias, 4, 0).is_err());
+    fn ft_range_bound() {
+        let h = 2;
+        let pieces = 768;
+        // One bucket; neuron 0 has weight w on every piece type of every square.
+        let net = |w: i16, pairs: &[i16], zone: &[i16]| -> Vec<i16> {
+            let mut v = vec![0i16; (pieces + pairs.len() + zone.len()) * h];
+            for f in 0..pieces {
+                v[f * h] = w;
+            }
+            for (i, &x) in pairs.iter().chain(zone).enumerate() {
+                v[(pieces + i) * h] = x;
+            }
+            v
+        };
+        let ps = pieces * h;
+        let none = |v: &Vec<i16>| (v.len(), 0);
+        let bias = [0i16, 0];
+        // 32 squares x 1000 fits; with a bias of 800 it doesn't.
+        let a = net(1000, &[], &[]);
+        assert!(check_ft_range(&a, &bias, ps, none(&a)).is_ok());
+        assert!(check_ft_range(&a, &[800, 0], ps, none(&a)).is_err());
+        // Only one piece per square counts: one big weight on one square fits.
+        let mut b = net(0, &[], &[]);
+        b[0] = 30000;
+        b[64 * h] = 30000; // another piece type on the same square
+        assert!(check_ft_range(&b, &bias, ps, none(&b)).is_ok());
+        // Pair weights count as clamped (1100 -> 127): 120 x 127 + 32 x 500 fits.
+        let c = net(500, &[1100; 150], &[]);
+        assert!(check_ft_range(&c, &bias, ps, none(&c)).is_ok());
+        // ... and 32 x 600 doesn't.
+        let d = net(600, &[127; 150], &[]);
+        assert!(check_ft_range(&d, &bias, ps, none(&d)).is_err());
+        // King-zone rows count up to their cap: 32 x 450 + 120 x 127 + 16 x 100.
+        let e = net(450, &[127; 120], &[100; 96]);
+        let kz0 = (pieces + 120) * h;
+        assert!(check_ft_range(&e, &bias, ps, (kz0, 16)).is_ok());
+        assert!(check_ft_range(&e, &bias, ps, (kz0, 96)).is_err());
     }
 
     /// Incremental accumulator updates equal a full rebuild, for both sides,
