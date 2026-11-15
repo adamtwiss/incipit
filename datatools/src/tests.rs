@@ -472,6 +472,27 @@ fn tb_label_scores() {
 }
 
 #[test]
+fn tb_grade_dtz_weight() {
+    let p = |fen| Position::from_fen(fen).unwrap();
+    let g = |dw| TbLabel::Grade { lo: 900, per: 120, d: 64, cap: 2500, dw };
+    let base = 10000;
+    // KBN v K: lead 6; DTZ term (1 - dtz/64) times dw thousandths of a unit.
+    let kbnk = p("8/8/4k3/8/8/8/2BNK3/8 w - - 0 1");
+    assert_eq!(g(1000).win_score(&kbnk, 1, 32, 0), base + 900 + 120 * 6500 / 1000);
+    assert_eq!(g(2900).win_score(&kbnk, 1, 32, 0), base + 900 + 120 * 7450 / 1000);
+    assert_eq!(g(2900).win_score(&kbnk, 1, 0, 0), base + 900 + 120 * 8899 / 1000);
+    // A pawnless capture can't lower the target: KQ v KN at the worst DTZ
+    // (term 0) after the capture is above KQ v KN... before it at DTZ 0.
+    let kqkn = p("8/8/4k3/4n3/8/8/3QK3/8 w - - 0 1");
+    let kqk = p("8/8/4k3/8/8/8/3QK3/8 w - - 0 1");
+    assert!(g(2900).win_score(&kqk, 1, 64, 0) > g(2900).win_score(&kqkn, 1, 0, 0));
+    // With a defender pawn the term keeps weight 1 (a pawn capture adds only 1).
+    let kqkp = p("8/8/4k3/4p3/8/8/3QK3/8 w - - 0 1");
+    assert_eq!(g(2900).win_score(&kqkp, 1, 0, 0), g(1000).win_score(&kqkp, 1, 0, 0));
+    assert!(g(2900).win_score(&kqk, 1, 64, 0) > g(2900).win_score(&kqkp, 1, 0, 0));
+}
+
+#[test]
 fn output_paths_refuse_collisions_and_overwrites() {
     use crate::{output_paths, output_paths_named};
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();

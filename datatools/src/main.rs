@@ -70,7 +70,7 @@ usage:
                                               won table positions (side to move wins, DTZ >= min_dtz plies)
                                               for conversion tests: up to per_class each of KRvK, KQvK, KBNvK,
                                               KQvKR, as EPD on stdout
-  datatools tbrelabel <tb_dir> <out_dir> [--fix-result] [--label-unscored] [--score CP | --score-dtz LO HI PER_PAWN | --score-keep CP | --score-grade LO PER D CAP] <in.vf> ...
+  datatools tbrelabel <tb_dir> <out_dir> [--fix-result] [--label-unscored] [--score CP | --score-dtz LO HI PER_PAWN | --score-keep CP | --score-grade LO PER D CAP [--grade-dtz-weight W]] <in.vf> ...
                                               relabel with the Syzygy tables: --fix-result sets each game's
                                               result to the table result at its first table position with a
                                               fresh fifty-move clock (as tbstats); --score CP sets the score of
@@ -80,7 +80,8 @@ usage:
                                               keeps the search score when it shows the win by >= CP, else +-CP;
                                               --score-grade: a target in the net's output units, LO + PER per
                                               unit of progress (material lead, 0.2 per pawn rank, DTZ to D plies
-                                              when pawnless), capped at CAP, stored as +-(10000 + target) for
+                                              when pawnless; --grade-dtz-weight W in [1, 3) scales that term
+                                              when neither side has pawns), capped at CAP, stored as +-(10000 + target) for
                                               incipit-train-v2 tbt= (only on calibrated copies);
                                               --label-unscored also scores table positions stored
                                               unscored (a mate score in games played out without
@@ -1253,7 +1254,10 @@ enum TbLabel {
     /// winner capture adds >= 1 to the lead and changes the DTZ term by < 1, a
     /// pawn push adds rank progress with the DTZ term fixed, and a promotion
     /// adds >= 2, so the target never falls along the winner's progress.
-    Grade { lo: i32, per: i32, d: i32, cap: i32 },
+    /// `dw` (thousandths, default 1000; --grade-dtz-weight) scales the DTZ term
+    /// when neither side has pawns, kept below dw: every winner capture there
+    /// takes a piece (>= 3), so any dw < 3000 keeps the same guarantee.
+    Grade { lo: i32, per: i32, d: i32, cap: i32, dw: i32 },
 }
 
 /// Stored score of a `Grade` target: above any calibrated label (|label| <= 3684).
@@ -1280,7 +1284,7 @@ impl TbLabel {
                 (base + per_pawn * sign * lead).max(lo / 2)
             }
             TbLabel::Keep(cp) => (sign * search).max(cp),
-            TbLabel::Grade { lo, per, d, cap } => {
+            TbLabel::Grade { lo, per, d, cap, dw } => {
                 let w = if sign > 0 { position::WHITE } else { position::BLACK };
                 let values = [1, 3, 3, 5, 9];
                 let lead: i32 = (0..5)
@@ -1299,7 +1303,9 @@ impl TbLabel {
                 let g = if p.pieces[0] & p.colors[w] != 0 {
                     500
                 } else {
-                    (1000 - 1000 * (dtz as i32).min(d) / d).min(999)
+                    // Steeper only with no pawns at all (a pawn capture adds just 1).
+                    let k = if p.pieces[0] == 0 { dw } else { 1000 };
+                    (k - k * (dtz as i32).min(d) / d).min(k - 1)
                 };
                 let x = (1000 * lead + 200 * steps + g).max(0);
                 TBT_BASE + (lo + per * x / 1000).min(cap)
@@ -1380,6 +1386,7 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
         }
         Ok(v)
     };
+    let mut dtz_weight = None;
     while let Some(a) = it.next() {
         match a.as_str() {
             "--fix-result" => fix_result = true,
@@ -1394,13 +1401,26 @@ fn cmd_tbrelabel(tb_path: &str, out_dir: &str, args: &[String]) -> Result<(), St
                 if d == 0 || cap > 9000 {
                     return Err("--score-grade needs D > 0 and CAP <= 9000".into());
                 }
-                label = Some(TbLabel::Grade { lo, per, d, cap })
+                label = Some(TbLabel::Grade { lo, per, d, cap, dw: 1000 })
+            }
+            "--grade-dtz-weight" => {
+                let w: f64 = it.next().and_then(|v| v.parse().ok()).ok_or("--grade-dtz-weight needs a number")?;
+                if !(1.0..3.0).contains(&w) {
+                    return Err("--grade-dtz-weight must be in [1, 3) (a pawnless capture is worth >= 3)".into());
+                }
+                dtz_weight = Some((w * 1000.0).round() as i32);
             }
             _ => inputs.push(a.clone()),
         }
     }
     if !fix_result && label.is_none() {
         return Err("tbrelabel needs --fix-result and/or a score mode".into());
+    }
+    if let Some(w) = dtz_weight {
+        match &mut label {
+            Some(TbLabel::Grade { dw, .. }) => *dw = w,
+            _ => return Err("--grade-dtz-weight goes with --score-grade".into()),
+        }
     }
     let dests = output_paths(out_dir, &inputs)?;
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {}", out_dir, e))?;
