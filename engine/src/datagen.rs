@@ -59,6 +59,8 @@ fn insufficient(pos: &Position) -> bool {
 /// truncated) and flushing every 200 of its own games. `seed` makes a run
 /// reproducible (0: from the clock).
 pub fn run(threads: usize, prefix: &str, nodes: u64, seconds: u64, seed: u64) {
+    // Labels are search scores: keep the material scaling out of them (MAT_SCALE).
+    crate::search::MAT_SCALE.store(false, std::sync::atomic::Ordering::Relaxed);
     let total_pos = Arc::new(AtomicU64::new(0));
     let total_games = Arc::new(AtomicU64::new(0));
     let start = Instant::now();

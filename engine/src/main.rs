@@ -706,6 +706,7 @@ fn main() {
                 println!("option name Clear Hash type button");
                 println!("option name UCI_ShowWDL type check default false");
                 println!("option name NormalizeScore type check default true");
+                println!("option name MatScale type check default true");
                 println!("option name TmLog type check default false");
                 println!("option name SyzygyPath type string default <empty>");
                 if cfg!(feature = "tune") {
@@ -793,6 +794,7 @@ fn main() {
                         "normalizescore" => {
                             search::NORMALIZE_SCORE.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed)
                         }
+                        "matscale" => search::MAT_SCALE.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed),
                         "uci_chess960" => {
                             CHESS960.store(val.eq_ignore_ascii_case("true"), Ordering::Relaxed);
                         }
