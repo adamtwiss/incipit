@@ -1526,8 +1526,9 @@ impl Searcher {
 
         // Tablebase WDL probe: valid right after a capture or pawn move
         // (halfmove 0) without castling rights. A win or loss that doesn't
-        // cut still bounds a PV node's score: the floor raises alpha, and the
-        // result is clamped to the bound after the moves.
+        // cut still bounds a PV node's score: the moves are searched with the
+        // node's own window (keeping their best move and PV), and the result
+        // is clamped to the bound after them.
         let (mut tb_floor, mut tb_ceil) = (-INF, INF);
         if !root
             && excluded == 0
@@ -1557,7 +1558,6 @@ impl Searcher {
                 if pv_node {
                     if bound == BOUND_LOWER {
                         tb_floor = s;
-                        alpha = alpha.max(s);
                     } else {
                         tb_ceil = s;
                     }
