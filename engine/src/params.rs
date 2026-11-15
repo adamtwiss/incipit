@@ -220,11 +220,12 @@ params! {
     // Material scaling (owner's idea, 2026-11-15): the net's output times a
     // factor that runs linearly with the non-pawn material (knight and bishop 3,
     // rook 5, queen 9, both sides: 62 at the start), from MatScaleBare (no
-    // pieces) to MatScaleFull (62), in 1/1024. Start: a soft +-10% (922, 1126)
-    // around 1024; the range keeps it within +-20%. UseMatScale 0 = factor 1.
+    // pieces) to MatScaleFull (62), in 1/1024. +-20% (819, 1229) around 1024
+    // (owner: +-10% was too small to show); the range allows +-30%.
+    // UseMatScale 0 = factor 1.
     UseMatScale = "UseMatScale", 1, 0, 1, 0;
-    MatScaleBare = "MatScaleBare", 922, 820, 1228, 20;
-    MatScaleFull = "MatScaleFull", 1126, 820, 1228, 20;
+    MatScaleBare = "MatScaleBare", 819, 717, 1331, 31;
+    MatScaleFull = "MatScaleFull", 1229, 717, 1331, 31;
     // Lazy SMP vote: a thread's weight is rel * VoteBase + min(score - lowest
     // score, VoteCap), with rel its depth relative to the iteration (1 for
     // d - 1, 2 for d, 3 for d + 1). VoteBase is one unit per ply of relative
