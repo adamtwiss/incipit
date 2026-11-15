@@ -491,6 +491,11 @@ pub static TM_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 /// (few pieces). Output only: search, mate and tablebase scores are
 /// untouched. Datagen turns it off, since its labels are the printed scores.
 pub static NORMALIZE_SCORE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// MatScale: the material scaling of the net's eval (UseMatScale). Datagen
+/// turns it off: its labels are search scores, and a net trained on scaled
+/// labels would learn the scaling and then have it applied a second time.
+/// Set before searching (cached evals keep the setting they were made with).
+pub static MAT_SCALE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Incipit's WDL model (datatools wdlfit on c69: 4M games, 8000 nodes a move,
 /// played by 65EBB451, whose eval scale matches ECF55D53's; fitted
@@ -861,6 +866,11 @@ impl Searcher {
         } else {
             self.ensure_acc(ply);
             let e = nnue::evaluate(&self.acc[ply], pos, &mut self.eval_scratch);
+            let e = if on(P::UseMatScale) && MAT_SCALE.load(std::sync::atomic::Ordering::Relaxed) {
+                Self::mat_scale(pos, e)
+            } else {
+                e
+            };
             // A constant (folded away) outside tune builds.
             if tp(P::EvalScale) != 100 {
                 e * tp(P::EvalScale) / 100
@@ -872,6 +882,16 @@ impl Searcher {
         self.tt.store_eval(pos.hash, e);
         self.stats.evals += 1;
         e
+    }
+
+    /// The net's eval scaled by the non-pawn material (see MatScaleBare).
+    #[inline(always)]
+    fn mat_scale(pos: &Position, v: i32) -> i32 {
+        let p = &pos.pieces;
+        let npm = (3 * (p[KNIGHT] | p[BISHOP]).count_ones() + 5 * p[ROOK].count_ones() + 9 * p[QUEEN].count_ones())
+            .min(62) as i32;
+        let f = (tp(P::MatScaleBare) * (62 - npm) + tp(P::MatScaleFull) * npm) / 62;
+        v * f / 1024
     }
 
     /// Pulls an eval towards a draw as the fifty-move counter rises.
