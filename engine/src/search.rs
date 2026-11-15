@@ -1525,7 +1525,10 @@ impl Searcher {
         }
 
         // Tablebase WDL probe: valid right after a capture or pawn move
-        // (halfmove 0) without castling rights.
+        // (halfmove 0) without castling rights. A win or loss that doesn't
+        // cut still bounds a PV node's score: the floor raises alpha, and the
+        // result is clamped to the bound after the moves.
+        let (mut tb_floor, mut tb_ceil) = (-INF, INF);
         if !root
             && excluded == 0
             && pos.halfmove == 0
@@ -1550,6 +1553,14 @@ impl Searcher {
                     let ev = if in_check { -INF } else { self.evaluate(pos, ply) };
                     self.tt.store(pos.hash, 0, ss, ev, (depth + 6).min(MAX_PLY as i32 - 1), bound, pv_node || tt_pv);
                     return s;
+                }
+                if pv_node {
+                    if bound == BOUND_LOWER {
+                        tb_floor = s;
+                        alpha = alpha.max(s);
+                    } else {
+                        tb_ceil = s;
+                    }
                 }
             }
         }
@@ -2197,6 +2208,15 @@ impl Searcher {
             };
         }
 
+        let mut tb_clamp = 0;
+        if best_score < tb_floor {
+            best_score = tb_floor;
+            tb_clamp = BOUND_LOWER;
+        } else if best_score > tb_ceil {
+            best_score = tb_ceil;
+            tb_clamp = BOUND_UPPER;
+        }
+
         if best_score >= beta {
             let bdepth = depth + (best_score > beta + tp(P::HistBonusMargin)) as i32;
             // Never negative, whatever the tuned values: a cutoff must not
@@ -2248,7 +2268,9 @@ impl Searcher {
         }
 
         if excluded == 0 {
-            let bound = if best_score >= beta {
+            let bound = if tb_clamp != 0 {
+                tb_clamp
+            } else if best_score >= beta {
                 BOUND_LOWER
             } else if alpha > orig_alpha {
                 BOUND_EXACT
