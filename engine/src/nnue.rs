@@ -98,6 +98,12 @@ const TYPE_F32: u8 = 4;
 pub const L1_SIZE: usize = 16;
 /// Most neurons in the optional second hidden layer.
 pub const L2_MAX: usize = 32;
+/// The second hidden layer runs in integers: its inputs (SCReLU and CReLU
+/// outputs, 0..1) become i16 at this scale, its weights i16 scaled per bucket
+/// so the largest is L2_QW. 2 * L1_SIZE inputs x L2_QA x L2_QW stays below
+/// 2^31, so the i32 sums can't overflow and are exact on every ISA.
+const L2_QA: f32 = 4096.0;
+const L2_QW: f32 = 16383.0;
 const OUTPUT_MATERIAL: u8 = 1;
 
 // Path chosen by build.rs (EVALFILE, or the net named in net.txt).
@@ -164,13 +170,16 @@ struct Hidden {
     // Pre-activation readout [bucket][neuron]: each neuron's pre-activation
     // times this is added to the output (zeros when the net has none).
     lin: Vec<[f32; L1_SIZE]>,
-    // Optional second hidden layer (f32, SCReLU, per bucket): n2 neurons
-    // (0 = none). wm is [bucket][input][n2] (input-major, so the product
-    // vectorises over the outputs), bm [bucket][n2]; the output layer is then
-    // wo [bucket][n2] with bias b2.
+    // Optional second hidden layer (SCReLU, per bucket): n2 neurons (0 =
+    // none). wq is [bucket][input pair p][2 * neuron + t], the weight from
+    // input 2p + t as i16 (L2_QA, L2_QW), pair-interleaved so one i16
+    // multiply-add covers two inputs for every neuron; kq [bucket] turns the
+    // i32 sums back into real terms, then bm [bucket][n2] is added. The output
+    // layer is wo [bucket][n2] with bias b2.
     n2: usize,
-    wm: Vec<[[f32; L2_MAX]; 2 * L1_SIZE]>, // [bucket][input][l2]; 2L inputs when dual
-    dual: bool,                            // the second hidden layer sees SCReLU and CReLU of the first (2L inputs)
+    wq: Vec<[[i16; 2 * L2_MAX]; L1_SIZE]>, // [bucket][pair][2 * l2 + t]; 2L inputs when dual
+    kq: Vec<f32>,
+    dual: bool, // the second hidden layer sees SCReLU and CReLU of the first (2L inputs)
     bm: Vec<[f32; L2_MAX]>,
     wo: Vec<[f32; L2_MAX]>,
 }
@@ -604,6 +613,23 @@ fn load_layers(d: &[u8]) -> Result<Network, String> {
     })
 }
 
+/// One bucket's second-layer weights m [input][neuron] as Hidden::wq's i16
+/// pairs, scaled so the largest magnitude is L2_QW, and the factor that turns
+/// the integer sums (inputs at L2_QA) back into real terms.
+fn quantise_l2(m: &[[f32; L2_MAX]; 2 * L1_SIZE]) -> ([[i16; 2 * L2_MAX]; L1_SIZE], f32) {
+    let max = m.iter().flatten().fold(0f32, |a, &w| a.max(w.abs()));
+    let sw = if max > 0.0 { L2_QW / max } else { 1.0 };
+    let mut q = [[0i16; 2 * L2_MAX]; L1_SIZE];
+    for (p, row) in q.iter_mut().enumerate() {
+        for j in 0..L2_MAX {
+            for t in 0..2 {
+                row[2 * j + t] = (m[2 * p + t][j] * sw).round() as i16;
+            }
+        }
+    }
+    (q, 1.0 / (L2_QA * sw))
+}
+
 /// Loads a network with one hidden layer: FT -> L1_SIZE (SCReLU, i8 weights,
 /// f32 biases) -> 1 (f32), both per output bucket.
 #[allow(clippy::too_many_arguments)]
@@ -755,7 +781,7 @@ fn load_hidden(
             .collect::<Vec<_>>()
     };
     let b1 = rows(f32s(nb1 * ln));
-    let (mut wm, mut bm, mut wo) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut wq, mut kq, mut bm, mut wo) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let w2 = if n2 > 0 {
         let wmf = f32s(buckets * n2 * in2);
         let bmf = f32s(buckets * n2);
@@ -770,7 +796,9 @@ fn load_hidden(
                 mb[j] = bmf[b * n2 + j];
                 ow[j] = wof[b * n2 + j];
             }
-            wm.push(m);
+            let (q, k) = quantise_l2(&m);
+            wq.push(q);
+            kq.push(k);
             bm.push(mb);
             wo.push(ow);
         }
@@ -819,7 +847,8 @@ fn load_hidden(
             skip_k: skip as u8 as f32,
             lin,
             n2,
-            wm,
+            wq,
+            kq,
             dual,
             bm,
             wo,
@@ -1991,27 +2020,38 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(
             acc = _mm256_add_ps(acc, _mm256_mul_ps(v1[c], _mm256_loadu_ps(w2.as_ptr().add(8 * c))));
         }
     } else {
-        let (wm, bm, wo) = (&l1.wm[bucket], &l1.bm[bucket], &l1.wo[bucket]);
-        // Second-layer inputs: SCReLU (L), then CReLU (L) when dual.
-        let mut a1 = [0f32; 2 * L1_SIZE];
-        for c in 0..L / 8 {
-            _mm256_storeu_ps(a1.as_mut_ptr().add(8 * c), v1[c]);
-            if DUAL {
-                _mm256_storeu_ps(a1.as_mut_ptr().add(L + 8 * c), c1[c]);
-            }
+        debug_assert!(L == 16); // the loader allows a second layer only after 16 neurons
+        let (wq, bm, wo) = (&l1.wq[bucket], &l1.bm[bucket], &l1.wo[bucket]);
+        // Second-layer inputs as i16 at L2_QA (cvtps rounds to nearest even):
+        // SCReLU (L), then CReLU (L) when dual. packs_epi32 interleaves the two
+        // halves per 128-bit lane; the permute restores input order.
+        let qa = _mm256_set1_ps(L2_QA);
+        let pack = |a: __m256, b: __m256| {
+            let x =
+                _mm256_packs_epi32(_mm256_cvtps_epi32(_mm256_mul_ps(a, qa)), _mm256_cvtps_epi32(_mm256_mul_ps(b, qa)));
+            _mm256_permute4x64_epi64::<0b11_01_10_00>(x)
+        };
+        let mut q = [0i16; 2 * L1_SIZE];
+        _mm256_storeu_si256(q.as_mut_ptr() as *mut __m256i, pack(v1[0], v1[1]));
+        if DUAL {
+            _mm256_storeu_si256(q.as_mut_ptr().add(L) as *mut __m256i, pack(c1[0], c1[1]));
         }
-        let mut u = [zero; L2_MAX / 8];
-        for c in 0..L2 / 8 {
-            u[c] = _mm256_loadu_ps(bm.as_ptr().add(8 * c));
-        }
-        for i in 0..if DUAL { 2 * L } else { L } {
-            let x = _mm256_set1_ps(a1[i]);
+        // Two inputs per step: the pair broadcast to every i32 lane, times the
+        // pair-interleaved weights, both products summed into each neuron.
+        let qp = q.as_ptr() as *const i32;
+        let mut u = [_mm256_setzero_si256(); L2_MAX / 8];
+        for p in 0..if DUAL { L } else { L / 2 } {
+            let x = _mm256_set1_epi32(qp.add(p).read_unaligned());
             for c in 0..L2 / 8 {
-                u[c] = _mm256_add_ps(u[c], _mm256_mul_ps(x, _mm256_loadu_ps(wm[i].as_ptr().add(8 * c))));
+                let w = _mm256_loadu_si256(wq[p].as_ptr().add(16 * c) as *const __m256i);
+                u[c] = _mm256_add_epi32(u[c], _mm256_madd_epi16(x, w));
             }
         }
+        let kq = _mm256_set1_ps(l1.kq[bucket]);
         for c in 0..L2 / 8 {
-            acc = _mm256_add_ps(acc, _mm256_mul_ps(screlu(u[c]), _mm256_loadu_ps(wo.as_ptr().add(8 * c))));
+            let uf =
+                _mm256_add_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(u[c]), kq), _mm256_loadu_ps(bm.as_ptr().add(8 * c)));
+            acc = _mm256_add_ps(acc, _mm256_mul_ps(screlu(uf), _mm256_loadu_ps(wo.as_ptr().add(8 * c))));
         }
     }
     let mut lanes = [0f32; 8];
@@ -2064,27 +2104,36 @@ unsafe fn hidden_float<const L: usize, const L2: usize, const DUAL: bool>(
             acc[c % 2] = vaddq_f32(acc[c % 2], vmulq_f32(v1[c], vld1q_f32(w2.as_ptr().add(4 * c))));
         }
     } else {
-        let (wm, bm, wo) = (&l1.wm[bucket], &l1.bm[bucket], &l1.wo[bucket]);
-        // Second-layer inputs: SCReLU (L), then CReLU (L) when dual.
-        let mut a1 = [0f32; 2 * L1_SIZE];
+        let (wq, bm, wo) = (&l1.wq[bucket], &l1.bm[bucket], &l1.wo[bucket]);
+        // Second-layer inputs as i16 at L2_QA (vcvtn rounds to nearest even,
+        // as the x86 version): SCReLU (L), then CReLU (L) when dual.
+        let qa = vdupq_n_f32(L2_QA);
+        let mut q = [0i16; 2 * L1_SIZE];
         for c in 0..L / 4 {
-            vst1q_f32(a1.as_mut_ptr().add(4 * c), v1[c]);
+            vst1_s16(q.as_mut_ptr().add(4 * c), vmovn_s32(vcvtnq_s32_f32(vmulq_f32(v1[c], qa))));
             if DUAL {
-                vst1q_f32(a1.as_mut_ptr().add(L + 4 * c), c1[c]);
+                vst1_s16(q.as_mut_ptr().add(L + 4 * c), vmovn_s32(vcvtnq_s32_f32(vmulq_f32(c1[c], qa))));
             }
         }
-        let mut u = [zero; L2_MAX / 4];
-        for c in 0..L2 / 4 {
-            u[c] = vld1q_f32(bm.as_ptr().add(4 * c));
-        }
-        for i in 0..if DUAL { 2 * L } else { L } {
-            let x = vdupq_n_f32(a1[i]);
+        // Two inputs per step against the pair-interleaved weights: lo holds
+        // neurons 4c, 4c+1 and hi 4c+2, 4c+3, each as (input 2p, input 2p+1)
+        // partial sums, added pairwise at the end. Integer sums are exact, so
+        // this matches the x86 version.
+        let qp = q.as_ptr() as *const i32;
+        let (mut lo, mut hi) = ([vdupq_n_s32(0); L2_MAX / 4], [vdupq_n_s32(0); L2_MAX / 4]);
+        for p in 0..if DUAL { L } else { L / 2 } {
+            let x = vreinterpretq_s16_s32(vdupq_n_s32(qp.add(p).read_unaligned()));
             for c in 0..L2 / 4 {
-                u[c] = vaddq_f32(u[c], vmulq_f32(x, vld1q_f32(wm[i].as_ptr().add(4 * c))));
+                let w = vld1q_s16(wq[p].as_ptr().add(8 * c));
+                lo[c] = vmlal_s16(lo[c], vget_low_s16(x), vget_low_s16(w));
+                hi[c] = vmlal_high_s16(hi[c], x, w);
             }
         }
+        let kq = vdupq_n_f32(l1.kq[bucket]);
         for c in 0..L2 / 4 {
-            acc[c % 2] = vaddq_f32(acc[c % 2], vmulq_f32(screlu(u[c]), vld1q_f32(wo.as_ptr().add(4 * c))));
+            let s = vcvtq_f32_s32(vpaddq_s32(lo[c], hi[c]));
+            let uf = vaddq_f32(vmulq_f32(s, kq), vld1q_f32(bm.as_ptr().add(4 * c)));
+            acc[c % 2] = vaddq_f32(acc[c % 2], vmulq_f32(screlu(uf), vld1q_f32(wo.as_ptr().add(4 * c))));
         }
     }
     // (l0 + l4, l1 + l5, l2 + l6, l3 + l7), then the same sums as the x86 version.
@@ -2141,17 +2190,18 @@ fn hidden_float_portable<const L: usize, const L2: usize, const DUAL: bool>(
             acc[i % 8] = acc[i % 8] + v1[i] * w2[i];
         }
     } else {
-        let (wm, bm, wo) = (&l1.wm[bucket], &l1.bm[bucket], &l1.wo[bucket]);
-        let mut u = [0f32; L2_MAX];
-        u[..L2].copy_from_slice(&bm[..L2]);
-        for i in 0..if DUAL { 2 * L } else { L } {
-            let x = v1[i];
+        let (wq, bm, wo) = (&l1.wq[bucket], &l1.bm[bucket], &l1.wo[bucket]);
+        let mut u = [0i32; L2_MAX];
+        for p in 0..if DUAL { L } else { L / 2 } {
+            let (x0, x1) =
+                ((v1[2 * p] * L2_QA).round_ties_even() as i32, (v1[2 * p + 1] * L2_QA).round_ties_even() as i32);
             for j in 0..L2 {
-                u[j] = u[j] + x * wm[i][j];
+                u[j] += x0 * wq[p][2 * j] as i32 + x1 * wq[p][2 * j + 1] as i32;
             }
         }
         for j in 0..L2 {
-            acc[j % 8] = acc[j % 8] + screlu(u[j]) * wo[j];
+            let uf = u[j] as f32 * l1.kq[bucket] + bm[j];
+            acc[j % 8] = acc[j % 8] + screlu(uf) * wo[j];
         }
     }
     l1.b2[bucket] + ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]))
@@ -2961,6 +3011,7 @@ pub fn l1check(trials: usize) -> usize {
     // above 1, so every clamp region is used.
     let mut rf = || ((rnd() % 2001) as f32 - 1000.0) / 1000.0;
     for _ in 0..trials {
+        let (wq, kq) = quantise_l2(&std::array::from_fn(|_| std::array::from_fn(|_| rf())));
         let l1 = Hidden {
             n: L1_SIZE,
             shift: 9,
@@ -2973,7 +3024,8 @@ pub fn l1check(trials: usize) -> usize {
             w2: vec![std::array::from_fn(|_| rf())],
             b2: vec![rf()],
             n2: 0,
-            wm: vec![std::array::from_fn(|_| std::array::from_fn(|_| rf()))],
+            wq: vec![wq],
+            kq: vec![kq],
             dual: false,
             bm: vec![std::array::from_fn(|_| rf())],
             wo: vec![std::array::from_fn(|_| rf())],
