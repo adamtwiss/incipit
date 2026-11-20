@@ -117,6 +117,10 @@ params! {
     // LMR by the best score so far at an expected all-node: one ply more
     // when it equals alpha, one less when it is more than BsaLess (cp) below.
     BsaLess = "BsaLess", 80, 0, 400, 20;
+    // RFP margin tilt (cp per ply of distance from depth RfpTiltMid): added below
+    // that depth, taken off above it.
+    RfpTilt = "RfpTilt", 10, 0, 40, 2;
+    RfpTiltMid = "RfpTiltMid", 2, 1, 7, 1;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
@@ -304,6 +308,7 @@ params! {
     // +1 or -1 cp by node-count parity instead of exactly 0.
     UseDrawJitter = "UseDrawJitter", 1, 0, 1, 0;
     UseBsaLmr = "UseBsaLmr", 1, 0, 1, 0;
+    UseRfpTilt = "UseRfpTilt", 1, 0, 1, 0;
     // No null-move pruning at a node whose beta is a draw score (0, or +-1
     // with UseDrawJitter): the side to move would claim the draw.
     UseNmpDrawGuard = "UseNmpDrawGuard", 1, 0, 1, 0;

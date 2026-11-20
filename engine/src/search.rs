@@ -1613,12 +1613,15 @@ impl Searcher {
         // there it must search the position, or a reverse-futility or
         // razoring cut "confirms" the null move without testing zugzwang.
         if !pv_node && !in_check && excluded == 0 && ply != self.no_nmp_ply {
+            // The margin is tilted around depth RfpTiltMid: a cut costs far more
+            // errors per node saved at depth 1 than at depth 5 and beyond.
+            let rfp_tilt = if on(P::UseRfpTilt) { tp(P::RfpTilt) * (tp(P::RfpTiltMid) - depth) } else { 0 };
             // reverse futility pruning
             if on(P::UseRfp)
                 && depth <= tp(P::RfpDepth)
                 && eval.abs() < MATE_BOUND
                 && beta.abs() < MATE_BOUND
-                && eval - tp(P::RfpMargin) * depth + tp(P::RfpImp) * improving as i32 >= beta
+                && eval - tp(P::RfpMargin) * depth - rfp_tilt + tp(P::RfpImp) * improving as i32 >= beta
             {
                 self.stats.rfp += 1;
                 return if tp(P::RfpBlendPct) == 50 {
