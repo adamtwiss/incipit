@@ -47,6 +47,8 @@ struct Frame {
     pre_key: u64,
     pre_raw: i32,
     pre_se: i32,
+    // 1-based index of the move made at this ply among the node's searched moves.
+    midx: i32,
 }
 
 /// Search statistics, cumulative until reset (bench sums them over its
@@ -1614,11 +1616,32 @@ impl Searcher {
         // razoring cut "confirms" the null move without testing zugzwang.
         if !pv_node && !in_check && excluded == 0 && ply != self.no_nmp_ply {
             // reverse futility pruning
+            // The margin moves with the index of the move that led here: a
+            // cut says that move fails low, which is wrong far more often
+            // for the parent's first moves than for its late ones.
+            let rfp_margin = tp(P::RfpMargin)
+                + if on(P::UseRfpPidx) && ply >= 1 {
+                    let i = self.stack[ply - 1].midx;
+                    tp(P::RfpPidx)
+                        * if i <= 1 {
+                            2
+                        } else if i <= 3 {
+                            1
+                        } else if i <= 7 {
+                            0
+                        } else if i <= 15 {
+                            -1
+                        } else {
+                            -2
+                        }
+                } else {
+                    0
+                };
             if on(P::UseRfp)
                 && depth <= tp(P::RfpDepth)
                 && eval.abs() < MATE_BOUND
                 && beta.abs() < MATE_BOUND
-                && eval - tp(P::RfpMargin) * depth + tp(P::RfpImp) * improving as i32 >= beta
+                && eval - rfp_margin * depth + tp(P::RfpImp) * improving as i32 >= beta
             {
                 self.stats.rfp += 1;
                 return if tp(P::RfpBlendPct) == 50 {
@@ -1662,6 +1685,7 @@ impl Searcher {
                 self.lazy[ply + 1] = LazyAcc { pos: child, m: 0, state: ACC_COPY };
                 self.stack[ply].mv = 0;
                 self.stack[ply].cont_idx = 0;
+                self.stack[ply].midx = 1;
                 self.gain_par[ply + 1] = None;
                 self.hash_hist.push(pos.hash);
                 let v = -self.negamax(&child, -beta, -beta + 1, depth - r, ply + 1, !cut_node);
@@ -1740,6 +1764,7 @@ impl Searcher {
                     let pc = pos.board[mfrom(m)] as usize;
                     self.stack[ply].mv = m;
                     self.stack[ply].cont_idx = pc * 64 + mto(m);
+                    self.stack[ply].midx = 4;
                     self.gain_par[ply + 1] = None;
                     self.hash_hist.push(pos.hash);
                     let mut v = -self.qsearch(&child, -pc_beta, -pc_beta + 1, ply + 1);
@@ -2058,6 +2083,7 @@ impl Searcher {
             let pc = pos.board[mfrom(m)] as usize;
             self.stack[ply].mv = m;
             self.stack[ply].cont_idx = pc * 64 + mto(m);
+            self.stack[ply].midx = legal;
             self.gain_par[ply + 1] =
                 if quiet && static_eval != -INF { Some((pc as u8, mto(m) as u8, static_eval)) } else { None };
             self.hash_hist.push(pos.hash);
