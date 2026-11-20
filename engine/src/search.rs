@@ -2118,6 +2118,17 @@ impl Searcher {
                             }
                         }
                     }
+                    // At an expected all-node, the best score so far against
+                    // alpha: reduced searches miss least where an earlier move
+                    // came back exactly at alpha, and most where the best is
+                    // still far below it.
+                    if on(P::UseBsaLmr) && r > 0 && !pv_node && !cut_node && excluded == 0 {
+                        if best_score >= alpha {
+                            r += 1;
+                        } else if best_score < alpha - tp(P::BsaLess) {
+                            r -= 1;
+                        }
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {
