@@ -1826,6 +1826,13 @@ impl Searcher {
                 / 10000
         };
 
+        // The limit of an improving node, for a node that isn't improving
+        // but whose static eval reaches alpha (checked per move, below).
+        let lmp_full = if on(P::UseElmp) && !improving && !in_check && excluded == 0 && depth <= tp(P::ElmpDepth) {
+            (tp(P::LmpBase) * 100 + tp(P::LmpQuadPct) * depth * depth) / 100
+        } else {
+            0
+        };
         let mut n = list.len();
         let mut i = 0;
         let mut compacted = false;
@@ -1945,6 +1952,10 @@ impl Searcher {
             };
             if !root && best_score > -MATE_BOUND && pos.has_non_pawns(us) {
                 if quiet {
+                    // With the static eval at or above alpha late quiets beat
+                    // alpha as often as at an improving node, so the limit is
+                    // that node's.
+                    let lmp_limit = if lmp_full != 0 && static_eval >= alpha { lmp_full } else { lmp_limit };
                     if on(P::UseLmp) && legal >= lmp_limit && !in_check {
                         self.stats.lmp += 1;
                         skip_quiets = true;
