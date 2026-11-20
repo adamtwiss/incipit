@@ -2118,6 +2118,17 @@ impl Searcher {
                             }
                         }
                     }
+                    // Ply against the iteration depth: reduced searches miss
+                    // least near the root and most in lines running past the
+                    // iteration depth.
+                    if on(P::UsePlyLmr) && r > 0 && !root && excluded == 0 {
+                        let pf = ply as i32 * 10 / self.root_depth.max(1);
+                        if pf >= tp(P::PlyLmrHi) {
+                            r -= 1;
+                        } else if pf < tp(P::PlyLmrLo) {
+                            r += 1;
+                        }
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {

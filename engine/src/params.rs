@@ -114,6 +114,10 @@ params! {
     // Qsearch skips a capture only if SEE says it loses more than this (cp),
     // so near-equal trades (a bishop for a knight at the SEE values) are tried.
     QsSeeMargin = "QsSeeMargin", 51, 0, 200, 10;
+    // LMR by ply relative to the iteration depth, in tenths: one ply more
+    // below PlyLmrLo, one less from PlyLmrHi (root moves excluded).
+    PlyLmrLo = "PlyLmrLo", 2, 0, 8, 1;
+    PlyLmrHi = "PlyLmrHi", 9, 5, 20, 1;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
@@ -300,6 +304,7 @@ params! {
     // In-search draws (repetition, fifty moves, insufficient material) score
     // +1 or -1 cp by node-count parity instead of exactly 0.
     UseDrawJitter = "UseDrawJitter", 1, 0, 1, 0;
+    UsePlyLmr = "UsePlyLmr", 1, 0, 1, 0;
     // No null-move pruning at a node whose beta is a draw score (0, or +-1
     // with UseDrawJitter): the side to move would claim the draw.
     UseNmpDrawGuard = "UseNmpDrawGuard", 1, 0, 1, 0;
