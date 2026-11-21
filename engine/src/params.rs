@@ -120,6 +120,11 @@ params! {
     // RFP margin by the parent's move index: RfpMargin plus RfpPidx times
     // 2, 1, 0, -1, -2 for index 1, 2-3, 4-7, 8-15, 16+.
     RfpPidx = "RfpPidx", 8, 0, 24, 2;
+    // LMR by nodes per earlier move at an expected all-node, against depth
+    // squared: one ply less from depth^2 x EffortLmrHi / 8, one more below
+    // depth^2 / EffortLmrLo.
+    EffortLmrHi = "EffortLmrHi", 8, 2, 32, 1;
+    EffortLmrLo = "EffortLmrLo", 8, 2, 32, 1;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
@@ -308,6 +313,7 @@ params! {
     UseDrawJitter = "UseDrawJitter", 1, 0, 1, 0;
     UseBsaLmr = "UseBsaLmr", 1, 0, 1, 0;
     UseRfpPidx = "UseRfpPidx", 1, 0, 1, 0;
+    UseEffortLmr = "UseEffortLmr", 1, 0, 1, 0;
     // No null-move pruning at a node whose beta is a draw score (0, or +-1
     // with UseDrawJitter): the side to move would claim the draw.
     UseNmpDrawGuard = "UseNmpDrawGuard", 1, 0, 1, 0;

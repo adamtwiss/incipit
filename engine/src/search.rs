@@ -1836,6 +1836,7 @@ impl Searcher {
         let mut best_score = -INF;
         let mut best_move = 0;
         let mut legal = 0;
+        let loop_nodes = self.nodes;
         let mut quiets: [Move; 64] = [0; 64];
         let mut nq = 0;
         let mut capts: [Move; 32] = [0; 32];
@@ -2153,6 +2154,19 @@ impl Searcher {
                             r += 1;
                         } else if best_score < alpha - tp(P::BsaLess) {
                             r -= 1;
+                        }
+                    }
+                    // At an expected all-node, the nodes spent per earlier move
+                    // against depth squared: where the earlier moves were
+                    // expensive to refute, reduced searches miss more and are
+                    // worth a ply; where they were cheap, a ply can go.
+                    if on(P::UseEffortLmr) && r > 0 && !pv_node && !cut_node && excluded == 0 {
+                        let effort = ((self.nodes - loop_nodes) / (legal as u64 - 1)).min(1 << 20) as i32;
+                        let d2 = depth * depth;
+                        if effort * 8 >= d2 * tp(P::EffortLmrHi) {
+                            r -= 1;
+                        } else if effort * tp(P::EffortLmrLo) < d2 {
+                            r += 1;
                         }
                     }
                     if quiet {
