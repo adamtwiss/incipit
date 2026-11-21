@@ -1637,6 +1637,19 @@ impl Searcher {
                 } else {
                     0
                 };
+            // And with the size of beta: at equal depth a cut is wrong about
+            // twice as often per node saved in a decided position as near
+            // equality.
+            let rfp_margin = rfp_margin
+                + if !on(P::UseRfpBeta) {
+                    0
+                } else if beta.abs() < tp(P::RfpBetaLo) {
+                    -tp(P::RfpBeta)
+                } else if beta.abs() >= tp(P::RfpBetaHi) {
+                    tp(P::RfpBeta)
+                } else {
+                    0
+                };
             if on(P::UseRfp)
                 && depth <= tp(P::RfpDepth)
                 && eval.abs() < MATE_BOUND
