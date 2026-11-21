@@ -2155,6 +2155,16 @@ impl Searcher {
                             r -= 1;
                         }
                     }
+                    // At an expected all-node, the size of alpha: reduced searches
+                    // miss least in windows near the draw score and most where
+                    // one side is already well ahead.
+                    if on(P::UseAlphaLmr) && r > 0 && !pv_node && !cut_node && excluded == 0 {
+                        if alpha.abs() < tp(P::AlphaLmrLo) {
+                            r += 1;
+                        } else if alpha.abs() >= tp(P::AlphaLmrHi) {
+                            r -= 1;
+                        }
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {
