@@ -1836,6 +1836,7 @@ impl Searcher {
         let mut best_score = -INF;
         let mut best_move = 0;
         let mut legal = 0;
+        let mut near = 0;
         let mut quiets: [Move; 64] = [0; 64];
         let mut nq = 0;
         let mut capts: [Move; 32] = [0; 32];
@@ -2153,6 +2154,16 @@ impl Searcher {
                             r += 1;
                         } else if best_score < alpha - tp(P::BsaLess) {
                             r -= 1;
+                        } else if on(P::UseNearLmr) {
+                            // In between, the count of earlier moves that came
+                            // within NearLmrBand of alpha: several near misses
+                            // and reduced searches rarely miss, none or one
+                            // and they miss often.
+                            if near >= tp(P::NearLmrMore) {
+                                r += 1;
+                            } else if near <= tp(P::NearLmrLess) {
+                                r -= 1;
+                            }
                         }
                     }
                     if quiet {
@@ -2184,6 +2195,9 @@ impl Searcher {
             }
             if root {
                 self.root_node_counts[mfrom(m)][mto(m)] += self.nodes - nodes_before;
+            }
+            if score <= alpha && score > alpha - tp(P::NearLmrBand) {
+                near += 1;
             }
             if score > best_score {
                 best_score = score;

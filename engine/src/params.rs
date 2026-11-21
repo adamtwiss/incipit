@@ -120,6 +120,12 @@ params! {
     // RFP margin by the parent's move index: RfpMargin plus RfpPidx times
     // 2, 1, 0, -1, -2 for index 1, 2-3, 4-7, 8-15, 16+.
     RfpPidx = "RfpPidx", 8, 0, 24, 2;
+    // LMR by near misses where the best score so far is within BsaLess of
+    // alpha: one ply more once NearLmrMore earlier moves came within
+    // NearLmrBand (cp) of alpha, one less with NearLmrLess or fewer (-1: off).
+    NearLmrBand = "NearLmrBand", 40, 10, 120, 8;
+    NearLmrMore = "NearLmrMore", 3, 1, 8, 1;
+    NearLmrLess = "NearLmrLess", 1, -1, 4, 1;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
@@ -308,6 +314,7 @@ params! {
     UseDrawJitter = "UseDrawJitter", 1, 0, 1, 0;
     UseBsaLmr = "UseBsaLmr", 1, 0, 1, 0;
     UseRfpPidx = "UseRfpPidx", 1, 0, 1, 0;
+    UseNearLmr = "UseNearLmr", 1, 0, 1, 0;
     // No null-move pruning at a node whose beta is a draw score (0, or +-1
     // with UseDrawJitter): the side to move would claim the draw.
     UseNmpDrawGuard = "UseNmpDrawGuard", 1, 0, 1, 0;
