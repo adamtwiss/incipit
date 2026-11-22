@@ -120,6 +120,11 @@ params! {
     // RFP margin by the parent's move index: RfpMargin plus RfpPidx times
     // 2, 1, 0, -1, -2 for index 1, 2-3, 4-7, 8-15, 16+.
     RfpPidx = "RfpPidx", 8, 0, 24, 2;
+    // RFP by the size of the eval correction: the eval counts for less by
+    // (|correction| - UncRfpMid) x UncRfpMul / 16, so more where the
+    // correction is large and slightly less where it is small.
+    UncRfpMid = "UncRfpMid", 25, 0, 80, 5;
+    UncRfpMul = "UncRfpMul", 8, 0, 32, 2;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 25, 0, 60, 3;
@@ -308,6 +313,7 @@ params! {
     UseDrawJitter = "UseDrawJitter", 1, 0, 1, 0;
     UseBsaLmr = "UseBsaLmr", 1, 0, 1, 0;
     UseRfpPidx = "UseRfpPidx", 0, 0, 1, 0;
+    UseUncRfp = "UseUncRfp", 1, 0, 1, 0;
     // No null-move pruning at a node whose beta is a draw score (0, or +-1
     // with UseDrawJitter): the side to move would claim the draw.
     UseNmpDrawGuard = "UseNmpDrawGuard", 1, 0, 1, 0;

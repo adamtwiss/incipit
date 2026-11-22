@@ -1600,6 +1600,9 @@ impl Searcher {
             }
         }
         self.stack[ply].static_eval = static_eval;
+        // What the correction history added to the raw eval here: a large
+        // correction marks a position whose static eval has been unreliable.
+        let eval_corr = if in_check || raw_eval == -INF { 0 } else { static_eval - raw_eval };
         // Compare with our previous move's eval; if we were in check then, with the one before.
         let improving = !in_check
             && if ply >= 2 && self.stack[ply - 2].static_eval != -INF {
@@ -1641,7 +1644,13 @@ impl Searcher {
                 && depth <= tp(P::RfpDepth)
                 && eval.abs() < MATE_BOUND
                 && beta.abs() < MATE_BOUND
-                && eval - rfp_margin * depth + tp(P::RfpImp) * improving as i32 >= beta
+                && eval - rfp_margin * depth + tp(P::RfpImp) * improving as i32
+                    - if on(P::UseUncRfp) {
+                        (eval_corr.abs().min(120) - tp(P::UncRfpMid)) * tp(P::UncRfpMul) / 16
+                    } else {
+                        0
+                    }
+                    >= beta
             {
                 self.stats.rfp += 1;
                 return if tp(P::RfpBlendPct) == 50 {
