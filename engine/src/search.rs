@@ -1600,6 +1600,9 @@ impl Searcher {
             }
         }
         self.stack[ply].static_eval = static_eval;
+        // What the correction history added to the raw eval here: a large
+        // correction marks a position whose static eval has been unreliable.
+        let eval_corr = if in_check || raw_eval == -INF { 0 } else { static_eval - raw_eval };
         // Compare with our previous move's eval; if we were in check then, with the one before.
         let improving = !in_check
             && if ply >= 2 && self.stack[ply - 2].static_eval != -INF {
@@ -2153,6 +2156,16 @@ impl Searcher {
                             r += 1;
                         } else if best_score < alpha - tp(P::BsaLess) {
                             r -= 1;
+                        }
+                    }
+                    // The eval correction at this node: where the history has
+                    // raised the eval a lot, reduced searches miss far more
+                    // often per node; where it has lowered it a lot, less.
+                    if on(P::UseCorrLmr) {
+                        if eval_corr >= tp(P::CorrLmr) {
+                            r -= 1;
+                        } else if eval_corr <= -tp(P::CorrLmr) {
+                            r += 1;
                         }
                     }
                     if quiet {
