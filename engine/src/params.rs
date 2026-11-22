@@ -308,6 +308,8 @@ params! {
     UseDrawJitter = "UseDrawJitter", 1, 0, 1, 0;
     UseBsaLmr = "UseBsaLmr", 1, 0, 1, 0;
     UseRfpPidx = "UseRfpPidx", 0, 0, 1, 0;
+    // One ply less reduction for moves made while in check.
+    UseEvasionLmr = "UseEvasionLmr", 1, 0, 1, 0;
     // No null-move pruning at a node whose beta is a draw score (0, or +-1
     // with UseDrawJitter): the side to move would claim the draw.
     UseNmpDrawGuard = "UseNmpDrawGuard", 1, 0, 1, 0;

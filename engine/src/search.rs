@@ -2155,6 +2155,11 @@ impl Searcher {
                             r -= 1;
                         }
                     }
+                    // Check evasions: a reduced search of an evasion misses far
+                    // more often per node than other reduced searches.
+                    if on(P::UseEvasionLmr) && in_check {
+                        r -= 1;
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {
