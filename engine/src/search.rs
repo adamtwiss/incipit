@@ -1600,6 +1600,9 @@ impl Searcher {
             }
         }
         self.stack[ply].static_eval = static_eval;
+        // What the correction history added to the raw eval here: a large
+        // correction marks a position whose static eval has been unreliable.
+        let eval_corr = if in_check || raw_eval == -INF { 0 } else { static_eval - raw_eval };
         // Compare with our previous move's eval; if we were in check then, with the one before.
         let improving = !in_check
             && if ply >= 2 && self.stack[ply - 2].static_eval != -INF {
@@ -1660,10 +1663,15 @@ impl Searcher {
                 }
             }
             // null move pruning
+            // A downward eval correction counts again in the null-move
+            // conditions (an upward one only a little): where the history
+            // has been pulling the eval down, null-move cuts are wrong
+            // several times as often at the same corrected eval.
+            let nmp_corr = if on(P::UseCorrNmp) { (eval_corr * tp(P::CorrNmpMul) / 16).clamp(-64, 16) } else { 0 };
             if on(P::UseNmp)
                 && depth >= tp(P::NmpDepth)
-                && eval >= beta + tp(P::NmpEvalMin)
-                && static_eval >= beta - tp(P::NmpDepthMul) * depth + tp(P::NmpMarginBase)
+                && eval + nmp_corr >= beta + tp(P::NmpEvalMin)
+                && static_eval + nmp_corr >= beta - tp(P::NmpDepthMul) * depth + tp(P::NmpMarginBase)
                 && ply >= 1
                 && self.stack[ply - 1].mv != 0
                 && ply != self.no_nmp_ply
