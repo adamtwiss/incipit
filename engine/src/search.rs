@@ -2155,6 +2155,16 @@ impl Searcher {
                             r -= 1;
                         }
                     }
+                    // The parent's static eval against its beta (which is -alpha
+                    // here). A parent expected to fail high from well above
+                    // beta usually has another move that does it, so a miss
+                    // below this node rarely changes the parent's result.
+                    if on(P::UsePslackLmr) && r > 0 && !pv_node && !cut_node && excluded == 0 && ply >= 1 {
+                        let pe = self.stack[ply - 1].static_eval;
+                        if pe.abs() < MATE_BOUND && pe + alpha >= tp(P::PslackLmr) {
+                            r += 1;
+                        }
+                    }
                     if quiet {
                         r -= hist_score / tp(P::LmrHistDiv);
                     } else {
