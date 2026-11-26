@@ -1660,7 +1660,13 @@ impl Searcher {
                 };
             }
             // razoring
-            if on(P::UseRazor) && eval + tp(P::RazorBase) + tp(P::RazorMul) * depth * depth <= alpha {
+            // The eval correction counts again here: where the history has
+            // been raising the eval, a razoring cut is wrong several times
+            // as often at the same corrected eval, and less often where it
+            // has been lowering it.
+            let razor_corr =
+                if on(P::UseCorrRazor) { eval_corr.clamp(-120, 120) * tp(P::CorrRazorMul) / 16 } else { 0 };
+            if on(P::UseRazor) && eval + razor_corr + tp(P::RazorBase) + tp(P::RazorMul) * depth * depth <= alpha {
                 self.stats.razor_tries += 1;
                 let v = self.qsearch(pos, alpha, alpha + 1, ply);
                 if v <= alpha {
