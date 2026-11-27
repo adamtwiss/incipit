@@ -1687,7 +1687,11 @@ impl Searcher {
                 && !(on(P::UseNmpDrawGuard) && beta.abs() == on(P::UseDrawJitter) as i32)
             {
                 self.stats.nmp_tries += 1;
-                let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(tp(P::NmpEvalCap));
+                // One ply less reduction where the correction history has
+                // lowered the eval a lot: null-move cuts are wrong several
+                // times as often there at the same corrected eval.
+                let r = tp(P::NmpBase) + depth / 3 + ((eval - beta) / tp(P::NmpEvalDiv)).min(tp(P::NmpEvalCap))
+                    - (on(P::UseCorrNmpR) && eval_corr <= -tp(P::CorrNmpR)) as i32;
                 let mut child = *pos;
                 child.make_null();
                 self.tt.prefetch(child.hash);
