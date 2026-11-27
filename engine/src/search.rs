@@ -312,6 +312,10 @@ pub struct Searcher {
     root_best: Move,
     /// Ply at which null move is disabled (a null-move verification search).
     no_nmp_ply: usize,
+    /// The ply of a quiescence search entered from the main search's
+    /// horizon; hx_block is set inside a horizon extension.
+    hx_ply: usize,
+    hx_block: bool,
     root_depth: i32,
     seldepth: usize,
     /// Shared with helper threads while they search; only the owner holds
@@ -603,6 +607,8 @@ impl Searcher {
             lines: Vec::new(),
             root_tb: Vec::new(),
             no_nmp_ply: usize::MAX,
+            hx_ply: usize::MAX,
+            hx_block: false,
             search_moves: Vec::new(),
             mate_moves: None,
             lmr,
@@ -1444,6 +1450,9 @@ impl Searcher {
             // position at the last ply would otherwise not be scored a draw.
             if !root && self.is_repetition(pos, ply) {
                 return self.draw_score();
+            }
+            if !self.hx_block {
+                self.hx_ply = ply;
             }
             return self.qsearch(pos, alpha, beta, ply);
         }
@@ -2493,6 +2502,8 @@ impl Searcher {
     }
 
     fn qsearch(&mut self, pos: &Position, mut alpha: i32, beta: i32, ply: usize) -> i32 {
+        let horizon = self.hx_ply == ply;
+        self.hx_ply = usize::MAX;
         self.nodes += 1;
         self.stats.qs_nodes += 1;
         self.pv_len[ply] = 0;
@@ -2542,6 +2553,7 @@ impl Searcher {
         let orig_alpha = alpha;
         let mut best;
         let mut raw_eval = -INF;
+        let mut eval_corr = 0;
         if in_check {
             best = -INF;
         } else {
@@ -2554,6 +2566,9 @@ impl Searcher {
                 let prev1 = if ply >= 1 { self.stack[ply - 1].cont_idx } else { 0 };
                 let prev2 = if ply >= 2 { self.stack[ply - 2].cont_idx } else { 0 };
                 best = self.corrected(pos, raw_eval, prev1, prev2);
+            }
+            if on(P::UseHorizonExt) {
+                eval_corr = best - raw_eval;
             }
             if on(P::UseGainHist) {
                 self.gain_learn(ply, best);
@@ -2570,6 +2585,24 @@ impl Searcher {
                 }
             }
             if best >= beta {
+                // A stand-pat cut at the main search's horizon that barely
+                // clears beta on an eval the correction history has moved
+                // a lot is wrong often enough to be worth one real ply:
+                // the node is searched at depth 1 without static pruning.
+                if horizon
+                    && !pv_node
+                    && best - beta < tp(P::HxMargin)
+                    && eval_corr.abs() >= tp(P::HxCorr)
+                    && best.abs() < MATE_BOUND
+                {
+                    let saved = self.no_nmp_ply;
+                    self.no_nmp_ply = ply;
+                    self.hx_block = true;
+                    let v = self.negamax(pos, beta - 1, beta, 1, ply, false);
+                    self.hx_block = false;
+                    self.no_nmp_ply = saved;
+                    return if self.stopped { 0 } else { v };
+                }
                 return best;
             }
             if best > alpha {
