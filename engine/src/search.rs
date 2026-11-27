@@ -1621,9 +1621,10 @@ impl Searcher {
             // reverse futility pruning
             // The margin moves with the index of the move that led here: a
             // cut says that move fails low, which is wrong far more often
-            // for the parent's first moves than for its late ones.
+            // for the parent's first moves than for its late ones. Only at
+            // the shallowest depths.
             let rfp_margin = tp(P::RfpMargin)
-                + if on(P::UseRfpPidx) && ply >= 1 {
+                + if on(P::UseRfpPidx) && ply >= 1 && depth <= tp(P::RfpPidxDepth) {
                     let i = self.stack[ply - 1].midx;
                     tp(P::RfpPidx)
                         * if i <= 1 {

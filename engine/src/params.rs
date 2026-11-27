@@ -120,6 +120,8 @@ params! {
     // RFP margin by the parent's move index: RfpMargin plus RfpPidx times
     // 2, 1, 0, -1, -2 for index 1, 2-3, 4-7, 8-15, 16+.
     RfpPidx = "RfpPidx", 8, 0, 24, 2;
+    // The parent-index term applies up to this depth.
+    RfpPidxDepth = "RfpPidxDepth", 3, 1, 12, 1;
     // RFP by the size of the eval correction: the eval counts for less by
     // (|correction| - UncRfpMid) x UncRfpMul / 16, so more where the
     // correction is large and slightly less where it is small.
@@ -312,7 +314,7 @@ params! {
     // +1 or -1 cp by node-count parity instead of exactly 0.
     UseDrawJitter = "UseDrawJitter", 1, 0, 1, 0;
     UseBsaLmr = "UseBsaLmr", 1, 0, 1, 0;
-    UseRfpPidx = "UseRfpPidx", 0, 0, 1, 0;
+    UseRfpPidx = "UseRfpPidx", 1, 0, 1, 0;
     UseUncRfp = "UseUncRfp", 1, 0, 1, 0;
     // No null-move pruning at a node whose beta is a draw score (0, or +-1
     // with UseDrawJitter): the side to move would claim the draw.
