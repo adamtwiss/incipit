@@ -2069,7 +2069,10 @@ impl Searcher {
                 if self.stopped {
                     return 0;
                 }
-                if v < sbeta {
+                if v < sbeta && on(P::UseSeFar) && tt_score >= beta + tp(P::SeFar) {
+                    // Singular, but the TT score is so far above beta that
+                    // extra plies almost never change the result.
+                } else if v < sbeta {
                     ext = 1;
                     if on(P::UseSeDoubleExt) && !pv_node && v < sbeta - tp(P::SeDouble) {
                         ext = 2;

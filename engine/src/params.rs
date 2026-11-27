@@ -125,6 +125,9 @@ params! {
     // correction is large and slightly less where it is small.
     UncRfpMid = "UncRfpMid", 25, 0, 80, 5;
     UncRfpMul = "UncRfpMul", 8, 0, 32, 2;
+    // Singular extensions: none when the TT score is SeFar (cp) or more
+    // above beta.
+    SeFar = "SeFar", 250, 50, 600, 25;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;
@@ -314,6 +317,7 @@ params! {
     UseBsaLmr = "UseBsaLmr", 1, 0, 1, 0;
     UseRfpPidx = "UseRfpPidx", 0, 0, 1, 0;
     UseUncRfp = "UseUncRfp", 1, 0, 1, 0;
+    UseSeFar = "UseSeFar", 1, 0, 1, 0;
     // No null-move pruning at a node whose beta is a draw score (0, or +-1
     // with UseDrawJitter): the side to move would claim the draw.
     UseNmpDrawGuard = "UseNmpDrawGuard", 1, 0, 1, 0;
