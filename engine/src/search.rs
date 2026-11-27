@@ -1777,11 +1777,16 @@ impl Searcher {
                     self.gain_par[ply + 1] = None;
                     self.hash_hist.push(pos.hash);
                     let mut v = -self.qsearch(&child, -pc_beta, -pc_beta + 1, ply + 1);
+                    let mut skipped = false;
                     if v >= pc_beta {
                         // Confirm with a reduced search; at depth 0 that would
                         // be the same qsearch again, so only its repetition
-                        // check is kept.
-                        if depth - tp(P::ProbcutRed) > 0 {
+                        // check is kept. A quiescence score far enough above
+                        // pc_beta is taken without the reduced search too:
+                        // probcut cuts are almost never wrong, least of all
+                        // with that much to spare.
+                        skipped = on(P::UsePcSkip) && v >= pc_beta + tp(P::PcSkip);
+                        if !skipped && depth - tp(P::ProbcutRed) > 0 {
                             v = -self.negamax(
                                 &child,
                                 -pc_beta,
@@ -1802,8 +1807,9 @@ impl Searcher {
                         let ss = if v >= MATE_BOUND { v + ply as i32 } else { v };
                         // The cut was confirmed at child depth depth - ProbcutRed
                         // (or by qsearch alone), so it holds for this node at one
-                        // more than that, not at a fixed depth - 3.
-                        let sd = (depth - tp(P::ProbcutRed) + 1).max(0);
+                        // more than that, not at a fixed depth - 3; a skipped
+                        // confirmation is stored at depth 0.
+                        let sd = if skipped { 0 } else { (depth - tp(P::ProbcutRed) + 1).max(0) };
                         self.tt.store(pos.hash, m, ss, raw_eval, sd, BOUND_LOWER, pv_node || tt_pv);
                         self.stats.probcut_cuts += 1;
                         return v;
