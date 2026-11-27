@@ -2576,6 +2576,7 @@ impl Searcher {
                 alpha = best;
             }
         }
+        let stand_pat = best;
         let mut list = MoveList::new();
         pos.gen_moves(&mut list, !in_check);
         // Quiet moves are only generated in check: they are ordered by the
@@ -2606,6 +2607,17 @@ impl Searcher {
             if !in_check {
                 if on(P::UseQsSee) && !pos.see_ge(m, -tp(P::QsSeeMargin), &see_vals()) {
                     continue;
+                }
+                // A capture whose victim leaves the stand-pat score QsFutil
+                // short of alpha is skipped unless the exchange wins at
+                // least a pawn: such captures almost never raise alpha.
+                if on(P::UseQsFutil) && !is_promo(m) {
+                    let ct = pos.captured_type(m);
+                    if stand_pat + see_vals()[ct.min(5)] * (ct < 6) as i32 + tp(P::QsFutil) <= alpha
+                        && !pos.see_ge(m, see_vals()[0], &see_vals())
+                    {
+                        continue;
+                    }
                 }
             } else if on(P::UseQsEvasionLimit)
                 && legal > 0
