@@ -125,6 +125,12 @@ params! {
     // correction is large and slightly less where it is small.
     UncRfpMid = "UncRfpMid", 25, 0, 80, 5;
     UncRfpMul = "UncRfpMul", 8, 0, 32, 2;
+    // Horizon extension: a stand-pat cut at the main search's horizon less
+    // than HxMargin (cp) above beta, with an eval correction of HxCorr or
+    // more either way, is searched at depth 1 instead. Round values: any
+    // close cut (HxCorr 0) beat close cuts on a large correction (25, 40).
+    HxMargin = "HxMargin", 10, 0, 100, 5;
+    HxCorr = "HxCorr", 0, 0, 120, 8;
     RfpDepth = "RfpDepth", 7, 3, 12, 1;
     // Null move needs static_eval >= beta - NmpDepthMul * depth + NmpMarginBase.
     NmpDepthMul = "NmpDepthMul", 24, 0, 60, 3;
@@ -314,6 +320,7 @@ params! {
     UseBsaLmr = "UseBsaLmr", 1, 0, 1, 0;
     UseRfpPidx = "UseRfpPidx", 0, 0, 1, 0;
     UseUncRfp = "UseUncRfp", 1, 0, 1, 0;
+    UseHorizonExt = "UseHorizonExt", 1, 0, 1, 0;
     // No null-move pruning at a node whose beta is a draw score (0, or +-1
     // with UseDrawJitter): the side to move would claim the draw.
     UseNmpDrawGuard = "UseNmpDrawGuard", 1, 0, 1, 0;
